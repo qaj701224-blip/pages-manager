@@ -781,7 +781,7 @@ export class D1PagesStore {
     const [activeRoutesResult, versionsResult, cleanupTasksResult] = await Promise.all([
       this.db
         .prepare(
-          `SELECT worker_name, site_id, active_version_id
+          `SELECT worker_name, site_id, active_version_id, execution_provider, dispatch_type
           FROM site_routes
           WHERE environment = ? AND route_status = 'active' AND worker_name IS NOT NULL${queryLimit ? ' LIMIT ?' : ''}`
         )
@@ -790,7 +790,8 @@ export class D1PagesStore {
       this.db
         .prepare(
           `SELECT site_versions.id, site_versions.worker_name, site_versions.site_id,
-            site_versions.artifact_availability, sites.slug AS site_slug,
+            site_versions.artifact_availability, site_versions.execution_provider,
+            site_versions.dispatch_type, site_versions.created_at, sites.slug AS site_slug,
             sites.deleted_at AS site_deleted_at
           FROM site_versions
           LEFT JOIN sites ON sites.id = site_versions.site_id
@@ -812,6 +813,8 @@ export class D1PagesStore {
         workerName: row.worker_name,
         siteId: row.site_id,
         versionId: row.active_version_id || null,
+        executionProvider: row.execution_provider || null,
+        dispatchType: row.dispatch_type || null,
       }));
     const versions = (versionsResult.results || []).map((row) => ({
         id: row.id,
@@ -820,6 +823,9 @@ export class D1PagesStore {
         siteSlug: row.site_slug || null,
         siteDeletedAt: row.site_deleted_at || null,
         artifactAvailability: row.artifact_availability || 'active',
+        executionProvider: row.execution_provider || null,
+        dispatchType: row.dispatch_type || null,
+        createdAt: row.created_at || null,
       }));
     const cleanupTasks = (cleanupTasksResult.results || []).map((row) => ({
         id: row.id,
@@ -833,6 +839,91 @@ export class D1PagesStore {
       cleanupTasks: cleanupTasks.slice(0, normalizedLimit),
       scanLimitExceeded:
         activeRoutes.length > normalizedLimit || versions.length > normalizedLimit || cleanupTasks.length > normalizedLimit,
+    };
+  }
+
+  async listSiteWfpCleanupReferences({ siteId, environment }) {
+    const [activeRoutesResult, versionsResult] = await Promise.all([
+      this.db
+        .prepare(
+          `SELECT worker_name, site_id, active_version_id, execution_provider, dispatch_type
+          FROM site_routes
+          WHERE site_id = ? AND environment = ? AND route_status = 'active' AND worker_name IS NOT NULL`
+        )
+        .bind(siteId, environment)
+        .all(),
+      this.db
+        .prepare(
+          `SELECT site_versions.id, site_versions.worker_name, site_versions.site_id,
+            site_versions.execution_provider, site_versions.dispatch_type,
+            site_versions.artifact_availability
+          FROM site_versions
+          JOIN sites ON sites.id = site_versions.site_id
+          WHERE site_versions.site_id = ? AND sites.environment = ?
+            AND site_versions.artifact_availability = 'active'
+            AND site_versions.worker_name IS NOT NULL`
+        )
+        .bind(siteId, environment)
+        .all(),
+    ]);
+    return {
+      activeRoutes: (activeRoutesResult.results || []).map((row) => ({
+        workerName: row.worker_name,
+        siteId: row.site_id,
+        versionId: row.active_version_id || null,
+        executionProvider: row.execution_provider || null,
+        dispatchType: row.dispatch_type || null,
+      })),
+      versions: (versionsResult.results || []).map((row) => ({
+        id: row.id,
+        workerName: row.worker_name,
+        siteId: row.site_id,
+        artifactAvailability: row.artifact_availability || 'active',
+        executionProvider: row.execution_provider || null,
+        dispatchType: row.dispatch_type || null,
+      })),
+    };
+  }
+
+  async listWorkerCleanupOwnershipReferences({ workerName }) {
+    const [routesResult, versionsResult] = await Promise.all([
+      this.db
+        .prepare(
+          `SELECT worker_name, site_id, environment, active_version_id, execution_provider, dispatch_type
+          FROM site_routes
+          WHERE worker_name = ?`
+        )
+        .bind(workerName)
+        .all(),
+      this.db
+        .prepare(
+          `SELECT site_versions.id, site_versions.worker_name, site_versions.site_id,
+            site_versions.execution_provider, site_versions.dispatch_type,
+            sites.environment AS ownership_environment
+          FROM site_versions
+          LEFT JOIN sites ON sites.id = site_versions.site_id
+          WHERE site_versions.worker_name = ?`
+        )
+        .bind(workerName)
+        .all(),
+    ]);
+    return {
+      routes: (routesResult.results || []).map((row) => ({
+        workerName: row.worker_name,
+        siteId: row.site_id,
+        versionId: row.active_version_id || null,
+        ownershipEnvironment: row.environment || null,
+        executionProvider: row.execution_provider || null,
+        dispatchType: row.dispatch_type || null,
+      })),
+      versions: (versionsResult.results || []).map((row) => ({
+        id: row.id,
+        workerName: row.worker_name,
+        siteId: row.site_id,
+        ownershipEnvironment: row.ownership_environment || null,
+        executionProvider: row.execution_provider || null,
+        dispatchType: row.dispatch_type || null,
+      })),
     };
   }
 

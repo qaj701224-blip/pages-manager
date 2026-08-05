@@ -1,5 +1,7 @@
 const CF_API_BASE_URL = 'https://api.cloudflare.com/client/v4';
 const ACTIVE_CLEANUP_STATUSES = new Set(['pending', 'failed', 'running']);
+const V1_WORKER_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
+const WFP_SLOT_PREFIXES = Object.freeze(['pages-v2-production-slot-', 'pages-v2-staging-slot-']);
 const DEFAULT_V1_RESERVED_WORKER_NAMES = Object.freeze([
   'pages-api',
   'pages-api-staging',
@@ -33,8 +35,12 @@ export function buildWorkerOrphanScan({
   const items = (workers || [])
     .filter((worker) => isManagedWfpWorkerName(worker?.name, environment))
     .map((worker) => {
-      const activeRoutes = activeRoutesByWorker.get(worker.name) || [];
-      const versions = versionsByWorker.get(worker.name) || [];
+      const activeRoutes = (activeRoutesByWorker.get(worker.name) || []).filter((route) =>
+        isWfpWorkerResource(route, environment)
+      );
+      const versions = (versionsByWorker.get(worker.name) || []).filter((version) =>
+        isWfpWorkerResource(version, environment)
+      );
       const liveVersions = versions.filter((version) => !version.siteDeletedAt);
       const rollbackVersions = liveVersions.filter((version) => version.artifactAvailability === 'active');
       const cleanupTasks = cleanupTasksByWorker.get(worker.name) || [];
@@ -93,10 +99,21 @@ export function formatV1SitesInventory({ siteKeys, workers, activeV2Sites, envir
     .filter((site) => typeof site?.name === 'string' && site.name !== '')
     .map((site) => {
       const metadata = isPlainObject(site.metadata) ? site.metadata : {};
-      const expectedWorkerName = v1WorkerName(site.name, environment);
+      const expectedWorkerName = expectedV1WorkerName(site.name, environment);
       const metadataWorkerName = nullableString(metadata.scriptName);
-      const worker = managedWorkers.get(metadataWorkerName || expectedWorkerName) || managedWorkers.get(expectedWorkerName) || null;
-      const platformReserved = reservedWorkerNames.has(metadataWorkerName || expectedWorkerName);
+      const worker =
+        managedWorkers.get(metadataWorkerName || expectedWorkerName) ||
+        managedWorkers.get(expectedWorkerName) ||
+        null;
+      const scriptNameStatus = classifyV1ScriptName({ siteName: site.name, scriptName: metadataWorkerName, environment });
+      const platformReserved = reservedWorkerNames.has(expectedWorkerName) || reservedWorkerNames.has(metadataWorkerName);
+      const retireBlockedReason = platformReserved
+        ? 'platform_reserved'
+        : scriptNameStatus !== 'valid'
+          ? scriptNameStatus
+          : !worker
+            ? 'worker_missing'
+            : null;
       const formatted = {
         name: site.name,
         url: nullableString(metadata.url),
@@ -106,12 +123,11 @@ export function formatV1SitesInventory({ siteKeys, workers, activeV2Sites, envir
         workerName: worker?.name || null,
         workerModifiedOn: worker?.modified_on || null,
         migratedCandidate: activeV2Slugs.has(site.name),
+        canRetire: retireBlockedReason === null,
       };
-      if (platformReserved) {
-        formatted.platformReserved = true;
-        formatted.canRetire = false;
-        formatted.classification = 'platform_reserved';
-      }
+      if (platformReserved) formatted.platformReserved = true;
+      if (retireBlockedReason) formatted.retireBlockedReason = retireBlockedReason;
+      if (platformReserved) formatted.classification = 'platform_reserved';
       return formatted;
     })
     .sort((left, right) => left.name.localeCompare(right.name));
@@ -123,7 +139,7 @@ export function formatV1UnregisteredWorkers({ siteKeys, workers, environment, re
       .flatMap((site) => {
         if (typeof site?.name !== 'string' || site.name === '') return [];
         const metadata = isPlainObject(site.metadata) ? site.metadata : {};
-        return [v1WorkerName(site.name, environment), nullableString(metadata.scriptName)].filter(Boolean);
+        return [expectedV1WorkerName(site.name, environment), nullableString(metadata.scriptName)].filter(Boolean);
       })
   );
   const reserved = reservedWorkerNames || new Set();
@@ -138,6 +154,7 @@ export function formatV1UnregisteredWorkers({ siteKeys, workers, environment, re
         classification: platformReserved ? 'platform_reserved' : 'unknown',
         platformReserved,
         canRetire: false,
+        retireBlockedReason: platformReserved ? 'platform_reserved' : 'unknown_worker',
       };
     })
     .sort((left, right) => left.workerName.localeCompare(right.workerName));
@@ -146,8 +163,13 @@ export function formatV1UnregisteredWorkers({ siteKeys, workers, environment, re
 export function readV1ReservedWorkerNames(env = {}) {
   const names = new Set(DEFAULT_V1_RESERVED_WORKER_NAMES);
   for (const value of String(env.PAGES_V1_RESERVED_WORKER_NAMES || '').split(',')) {
-    const normalized = nullableString(value);
-    if (normalized) names.add(normalized);
+    const normalized = nullableString(value)?.toLowerCase();
+    if (!normalized) continue;
+    if (!V1_WORKER_NAME_RE.test(normalized)) {
+      globalThis.console?.warn?.('V1_RESERVED_WORKER_NAME_INVALID');
+      continue;
+    }
+    names.add(normalized);
   }
   return names;
 }
@@ -167,10 +189,12 @@ export function createV1SitesAdminClient(env = {}) {
   const accountId = nullableString(env.CF_ACCOUNT_ID);
   const apiToken = nullableString(env.CF_API_TOKEN);
   const namespaceId = nullableString(env.PAGES_V1_SITES_KV_NAMESPACE_ID);
+  const configuredZoneId = nullableString(env.PAGES_V1_ZONE_ID);
   const fetchImpl = env.fetch || globalThis.fetch;
   if (!accountId || !apiToken || !namespaceId || typeof fetchImpl !== 'function') return null;
 
   return {
+    retirementSupported: Boolean(configuredZoneId),
     async listSites() {
       const sites = [];
       let cursor = '';
@@ -206,16 +230,21 @@ export function createV1SitesAdminClient(env = {}) {
     },
 
     async deleteWorker({ workerName }) {
-      return requestCloudflare(fetchImpl, apiToken, workerScriptUrl(accountId, workerName), {
-        method: 'DELETE',
-      });
+      try {
+        return await requestCloudflare(fetchImpl, apiToken, workerScriptUrl(accountId, workerName), {
+          method: 'DELETE',
+        });
+      } catch (error) {
+        if (Number(error?.status) === 404) return null;
+        throw error;
+      }
     },
 
     async unbindRoute({
       hostname,
       expectedScriptName,
       environment = env.PUBLIC_ENVIRONMENT || env.PAGES_ENV || 'production',
-      zoneId = env.CF_ZONE_ID_NEW || env.CF_ZONE_ID,
+      zoneId = configuredZoneId,
     }) {
       const normalizedHostname = nullableString(hostname)?.toLowerCase();
       if (!isExactV1Hostname(normalizedHostname)) throw invalidV1Route();
@@ -223,36 +252,65 @@ export function createV1SitesAdminClient(env = {}) {
         throw invalidV1Route();
       }
       if (!nullableString(zoneId)) throw new Error('V1_SITE_RETIRE_UNSUPPORTED');
-      const routesPayload = await requestCloudflare(
-        fetchImpl,
-        apiToken,
-        `${CF_API_BASE_URL}/zones/${encodeURIComponent(zoneId)}/workers/routes`
+      let routesPayload;
+      try {
+        routesPayload = await requestCloudflare(
+          fetchImpl,
+          apiToken,
+          `${CF_API_BASE_URL}/zones/${encodeURIComponent(zoneId)}/workers/routes`
+        );
+      } catch {
+        throw invalidV1Route();
+      }
+      if (!Array.isArray(routesPayload?.result)) throw invalidV1Route();
+      const exact = routesPayload.result.find((route) => route?.pattern === `${normalizedHostname}/*`);
+      const relatedUnsafeRoute = routesPayload.result.find((route) =>
+        routePatternMayMatchHostname(route?.pattern, normalizedHostname)
       );
-      const exact = (routesPayload.result || []).find((route) => route?.pattern === `${normalizedHostname}/*`);
-      if (!exact || exact.script !== expectedScriptName) throw invalidV1Route();
-      return requestCloudflare(
-        fetchImpl,
-        apiToken,
-        `${CF_API_BASE_URL}/zones/${encodeURIComponent(zoneId)}/workers/routes/${encodeURIComponent(exact.id)}`,
-        { method: 'DELETE' }
-      );
+      if (!exact && relatedUnsafeRoute) throw invalidV1Route();
+      if (!exact) return null;
+      if (typeof exact.id !== 'string' || !exact.id || exact.script !== expectedScriptName) throw invalidV1Route();
+      try {
+        return await requestCloudflare(
+          fetchImpl,
+          apiToken,
+          `${CF_API_BASE_URL}/zones/${encodeURIComponent(zoneId)}/workers/routes/${encodeURIComponent(exact.id)}`,
+          { method: 'DELETE' }
+        );
+      } catch (error) {
+        if (Number(error?.status) === 404) return null;
+        throw error;
+      }
     },
 
     async deleteSite(name) {
-      return requestCloudflare(
-        fetchImpl,
-        apiToken,
-        `${CF_API_BASE_URL}/accounts/${encodeURIComponent(accountId)}/storage/kv/namespaces/${encodeURIComponent(namespaceId)}/values/${encodeURIComponent(name)}`,
-        { method: 'DELETE' }
-      );
+      try {
+        return await requestCloudflare(
+          fetchImpl,
+          apiToken,
+          `${CF_API_BASE_URL}/accounts/${encodeURIComponent(accountId)}` +
+            `/storage/kv/namespaces/${encodeURIComponent(namespaceId)}/values/${encodeURIComponent(name)}`,
+          { method: 'DELETE' }
+        );
+      } catch (error) {
+        if (Number(error?.status) === 404) return null;
+        throw error;
+      }
     },
   };
 }
 
 export function isManagedWfpWorkerName(workerName, environment) {
   if (typeof workerName !== 'string') return false;
+  if (WFP_SLOT_PREFIXES.some((prefix) => workerName.startsWith(prefix))) return false;
   if (environment === 'staging') return workerName.startsWith('pages-v2-staging-');
   return workerName.startsWith('pages-v2-') && !workerName.startsWith('pages-v2-staging-');
+}
+
+export function isWfpWorkerResource(record, environment) {
+  if (!record || !isManagedWfpWorkerName(record.workerName, environment)) return false;
+  if (record.executionProvider === 'normal-worker-slot' || record.dispatchType === 'service-binding') return false;
+  return record.executionProvider === 'wfp' || record.dispatchType === 'dispatch-namespace';
 }
 
 export function isManagedV1WorkerName(workerName, environment) {
@@ -262,14 +320,25 @@ export function isManagedV1WorkerName(workerName, environment) {
 }
 
 function classifyOrphanReason({ referencedByActiveRoute, rollbackEligibleVersion, hasPendingCleanupTask, versions }) {
-  if (referencedByActiveRoute || rollbackEligibleVersion || hasPendingCleanupTask) return null;
+  void rollbackEligibleVersion;
+  if (referencedByActiveRoute || hasPendingCleanupTask) return null;
   if (versions.length === 0) return 'no_d1_reference';
   if (versions.every((version) => Boolean(version.siteDeletedAt))) return 'deleted_site';
   return 'stale_previous_version';
 }
 
-function v1WorkerName(siteName, environment) {
+export function expectedV1WorkerName(siteName, environment) {
   return environment === 'staging' ? `pages-staging-${siteName}` : `pages-${siteName}`;
+}
+
+export function isValidV1SiteScriptName(siteName, scriptName, environment) {
+  return V1_WORKER_NAME_RE.test(scriptName || '') && scriptName === expectedV1WorkerName(siteName, environment);
+}
+
+function classifyV1ScriptName({ siteName, scriptName, environment }) {
+  if (!scriptName) return 'script_name_missing';
+  if (!V1_WORKER_NAME_RE.test(scriptName)) return 'script_name_invalid';
+  return scriptName === expectedV1WorkerName(siteName, environment) ? 'valid' : 'script_name_mismatch';
 }
 
 async function requestCloudflare(fetchImpl, apiToken, url, options = {}) {
@@ -279,7 +348,7 @@ async function requestCloudflare(fetchImpl, apiToken, url, options = {}) {
   });
   const payload = await response.json().catch(() => null);
   if (response.status === 204) return { success: true, result: null };
-  if (!response.ok || payload?.success === false || !payload || typeof payload !== 'object') {
+  if (!response.ok || payload?.success !== true || !payload || typeof payload !== 'object') {
     const error = new Error('CLOUDFLARE_RESOURCE_INVENTORY_FAILED');
     error.status = response.status;
     throw error;
@@ -290,13 +359,28 @@ async function requestCloudflare(fetchImpl, apiToken, url, options = {}) {
 function workerScriptUrl(accountId, workerName) {
   const normalized = nullableString(workerName);
   if (!normalized) throw new Error('V1_SITE_SCRIPT_INVALID');
-  return `${CF_API_BASE_URL}/accounts/${encodeURIComponent(accountId)}/workers/scripts/${encodeURIComponent(normalized)}?force=true`;
+  return (
+    `${CF_API_BASE_URL}/accounts/${encodeURIComponent(accountId)}` +
+    `/workers/scripts/${encodeURIComponent(normalized)}?force=true`
+  );
 }
 
 function isExactV1Hostname(hostname) {
   if (typeof hostname !== 'string' || !hostname.endsWith('.workers.xd.team')) return false;
   const label = hostname.slice(0, -'.workers.xd.team'.length);
   return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label);
+}
+
+function routePatternMayMatchHostname(pattern, hostname) {
+  if (typeof pattern !== 'string') return false;
+  const routeHostname = pattern.split('/', 1)[0].toLowerCase();
+  if (routeHostname === hostname) return true;
+  if (!routeHostname.includes('*')) return false;
+  const wildcardPattern = routeHostname
+    .split('*')
+    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('.*');
+  return new RegExp(`^${wildcardPattern}$`).test(hostname);
 }
 
 function invalidV1Route() {
@@ -309,6 +393,8 @@ function readInventoryListResult(payload) {
 }
 
 function readInventoryCursor(payload) {
+  if (!Object.prototype.hasOwnProperty.call(payload || {}, 'result_info')) return '';
+  if (!isPlainObject(payload.result_info)) throw invalidInventoryResponse();
   const rawCursor = payload?.result_info?.cursor;
   if (rawCursor === undefined || rawCursor === null || rawCursor === '') return '';
   if (typeof rawCursor !== 'string' || !rawCursor.trim()) throw invalidInventoryResponse();

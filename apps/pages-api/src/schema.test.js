@@ -76,6 +76,18 @@ test('schema includes authority indexes for routing, idempotency, and access key
     sql,
     /CREATE INDEX IF NOT EXISTS idx_site_versions_site_worker_artifact\s+ON site_versions\(site_id, worker_name, artifact_availability\)/
   );
+  assert.match(
+    sql,
+    /CREATE INDEX IF NOT EXISTS idx_site_routes_environment_worker_ownership\s+ON site_routes\(environment, worker_name\)/
+  );
+  assert.match(
+    sql,
+    /CREATE INDEX IF NOT EXISTS idx_site_routes_worker_environment_ownership\s+ON site_routes\(worker_name, environment\)/
+  );
+  assert.match(
+    sql,
+    /CREATE INDEX IF NOT EXISTS idx_site_versions_worker_site_ownership\s+ON site_versions\(worker_name, site_id\)/
+  );
   assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_hostname_claims_hostname/);
   assert.doesNotMatch(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_hostname_claims_environment_slug_live/);
   assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_hostname_claims_environment_slug_live/);

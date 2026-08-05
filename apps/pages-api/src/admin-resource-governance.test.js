@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createV1SitesAdminClient, isManagedV1WorkerName, isManagedWfpWorkerName } from './admin-resource-governance.js';
+import {
+  buildWorkerOrphanScan,
+  createV1SitesAdminClient,
+  formatV1SitesInventory,
+  isManagedV1WorkerName,
+  isManagedWfpWorkerName,
+  readV1ReservedWorkerNames,
+} from './admin-resource-governance.js';
 
 test('v1 sites admin client reads KV cursor pages and the account Worker inventory', async () => {
   const requests = [];
@@ -164,6 +171,17 @@ test('v1 sites admin client rejects a repeated KV cursor before retrying forever
   assert.equal(requests, 2);
 });
 
+test('v1 sites admin client rejects a non-object KV result_info', async () => {
+  const client = createV1SitesAdminClient({
+    CF_ACCOUNT_ID: 'account_1',
+    CF_API_TOKEN: 'secret_token',
+    PAGES_V1_SITES_KV_NAMESPACE_ID: 'namespace_1',
+    fetch: async () => Response.json({ success: true, result: [], result_info: 'invalid' }),
+  });
+
+  await assert.rejects(() => client.listSites(), /CLOUDFLARE_RESOURCE_INVENTORY_INVALID/);
+});
+
 test('resource inventory filters v1 and WFP names by the current environment', () => {
   assert.equal(isManagedWfpWorkerName('pages-v2-docs-ver-1', 'production'), true);
   assert.equal(isManagedWfpWorkerName('pages-v2-staging-docs-ver-1', 'production'), false);
@@ -173,6 +191,101 @@ test('resource inventory filters v1 and WFP names by the current environment', (
   assert.equal(isManagedV1WorkerName('pages-v2-docs-ver-1', 'production'), false);
   assert.equal(isManagedV1WorkerName('pages-staging-docs', 'staging'), true);
   assert.equal(isManagedV1WorkerName('pages-v2-staging-docs-ver-1', 'staging'), false);
+  assert.equal(isManagedWfpWorkerName('pages-v2-production-slot-1', 'production'), false);
+  assert.equal(isManagedWfpWorkerName('pages-v2-staging-slot-1', 'staging'), false);
+});
+
+test('orphan scan excludes normal Worker slots and ignores non-WFP D1 ownership records', () => {
+  const scan = buildWorkerOrphanScan({
+    environment: 'production',
+    scannedAt: '2026-07-02T00:00:00.000Z',
+    workers: [
+      { name: 'pages-v2-production-slot-1' },
+      { name: 'pages-v2-normal-provider-record' },
+      { name: 'pages-v2-wfp-record' },
+    ],
+    references: {
+      activeRoutes: [
+        {
+          workerName: 'pages-v2-normal-provider-record',
+          executionProvider: 'normal-worker-slot',
+          dispatchType: 'dispatch-namespace',
+          siteId: 'site_normal',
+        },
+        {
+          workerName: 'pages-v2-wfp-record',
+          executionProvider: 'wfp',
+          dispatchType: 'dispatch-namespace',
+          siteId: 'site_wfp',
+        },
+      ],
+      versions: [],
+      cleanupTasks: [],
+    },
+  });
+
+  assert.deepEqual(scan.workers.map((worker) => [worker.name, worker.referencedByActiveRoute, worker.orphanReason]), [
+    ['pages-v2-normal-provider-record', false, 'no_d1_reference'],
+    ['pages-v2-wfp-record', true, null],
+  ]);
+});
+
+test('reserved Worker names normalize to lower case and ignore invalid entries', () => {
+  const warnings = [];
+  const originalWarn = globalThis.console.warn;
+  globalThis.console.warn = (...values) => warnings.push(values.join(' '));
+  try {
+    assert.deepEqual(
+      [...readV1ReservedWorkerNames({ PAGES_V1_RESERVED_WORKER_NAMES: ' Pages-OPS , PAGES-CONSOLE ,, unsafe/name ' })].sort(),
+      [
+        'pages-api',
+        'pages-api-staging',
+        'pages-auth',
+        'pages-auth-staging',
+        'pages-console',
+        'pages-console-staging',
+        'pages-kv-gateway',
+        'pages-kv-gateway-staging',
+        'pages-manager',
+        'pages-manager-staging',
+        'pages-ops',
+        'pages-router',
+        'pages-router-staging',
+      ].sort()
+    );
+  } finally {
+    globalThis.console.warn = originalWarn;
+  }
+  assert.deepEqual(warnings, ['V1_RESERVED_WORKER_NAME_INVALID']);
+});
+
+test('v1 inventory marks every non-retirable condition explicitly', () => {
+  const inventory = formatV1SitesInventory({
+    environment: 'production',
+    activeV2Sites: [],
+    reservedWorkerNames: new Set(['pages-reserved']),
+    siteKeys: [
+      { name: 'missing', metadata: {} },
+      { name: 'malformed', metadata: { scriptName: 'pages-../malformed' } },
+      { name: 'mismatch', metadata: { scriptName: 'pages-other' } },
+      { name: 'absent-worker', metadata: { scriptName: 'pages-absent-worker' } },
+      { name: 'reserved', metadata: { scriptName: 'pages-reserved' } },
+      { name: 'ready', metadata: { scriptName: 'pages-ready' } },
+    ],
+    workers: [{ name: 'pages-ready', modified_on: '2026-07-02T00:00:00.000Z' }],
+  });
+
+  assert.deepEqual(
+    inventory.map((site) => [site.name, site.canRetire, site.retireBlockedReason]),
+    [
+      ['absent-worker', false, 'worker_missing'],
+      ['malformed', false, 'script_name_invalid'],
+      ['mismatch', false, 'script_name_mismatch'],
+      ['missing', false, 'script_name_missing'],
+      ['ready', true, undefined],
+      ['reserved', false, 'platform_reserved'],
+    ]
+  );
 });
 
 test('v1 sites admin client retires a Worker through exact route and KV endpoints', async () => {
@@ -180,7 +293,7 @@ test('v1 sites admin client retires a Worker through exact route and KV endpoint
   const client = createV1SitesAdminClient({
     CF_ACCOUNT_ID: 'account_1',
     CF_API_TOKEN: 'runtime-secret-placeholder',
-    CF_ZONE_ID: 'zone_1',
+    PAGES_V1_ZONE_ID: 'zone_1',
     PAGES_V1_SITES_KV_NAMESPACE_ID: 'namespace_1',
     PAGES_ENV: 'production',
     fetch: async (url, init) => {
@@ -222,7 +335,7 @@ test('v1 sites admin client refuses unsafe route patterns and mismatched scripts
   const client = createV1SitesAdminClient({
     CF_ACCOUNT_ID: 'account_1',
     CF_API_TOKEN: 'runtime-secret-placeholder',
-    CF_ZONE_ID: 'zone_1',
+    PAGES_V1_ZONE_ID: 'zone_1',
     PAGES_V1_SITES_KV_NAMESPACE_ID: 'namespace_1',
     PAGES_ENV: 'production',
     fetch: async () =>
@@ -238,11 +351,94 @@ test('v1 sites admin client refuses unsafe route patterns and mismatched scripts
   );
 });
 
+test('v1 sites admin client treats missing Worker, route, and KV as idempotent success', async () => {
+  const requests = [];
+  const client = createV1SitesAdminClient({
+    CF_ACCOUNT_ID: 'account_1',
+    CF_API_TOKEN: 'runtime-secret-placeholder',
+    PAGES_V1_ZONE_ID: 'zone_1',
+    PAGES_V1_SITES_KV_NAMESPACE_ID: 'namespace_1',
+    PAGES_ENV: 'production',
+    fetch: async (url, init) => {
+      requests.push({ url: String(url), method: init.method || 'GET' });
+      if ((init.method || 'GET') === 'GET') return Response.json({ success: true, result: [] });
+      return new Response(JSON.stringify({ success: false, errors: [{ code: 10000 }] }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    },
+  });
+
+  await client.deleteWorker({ workerName: 'pages-legacy' });
+  await client.unbindRoute({ hostname: 'legacy.workers.xd.team', expectedScriptName: 'pages-legacy' });
+  await client.deleteSite('legacy');
+  assert.equal(requests.length, 3);
+});
+
+test('v1 sites admin client ignores unrelated exact routes when the target route is already absent', async () => {
+  const requests = [];
+  const client = createV1SitesAdminClient({
+    CF_ACCOUNT_ID: 'account_1',
+    CF_API_TOKEN: 'runtime-secret-placeholder',
+    PAGES_V1_ZONE_ID: 'zone_1',
+    PAGES_V1_SITES_KV_NAMESPACE_ID: 'namespace_1',
+    PAGES_ENV: 'production',
+    fetch: async (url, init = {}) => {
+      requests.push({ url: String(url), method: init.method || 'GET' });
+      return Response.json({
+        success: true,
+        result: [{ id: 'route_other', pattern: 'other.workers.xd.team/*', script: 'pages-other' }],
+      });
+    },
+  });
+
+  await client.unbindRoute({ hostname: 'legacy.workers.xd.team', expectedScriptName: 'pages-legacy' });
+  assert.deepEqual(requests, [
+    {
+      url: 'https://api.cloudflare.com/client/v4/zones/zone_1/workers/routes',
+      method: 'GET',
+    },
+  ]);
+});
+
+test('v1 sites admin client fails closed when route inventory cannot be read', async () => {
+  const client = createV1SitesAdminClient({
+    CF_ACCOUNT_ID: 'account_1',
+    CF_API_TOKEN: 'runtime-secret-placeholder',
+    PAGES_V1_ZONE_ID: 'zone_1',
+    PAGES_V1_SITES_KV_NAMESPACE_ID: 'namespace_1',
+    PAGES_ENV: 'production',
+    fetch: async () =>
+      new Response(JSON.stringify({ success: false, errors: [{ code: 10000 }] }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+  });
+
+  await assert.rejects(
+    () => client.unbindRoute({ hostname: 'legacy.workers.xd.team', expectedScriptName: 'pages-legacy' }),
+    /V1_SITE_ROUTE_UNSAFE/
+  );
+});
+
+test('v1 sites admin client rejects malformed successful destructive responses', async () => {
+  const client = createV1SitesAdminClient({
+    CF_ACCOUNT_ID: 'account_1',
+    CF_API_TOKEN: 'runtime-secret-placeholder',
+    PAGES_V1_ZONE_ID: 'zone_1',
+    PAGES_V1_SITES_KV_NAMESPACE_ID: 'namespace_1',
+    PAGES_ENV: 'production',
+    fetch: async () => Response.json({}),
+  });
+
+  await assert.rejects(() => client.deleteWorker({ workerName: 'pages-legacy' }), /CLOUDFLARE_RESOURCE_INVENTORY_FAILED/);
+});
+
 test('v1 sites admin client validates staging Worker names against the requested environment', async () => {
   const client = createV1SitesAdminClient({
     CF_ACCOUNT_ID: 'account_1',
     CF_API_TOKEN: 'runtime-secret-placeholder',
-    CF_ZONE_ID: 'zone_1',
+    PAGES_V1_ZONE_ID: 'zone_1',
     PAGES_V1_SITES_KV_NAMESPACE_ID: 'namespace_1',
     fetch: async () =>
       Response.json({

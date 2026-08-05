@@ -382,13 +382,19 @@ test('site deletion enqueues managed route and active-version Workers for cleanu
     routeId: 'route_governed',
     hostname: 'governed.workers.xd.team',
   });
-  await activateSite(store, 'site_1', { workerName: 'pages-v2-route-worker' });
+  await activateSite(store, 'site_1', {
+    workerName: 'pages-v2-route-worker',
+    executionProvider: 'wfp',
+    dispatchType: 'dispatch-namespace',
+  });
   await store.createSiteVersion({
     id: 'ver_previous',
     siteId: 'site_1',
     deploymentId: 'dep_previous',
     workerName: 'pages-v2-previous-worker',
     runtime: 'wfp',
+    executionProvider: 'wfp',
+    dispatchType: 'dispatch-namespace',
     artifactRef: 'wfp://test/pages-v2-previous-worker',
     contentHash: 'sha256:previous',
     deploymentShape: 'worker-only',
@@ -406,6 +412,23 @@ test('site deletion enqueues managed route and active-version Workers for cleanu
     runtime: 'wfp',
     artifactRef: 'wfp://test/normal-worker',
     contentHash: 'sha256:unmanaged',
+    deploymentShape: 'worker-only',
+    requestedFallback: 'auto',
+    resolvedFallback: null,
+    routingMode: 'worker-only',
+    artifactAvailability: 'active',
+    createdBy: 'usr_1',
+  });
+  await store.createSiteVersion({
+    id: 'ver_normal_slot',
+    siteId: 'site_1',
+    deploymentId: 'dep_normal_slot',
+    workerName: 'pages-v2-production-slot-1',
+    runtime: 'worker',
+    executionProvider: 'normal-worker-slot',
+    dispatchType: null,
+    artifactRef: 'slot://test/pages-v2-production-slot-1',
+    contentHash: 'sha256:slot',
     deploymentShape: 'worker-only',
     requestedFallback: 'auto',
     resolvedFallback: null,
@@ -3382,6 +3405,8 @@ async function activateSite(store, siteId, overrides = {}) {
     {
       activeVersionId: 'ver_1',
       workerName,
+      executionProvider: overrides.executionProvider,
+      dispatchType: overrides.dispatchType,
       visibility: overrides.visibility || 'org',
       updatedAt: '2026-06-15T00:00:00.000Z',
     },

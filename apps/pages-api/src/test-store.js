@@ -466,6 +466,8 @@ class TestPagesStore {
         workerName: route.workerName,
         siteId: route.siteId,
         versionId: route.activeVersionId || null,
+        executionProvider: route.executionProvider || null,
+        dispatchType: route.dispatchType || null,
       }));
     const versions = [...this.siteVersions.values()]
       .map((version) => ({ version, site: this.sites.get(version.siteId) || null }))
@@ -477,6 +479,9 @@ class TestPagesStore {
         siteSlug: site.slug,
         siteDeletedAt: site.deletedAt || null,
         artifactAvailability: version.artifactAvailability || 'active',
+        executionProvider: version.executionProvider || null,
+        dispatchType: version.dispatchType || null,
+        createdAt: version.createdAt || null,
       }));
     const cleanupTasks = [...this.deploymentResourceCleanupTasks.values()]
       .filter(
@@ -493,6 +498,64 @@ class TestPagesStore {
       cleanupTasks: cleanupTasks.slice(0, limit),
       scanLimitExceeded: activeRoutes.length > limit || versions.length > limit || cleanupTasks.length > limit,
     });
+  }
+
+  async listSiteWfpCleanupReferences({ siteId, environment }) {
+    const route = this.routes.get(this.routeBySiteId.get(siteId)) || null;
+    const activeRoutes =
+      route?.environment === environment && route.routeStatus === 'active' && route.workerName
+        ? [
+            {
+              workerName: route.workerName,
+              siteId: route.siteId,
+              versionId: route.activeVersionId || null,
+              executionProvider: route.executionProvider || null,
+              dispatchType: route.dispatchType || null,
+            },
+          ]
+        : [];
+    const site = this.sites.get(siteId) || null;
+    const versions = [...this.siteVersions.values()]
+      .filter(
+        (version) =>
+          version.siteId === siteId &&
+          site?.environment === environment &&
+          version.workerName &&
+          (version.artifactAvailability || 'active') === 'active'
+      )
+      .map((version) => ({
+        id: version.id,
+        workerName: version.workerName,
+        siteId: version.siteId,
+        artifactAvailability: version.artifactAvailability || 'active',
+        executionProvider: version.executionProvider || null,
+        dispatchType: version.dispatchType || null,
+      }));
+    return cloneRecord({ activeRoutes, versions });
+  }
+
+  async listWorkerCleanupOwnershipReferences({ workerName }) {
+    const routes = [...this.routes.values()]
+      .filter((route) => route.workerName === workerName)
+      .map((route) => ({
+        workerName: route.workerName,
+        siteId: route.siteId,
+        versionId: route.activeVersionId || null,
+        ownershipEnvironment: route.environment,
+        executionProvider: route.executionProvider || null,
+        dispatchType: route.dispatchType || null,
+      }));
+    const versions = [...this.siteVersions.values()]
+      .filter((version) => version.workerName === workerName)
+      .map((version) => ({
+        id: version.id,
+        workerName: version.workerName,
+        siteId: version.siteId,
+        ownershipEnvironment: this.sites.get(version.siteId)?.environment || null,
+        executionProvider: version.executionProvider || null,
+        dispatchType: version.dispatchType || null,
+      }));
+    return cloneRecord({ routes, versions });
   }
 
   async listActiveSiteSlugs({ environment }) {

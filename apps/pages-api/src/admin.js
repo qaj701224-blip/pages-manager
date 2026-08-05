@@ -21,10 +21,13 @@ import { createWfpClient, readWfpConfig } from '@xd/wfp-client';
 import {
   buildWorkerOrphanScan,
   createV1SitesAdminClient,
+  expectedV1WorkerName,
   formatV1SitesInventory,
   formatV1UnregisteredWorkers,
   isManagedWfpWorkerName,
   isManagedV1WorkerName,
+  isValidV1SiteScriptName,
+  isWfpWorkerResource,
   readV1ReservedWorkerNames,
   readV1SiteRecord,
 } from './admin-resource-governance.js';
@@ -102,7 +105,7 @@ export async function handleConsoleAdminApi(request, env, config, store) {
   const cleanupRunMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/admin\/deployment-cleanups\/([^/]+)\/run$/);
   if (cleanupRunMatch) {
     if (request.method !== 'POST') return methodNotAllowed();
-    return runDeploymentCleanupTask(env, config, store, decodeURIComponent(cleanupRunMatch[1]));
+    return runDeploymentCleanupTask(env, config, store, session, decodeURIComponent(cleanupRunMatch[1]));
   }
 
   if (url.pathname === `${CONSOLE_PREFIX}/admin/normal-workers`) {
@@ -304,7 +307,7 @@ async function scanAdminWorkerOrphans(env, config, store) {
   try {
     const configuredLimit = readWorkerOrphanScanLimit(env);
     const [inventory, references] = await Promise.all([
-      client.listWorkers(),
+      client.listWorkers({ maxWorkers: configuredLimit }),
       store.listWorkerOrphanScanReferences({ environment: config.environment, limit: configuredLimit }),
     ]);
     const workers = Array.isArray(inventory) ? inventory : inventory?.workers;
@@ -385,7 +388,23 @@ async function listAdminV1Sites(env, config, store) {
 
 async function retireAdminV1Site(env, config, store, session, siteName) {
   const client = createV1SitesAdminClient(env);
-  if (!client || typeof client.listSites !== 'function' || typeof store.releaseHostnameClaim !== 'function') {
+  if (
+    !client ||
+    typeof client.listSites !== 'function' ||
+    client.retirementSupported === false ||
+    typeof store.getHostnameClaim !== 'function' ||
+    typeof store.releaseHostnameClaim !== 'function'
+  ) {
+    await recordV1RetireAuditSafe(
+      store,
+      env,
+      config,
+      session,
+      { name: siteName, workerName: null, hostname: null },
+      'capability_check',
+      'deny',
+      503
+    );
     return jsonError('V1_SITES_UNSUPPORTED', 'Legacy v1 site retirement is unavailable.', 503, 'Configure v1 inventory access.');
   }
 
@@ -393,10 +412,43 @@ async function retireAdminV1Site(env, config, store, session, siteName) {
   try {
     siteKeys = await client.listSites();
   } catch {
-    return jsonError('V1_SITES_READ_FAILED', 'Legacy v1 site inventory could not be read.', 502, 'Check Cloudflare credentials and retry.');
+    await recordV1RetireAuditSafe(
+      store,
+      env,
+      config,
+      session,
+      { name: siteName, workerName: null, hostname: null },
+      'metadata_read',
+      'deny',
+      502
+    );
+    return jsonError(
+      'V1_SITES_READ_FAILED',
+      'Legacy v1 site inventory could not be read.',
+      502,
+      'Check Cloudflare credentials and retry.'
+    );
   }
   const record = findV1SiteRecord(siteKeys, siteName);
-  if (!record) return v1RetireError('metadata_read', 'V1_SITE_NOT_FOUND', 'Legacy v1 site was not found.', 404, 'Refresh the v1 site inventory.');
+  if (!record) {
+    await recordV1RetireAuditSafe(
+      store,
+      env,
+      config,
+      session,
+      { name: siteName, workerName: null, hostname: null },
+      'metadata_read',
+      'deny',
+      404
+    );
+    return v1RetireError(
+      'metadata_read',
+      'V1_SITE_NOT_FOUND',
+      'Legacy v1 site was not found.',
+      404,
+      'Refresh the v1 site inventory.'
+    );
+  }
   const result = await retireV1SiteRecord({ env, config, store, session, record, client });
   if (result.status === 'retired') return jsonOk({ result });
   return v1RetireError(result.stage, result.error.code, result.error.message, result.httpStatus, result.error.action, result);
@@ -404,7 +456,23 @@ async function retireAdminV1Site(env, config, store, session, siteName) {
 
 async function bulkRetireAdminV1Sites(request, env, config, store, session) {
   const client = createV1SitesAdminClient(env);
-  if (!client || typeof client.listSites !== 'function' || typeof store.releaseHostnameClaim !== 'function') {
+  if (
+    !client ||
+    typeof client.listSites !== 'function' ||
+    client.retirementSupported === false ||
+    typeof store.getHostnameClaim !== 'function' ||
+    typeof store.releaseHostnameClaim !== 'function'
+  ) {
+    await recordV1RetireAuditSafe(
+      store,
+      env,
+      config,
+      session,
+      { name: null, workerName: null, hostname: null },
+      'capability_check',
+      'deny',
+      503
+    );
     return jsonError('V1_SITES_UNSUPPORTED', 'Legacy v1 site retirement is unavailable.', 503, 'Configure v1 inventory access.');
   }
 
@@ -412,11 +480,37 @@ async function bulkRetireAdminV1Sites(request, env, config, store, session) {
   try {
     body = await readJsonBody(request, { maxBytes: 16 * 1024 });
   } catch {
+    await recordV1RetireAuditSafe(
+      store,
+      env,
+      config,
+      session,
+      { name: null, workerName: null, hostname: null },
+      'request_validation',
+      'deny',
+      400
+    );
     return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
   }
   const names = normalizeV1SiteNames(body.names);
-  if (!names) return jsonError('V1_SITE_NAMES_INVALID', 'Legacy v1 site names are invalid.', 400, 'Send a non-empty names array.');
-  if (names.length === 0) return jsonError('V1_SITE_NAMES_REQUIRED', 'Legacy v1 site names are required.', 400, 'Select at least one site.');
+  if (!names || names.length === 0 || names.length > V1_SITE_BULK_RETIRE_LIMIT) {
+    await recordV1RetireAuditSafe(
+      store,
+      env,
+      config,
+      session,
+      { name: null, workerName: null, hostname: null },
+      'request_validation',
+      'deny',
+      400
+    );
+  }
+  if (!names) {
+    return jsonError('V1_SITE_NAMES_INVALID', 'Legacy v1 site names are invalid.', 400, 'Send a non-empty names array.');
+  }
+  if (names.length === 0) {
+    return jsonError('V1_SITE_NAMES_REQUIRED', 'Legacy v1 site names are required.', 400, 'Select at least one site.');
+  }
   if (names.length > V1_SITE_BULK_RETIRE_LIMIT) {
     return jsonError('V1_SITE_BATCH_TOO_LARGE', 'Too many legacy v1 sites selected.', 400, 'Select at most 100 sites.');
   }
@@ -425,7 +519,22 @@ async function bulkRetireAdminV1Sites(request, env, config, store, session) {
   try {
     siteKeys = await client.listSites();
   } catch {
-    return jsonError('V1_SITES_READ_FAILED', 'Legacy v1 site inventory could not be read.', 502, 'Check Cloudflare credentials and retry.');
+    await recordV1RetireAuditSafe(
+      store,
+      env,
+      config,
+      session,
+      { name: null, workerName: null, hostname: null },
+      'metadata_read',
+      'deny',
+      502
+    );
+    return jsonError(
+      'V1_SITES_READ_FAILED',
+      'Legacy v1 site inventory could not be read.',
+      502,
+      'Check Cloudflare credentials and retry.'
+    );
   }
   const records = new Map(
     (siteKeys || [])
@@ -436,6 +545,16 @@ async function bulkRetireAdminV1Sites(request, env, config, store, session) {
   const results = await mapNormalWorkerDeleteBatch(names, async (name) => {
     const record = records.get(name);
     if (!record) {
+      await recordV1RetireAuditSafe(
+        store,
+        env,
+        config,
+        session,
+        { name, workerName: null, hostname: null },
+        'metadata_read',
+        'deny',
+        404
+      );
       return {
         name,
         status: 'failed',
@@ -464,53 +583,178 @@ async function bulkRetireAdminV1Sites(request, env, config, store, session) {
 async function retireV1SiteRecord({ env, config, store, session, record, client }) {
   const reservedWorkerNames = readV1ReservedWorkerNames(env);
   const workerName = record.scriptName;
-  if (!workerName || !isManagedV1WorkerName(workerName, config.environment)) {
-    return v1RetireFailure(record.name, 'metadata_read', 'V1_SITE_SCRIPT_INVALID', 'Legacy v1 site script metadata is invalid.', 409, 'Refresh the v1 site inventory.');
+  const expectedWorkerName = expectedV1WorkerName(record.name, config.environment);
+  const earlyBase = { name: record.name, workerName: expectedWorkerName, hostname: null };
+  if (
+    reservedWorkerNames.has(expectedWorkerName) ||
+    reservedWorkerNames.has(String(workerName || '').toLowerCase())
+  ) {
+    await recordV1RetireAuditSafe(store, env, config, session, earlyBase, 'platform_reserved', 'deny', 409);
+    return v1RetireFailure(
+      record.name,
+      'platform_reserved',
+      'V1_SITE_PLATFORM_RESERVED',
+      'Platform-reserved Worker cannot be retired.',
+      409,
+      'Choose a user-owned v1 site.'
+    );
   }
-  if (reservedWorkerNames.has(workerName)) {
-    return v1RetireFailure(record.name, 'platform_reserved', 'V1_SITE_PLATFORM_RESERVED', 'Platform-reserved Worker cannot be retired.', 409, 'Choose a user-owned v1 site.');
+  if (
+    !isValidV1SiteScriptName(record.name, workerName, config.environment) ||
+    !isManagedV1WorkerName(workerName, config.environment)
+  ) {
+    await recordV1RetireAuditSafe(store, env, config, session, earlyBase, 'metadata_read', 'deny', 409);
+    return v1RetireFailure(
+      record.name,
+      'metadata_read',
+      'V1_SITE_SCRIPT_INVALID',
+      'Legacy v1 site script metadata is invalid.',
+      409,
+      'Refresh the v1 site inventory.'
+    );
   }
   const hostname = readV1Hostname(record.url);
   if (!hostname) {
-    return v1RetireFailure(record.name, 'route_unbind', 'V1_SITE_ROUTE_UNSAFE', 'Legacy v1 hostname is missing or unsafe.', 409, 'Refresh the v1 site inventory and verify the hostname.');
+    await recordV1RetireAuditSafe(store, env, config, session, earlyBase, 'route_unbind', 'deny', 409);
+    return v1RetireFailure(
+      record.name,
+      'route_unbind',
+      'V1_SITE_ROUTE_UNSAFE',
+      'Legacy v1 hostname is missing or unsafe.',
+      409,
+      'Refresh the v1 site inventory and verify the hostname.'
+    );
   }
   if (
     typeof client.deleteWorker !== 'function' ||
     typeof client.unbindRoute !== 'function' ||
     typeof client.deleteSite !== 'function'
   ) {
-    return v1RetireFailure(record.name, 'capability_check', 'V1_SITES_UNSUPPORTED', 'Legacy v1 site retirement is unavailable.', 503, 'Configure Cloudflare account, zone, and KV access.');
+    await recordV1RetireAuditSafe(
+      store,
+      env,
+      config,
+      session,
+      { name: record.name, workerName, hostname },
+      'capability_check',
+      'deny',
+      503
+    );
+    return v1RetireFailure(
+      record.name,
+      'capability_check',
+      'V1_SITES_UNSUPPORTED',
+      'Legacy v1 site retirement is unavailable.',
+      503,
+      'Configure Cloudflare account, zone, and KV access.'
+    );
   }
 
   const base = { name: record.name, workerName, hostname };
+  let existingClaim;
+  try {
+    existingClaim = await store.getHostnameClaim(hostname);
+  } catch {
+    await recordV1RetireAuditSafe(
+      store,
+      env,
+      config,
+      session,
+      base,
+      'hostname_claim_validation',
+      'deny',
+      502
+    );
+    return v1RetireFailure(
+      record.name,
+      'hostname_claim_validation',
+      'V1_SITE_HOSTNAME_CLAIM_READ_FAILED',
+      'Legacy v1 hostname claim could not be read.',
+      502,
+      'Check hostname claims and retry.'
+    );
+  }
+  if (existingClaim && !v1HostnameClaimMatches(existingClaim, config, record, workerName)) {
+    await recordV1RetireAuditSafe(
+      store,
+      env,
+      config,
+      session,
+      base,
+      'hostname_claim_validation',
+      'deny',
+      409
+    );
+    return v1RetireFailure(
+      record.name,
+      'hostname_claim_validation',
+      'V1_SITE_HOSTNAME_CLAIM_UNSAFE',
+      'Legacy v1 hostname claim belongs to another resource.',
+      409,
+      'Review the hostname claim before retrying.'
+    );
+  }
   try {
     await recordV1RetireAudit(store, env, config, session, base, 'validation', 'allow', 200);
   } catch {
-    return v1RetireFailure(record.name, 'audit', 'V1_SITE_AUDIT_FAILED', 'V1 site retirement audit could not be written.', 500, 'Retry after checking the audit store.');
+    return v1RetireFailure(
+      record.name,
+      'audit',
+      'V1_SITE_AUDIT_FAILED',
+      'V1 site retirement audit could not be written.',
+      500,
+      'Retry after checking the audit store.'
+    );
   }
 
   try {
     await client.deleteWorker({ workerName });
-    await recordV1RetireAudit(store, env, config, session, base, 'worker_delete', 'allow', 200);
   } catch {
     await recordV1RetireAuditSafe(store, env, config, session, base, 'worker_delete', 'deny', 502);
-    return v1RetireFailure(record.name, 'worker_delete', 'V1_SITE_WORKER_DELETE_FAILED', 'Legacy v1 Worker could not be deleted.', 502, 'Check Cloudflare credentials and retry.');
+    return v1RetireFailure(
+      record.name,
+      'worker_delete',
+      'V1_SITE_WORKER_DELETE_FAILED',
+      'Legacy v1 Worker could not be deleted.',
+      502,
+      'Check Cloudflare credentials and retry.'
+    );
   }
+  await recordV1RetireAuditSafe(store, env, config, session, base, 'worker_delete', 'allow', 200);
 
   try {
     await client.unbindRoute({ hostname, expectedScriptName: workerName, environment: config.environment });
-    await recordV1RetireAudit(store, env, config, session, base, 'route_unbind', 'allow', 200);
   } catch {
     await recordV1RetireAuditSafe(store, env, config, session, base, 'route_unbind', 'deny', 502);
-    return v1RetireFailure(record.name, 'route_unbind', 'V1_SITE_ROUTE_UNBIND_FAILED', 'Legacy v1 hostname route could not be unbound.', 502, 'Verify the exact route and retry.');
+    return v1RetireFailure(
+      record.name,
+      'route_unbind',
+      'V1_SITE_ROUTE_UNBIND_FAILED',
+      'Legacy v1 hostname route could not be unbound.',
+      502,
+      'Verify the exact route and retry.'
+    );
   }
+  await recordV1RetireAuditSafe(store, env, config, session, base, 'route_unbind', 'allow', 200);
 
   try {
     await client.deleteSite(record.name);
-    await recordV1RetireAudit(store, env, config, session, base, 'kv_delete', 'allow', 200);
   } catch {
     await recordV1RetireAuditSafe(store, env, config, session, base, 'kv_delete', 'deny', 502);
-    return v1RetireFailure(record.name, 'kv_delete', 'V1_SITE_KV_DELETE_FAILED', 'Legacy v1 site metadata could not be deleted.', 502, 'Check Cloudflare KV credentials and retry.');
+    return v1RetireFailure(
+      record.name,
+      'kv_delete',
+      'V1_SITE_KV_DELETE_FAILED',
+      'Legacy v1 site metadata could not be deleted.',
+      502,
+      'Check Cloudflare KV credentials and retry.'
+    );
+  }
+  await recordV1RetireAuditSafe(store, env, config, session, base, 'kv_delete', 'allow', 200);
+
+  if (!existingClaim || ['released', 'held'].includes(existingClaim.status)) {
+    await recordV1RetireAuditSafe(store, env, config, session, base, 'hostname_claim_release', 'allow', 200);
+    return { ...base, status: 'retired' };
   }
 
   let released;
@@ -534,10 +778,26 @@ async function retireV1SiteRecord({ env, config, store, session, record, client 
   }
   if (!released?.ok) {
     await recordV1RetireAuditSafe(store, env, config, session, base, 'hostname_claim_release', 'deny', 502);
-    return v1RetireFailure(record.name, 'hostname_claim_release', 'V1_SITE_HOSTNAME_CLAIM_RELEASE_FAILED', 'Legacy v1 hostname claim could not be released.', 502, 'Check hostname claims and retry.');
+    return v1RetireFailure(
+      record.name,
+      'hostname_claim_release',
+      'V1_SITE_HOSTNAME_CLAIM_RELEASE_FAILED',
+      'Legacy v1 hostname claim could not be released.',
+      502,
+      'Check hostname claims and retry.'
+    );
   }
   await recordV1RetireAuditSafe(store, env, config, session, base, 'hostname_claim_release', 'allow', 200);
   return { ...base, status: 'retired' };
+}
+
+function v1HostnameClaimMatches(claim, config, record, workerName) {
+  return (
+    claim.environment === config.environment &&
+    claim.ownerSystem === 'v1' &&
+    claim.ownerId === `v1:${config.environment}:${record.name}` &&
+    (!claim.ownerRef || claim.ownerRef === workerName)
+  );
 }
 
 async function recordV1RetireAudit(store, env, config, session, site, stage, decision, statusCode) {
@@ -609,7 +869,10 @@ function v1RetireFailure(name, stage, code, message, httpStatus, action) {
 
 function v1RetireError(stage, code, message, status, action, result = null) {
   return jsonResponse(
-    { error: { code, message, stage, ...(action ? { action } : {}) }, ...(result ? { result: formatV1RetireResult(result) } : {}) },
+    {
+      error: { code, message, stage, ...(action ? { action } : {}) },
+      ...(result ? { result: formatV1RetireResult(result) } : {}),
+    },
     status,
     { 'Cache-Control': 'no-store' }
   );
@@ -700,13 +963,22 @@ async function runDueDeploymentCleanupsAdmin(request, env, config, store, sessio
     stage: 'run_due',
     decision: 'allow',
     statusCode: 200,
-    metadata: { limit, processed: summary.processed, succeeded: summary.succeeded, failed: summary.failed, skipped: summary.skipped },
+    metadata: {
+      limit,
+      processed: summary.processed,
+      succeeded: summary.succeeded,
+      failed: summary.failed,
+      skipped: summary.skipped,
+    },
   });
   return jsonOk({ summary });
 }
 
 async function backfillAdminWorkerOrphans(request, env, config, store, session) {
-  if (typeof store.listWorkerOrphanScanReferences !== 'function' || typeof store.createDeploymentResourceCleanupTask !== 'function') {
+  if (
+    typeof store.listWorkerOrphanScanReferences !== 'function' ||
+    typeof store.createDeploymentResourceCleanupTask !== 'function'
+  ) {
     return jsonError('WORKER_ORPHAN_BACKFILL_UNSUPPORTED', 'Worker orphan backfill is unavailable.', 503, 'Retry later.');
   }
   let body;
@@ -720,7 +992,12 @@ async function backfillAdminWorkerOrphans(request, env, config, store, session) 
   }
   const workerNames = normalizeBackfillWorkerNames(body.workerNames);
   if (!workerNames) {
-    return jsonError('WORKER_ORPHAN_NAMES_INVALID', 'Worker names are invalid.', 400, 'Each Worker name must be a non-empty string.');
+    return jsonError(
+      'WORKER_ORPHAN_NAMES_INVALID',
+      'Worker names are invalid.',
+      400,
+      'Each Worker name must be a non-empty string.'
+    );
   }
   if (workerNames.length === 0) {
     return jsonError('WORKER_ORPHAN_NAMES_REQUIRED', 'Worker names are required.', 400, 'Select at least one Worker.');
@@ -729,13 +1006,57 @@ async function backfillAdminWorkerOrphans(request, env, config, store, session) 
     return jsonError('WORKER_ORPHAN_BATCH_TOO_LARGE', 'Too many Workers selected.', 400, 'Select at most 100 Workers.');
   }
 
-  let references;
-  try {
-    references = await store.listWorkerOrphanScanReferences({ environment: config.environment });
-  } catch {
-    return jsonError('WORKER_ORPHAN_BACKFILL_FAILED', 'Worker orphan backfill could not read D1 references.', 502, 'Retry later.');
+  const client = createWfpScanAdminClient(env, config);
+  if (!client) {
+    return jsonError(
+      'WORKER_ORPHAN_BACKFILL_UNSUPPORTED',
+      'Worker orphan backfill is unavailable.',
+      503,
+      'Configure Cloudflare WFP inventory access.'
+    );
   }
 
+  let inventory;
+  let references;
+  try {
+    const configuredLimit = readWorkerOrphanScanLimit(env);
+    [inventory, references] = await Promise.all([
+      client.listWorkers({ maxWorkers: configuredLimit }),
+      store.listWorkerOrphanScanReferences({ environment: config.environment, limit: configuredLimit }),
+    ]);
+  } catch {
+    return jsonError(
+      'WORKER_ORPHAN_BACKFILL_FAILED',
+      'Worker orphan backfill could not revalidate resources.',
+      502,
+      'Retry later.'
+    );
+  }
+  if (Array.isArray(inventory) || inventory?.completeness !== 'complete') {
+    return jsonError(
+      'WORKER_ORPHAN_SCAN_INCOMPLETE',
+      'Worker orphan backfill requires a complete server-side inventory.',
+      400,
+      'Run a complete orphan scan and retry.'
+    );
+  }
+  const inventoryWorkers = Array.isArray(inventory?.workers) ? inventory.workers : [];
+  const configuredLimit = readWorkerOrphanScanLimit(env);
+  if (
+    inventoryWorkers.length > configuredLimit ||
+    inventory.scannedCount > configuredLimit ||
+    inventory.namespaceScriptCount > configuredLimit ||
+    references?.scanLimitExceeded
+  ) {
+    return jsonError(
+      'WORKER_ORPHAN_SCAN_LIMIT_EXCEEDED',
+      'Worker orphan scan exceeds the configured inventory limit.',
+      413,
+      'Increase PAGES_WFP_ORPHAN_SCAN_MAX_WORKERS or narrow the upstream inventory before retrying.'
+    );
+  }
+
+  const inventoryNames = new Set(inventoryWorkers.map((worker) => worker?.name).filter(Boolean));
   const activeRoutesByWorker = groupAdminReferences(references?.activeRoutes, (item) => item.workerName);
   const versionsByWorker = groupAdminReferences(references?.versions, (item) => item.workerName);
   const cleanupTasksByWorker = groupAdminReferences(
@@ -747,7 +1068,9 @@ async function backfillAdminWorkerOrphans(request, env, config, store, session) 
     const skipReason = backfillSkipReason({
       workerName,
       environment: config.environment,
+      inventoryNames,
       activeRoutes: activeRoutesByWorker.get(workerName) || [],
+      versions: versionsByWorker.get(workerName) || [],
       cleanupTasks: cleanupTasksByWorker.get(workerName) || [],
     });
     if (skipReason) {
@@ -763,6 +1086,10 @@ async function backfillAdminWorkerOrphans(request, env, config, store, session) 
       continue;
     }
     const versions = versionsByWorker.get(workerName) || [];
+    const latestVersion = latestWorkerVersion(versions);
+    const rollbackEligible = versions.some(
+      (version) => !version.siteDeletedAt && version.artifactAvailability === 'active'
+    );
     const cleanupReason = versions.length > 0 && versions.every((version) => Boolean(version.siteDeletedAt))
       ? 'site_deleted_backfill'
       : 'orphan_backfill';
@@ -772,8 +1099,8 @@ async function backfillAdminWorkerOrphans(request, env, config, store, session) 
         environment: config.environment,
         resourceType: 'wfp_user_worker',
         resourceRef: workerName,
-        siteId: versions[0]?.siteId || null,
-        versionId: null,
+        siteId: latestVersion?.siteId || null,
+        versionId: latestVersion?.id || null,
         deploymentId: null,
         cleanupReason,
         status: 'pending',
@@ -781,7 +1108,7 @@ async function backfillAdminWorkerOrphans(request, env, config, store, session) 
         createdAt: readNow(env),
         updatedAt: readNow(env),
       });
-      const result = { workerName, status: 'created' };
+      const result = { workerName, status: 'created', rollbackEligible };
       results.push(result);
       await recordResourceGovernanceAuditSafe(store, env, config, session, {
         eventType: 'admin.worker_orphan_backfill',
@@ -858,11 +1185,22 @@ function groupAdminReferences(items, keyOf) {
   return grouped;
 }
 
-function backfillSkipReason({ workerName, environment, activeRoutes, cleanupTasks }) {
+function backfillSkipReason({ workerName, environment, inventoryNames, activeRoutes, versions, cleanupTasks }) {
   if (!isManagedWfpWorkerName(workerName, environment)) return 'worker_not_managed';
+  if (!inventoryNames.has(workerName)) return 'worker_not_in_complete_inventory';
+  if ([...activeRoutes, ...versions].some((record) => !isWfpWorkerResource(record, environment))) {
+    return 'worker_not_wfp_resource';
+  }
   if (activeRoutes.length > 0) return 'active_route_reference';
   if (cleanupTasks.length > 0) return 'cleanup_task_exists';
   return null;
+}
+
+function latestWorkerVersion(versions) {
+  return [...versions].sort(
+    (left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')) ||
+      String(right.id || '').localeCompare(String(left.id || ''))
+  )[0] || null;
 }
 
 function cleanupAfterWfpDrainWindow(env) {
@@ -872,18 +1210,68 @@ function cleanupAfterWfpDrainWindow(env) {
   return new Date(now + seconds * 1000).toISOString();
 }
 
-async function runDeploymentCleanupTask(env, config, store, taskId) {
+async function runDeploymentCleanupTask(env, config, store, session, taskId) {
   if (
     typeof store.getDeploymentResourceCleanupTask !== 'function' ||
     typeof store.markDeploymentResourceCleanupRunning !== 'function' ||
     typeof store.finishDeploymentResourceCleanupTask !== 'function'
   ) {
+    await recordResourceGovernanceAuditSafe(store, env, config, session, {
+      eventType: 'admin.cleanup_run',
+      stage: 'run',
+      decision: 'deny',
+      statusCode: 503,
+      metadata: { taskId, resourceRef: null, outcome: 'failed', result: 'CLEANUP_TASKS_UNSUPPORTED' },
+    });
     return jsonError('CLEANUP_TASKS_UNSUPPORTED', 'Deployment cleanup tasks are unavailable.', 503, 'Retry later.');
   }
 
-  const task = await store.getDeploymentResourceCleanupTask(taskId, config.environment);
-  if (!task) return jsonError('CLEANUP_TASK_NOT_FOUND', 'Cleanup task not found.', 404, 'Check the cleanup task id.');
-  const result = await executeDeploymentCleanupTask(env, config, store, task);
+  let task;
+  try {
+    task = await store.getDeploymentResourceCleanupTask(taskId, config.environment);
+  } catch {
+    await recordResourceGovernanceAuditSafe(store, env, config, session, {
+      eventType: 'admin.cleanup_run',
+      stage: 'run',
+      decision: 'deny',
+      statusCode: 500,
+      metadata: { taskId, resourceRef: null, outcome: 'failed', result: CLEANUP_TASK_FAILED_CODE },
+    });
+    return jsonError(
+      CLEANUP_TASK_FAILED_CODE,
+      CLEANUP_TASK_FAILED_MESSAGE,
+      500,
+      'Review the cleanup task diagnostics and retry.'
+    );
+  }
+  if (!task) {
+    await recordResourceGovernanceAuditSafe(store, env, config, session, {
+      eventType: 'admin.cleanup_run',
+      stage: 'run',
+      decision: 'deny',
+      statusCode: 404,
+      metadata: { taskId, resourceRef: null, outcome: 'failed', result: 'CLEANUP_TASK_NOT_FOUND' },
+    });
+    return jsonError('CLEANUP_TASK_NOT_FOUND', 'Cleanup task not found.', 404, 'Check the cleanup task id.');
+  }
+  let result;
+  try {
+    result = await executeDeploymentCleanupTask(env, config, store, task);
+  } catch {
+    result = unexpectedCleanupTaskError();
+  }
+  await recordResourceGovernanceAuditSafe(store, env, config, session, {
+    eventType: 'admin.cleanup_run',
+    stage: 'run',
+    decision: result.ok ? 'allow' : result.httpStatus === 409 ? 'skip' : 'deny',
+    statusCode: result.ok ? 200 : result.httpStatus,
+    metadata: {
+      taskId,
+      resourceRef: task.resourceRef,
+      outcome: result.ok ? 'succeeded' : result.httpStatus === 409 ? 'skipped' : 'failed',
+      result: result.ok ? 'succeeded' : result.error.code,
+    },
+  });
   if (!result.ok) {
     return jsonError(result.error.code, result.error.message, result.httpStatus, result.error.action);
   }
@@ -953,6 +1341,9 @@ async function executeDeploymentCleanupTask(env, config, store, task) {
       'Review the cleanup task resource.'
     );
   }
+
+  const ownership = await validateCleanupWfpOwnership(store, config, task);
+  if (!ownership.ok) return ownership.error;
 
   const activeRoute = await findCleanupActiveRoute(store, config, task);
   if (activeRoute) {
@@ -1064,6 +1455,87 @@ async function executeDeploymentCleanupTask(env, config, store, task) {
   }
 }
 
+async function validateCleanupWfpOwnership(store, config, task) {
+  try {
+    if (typeof store.listWorkerCleanupOwnershipReferences !== 'function') {
+      return {
+        ok: false,
+        error: cleanupTaskError(
+          'CLEANUP_RESOURCE_VALIDATION_FAILED',
+          'Cleanup resource ownership could not be verified.',
+          502,
+          'Retry after checking D1 access.'
+        ),
+      };
+    }
+    const ownershipReferences = await store.listWorkerCleanupOwnershipReferences({
+      workerName: task.resourceRef,
+      environment: config.environment,
+    });
+    const ownershipRecords = [
+      ...(ownershipReferences?.routes || []),
+      ...(ownershipReferences?.versions || []),
+    ];
+    if (
+      ownershipRecords.some(
+        (record) =>
+          record.ownershipEnvironment !== config.environment || !isWfpWorkerResource(record, config.environment)
+      )
+    ) {
+      return {
+        ok: false,
+        error: cleanupTaskError(
+          'CLEANUP_RESOURCE_UNSUPPORTED',
+          'Cleanup resource is unsupported.',
+          409,
+          'Review the cleanup task resource.'
+        ),
+      };
+    }
+    if (task.versionId) {
+      if (typeof store.getSiteVersion !== 'function') {
+        return {
+          ok: false,
+          error: cleanupTaskError(
+            'CLEANUP_RESOURCE_VALIDATION_FAILED',
+            'Cleanup resource ownership could not be verified.',
+            502,
+            'Retry after checking D1 access.'
+          ),
+        };
+      }
+      const version = await store.getSiteVersion(task.versionId, config.environment);
+      if (
+        !version ||
+        version.workerName !== task.resourceRef ||
+        !isWfpWorkerResource(version, config.environment)
+      ) {
+        return {
+          ok: false,
+          error: cleanupTaskError(
+            'CLEANUP_RESOURCE_UNSUPPORTED',
+            'Cleanup resource is unsupported.',
+            409,
+            'Review the cleanup task resource.'
+          ),
+        };
+      }
+      return { ok: true };
+    }
+    return { ok: true };
+  } catch {
+    return {
+      ok: false,
+      error: cleanupTaskError(
+        'CLEANUP_RESOURCE_VALIDATION_FAILED',
+        'Cleanup resource ownership could not be verified.',
+        502,
+        'Retry after checking D1 access.'
+      ),
+    };
+  }
+}
+
 async function findCleanupActiveRoute(store, config, task) {
   if (typeof store.findActiveRouteByWorkerResource !== 'function') return null;
   return store.findActiveRouteByWorkerResource({
@@ -1151,7 +1623,7 @@ function createWfpScanAdminClient(env, config) {
     const wfpConfig = readWfpConfig(env, { environment: config.environment });
     const client = createWfpClient({ ...wfpConfig, fetch: env.fetch || globalThis.fetch });
     return {
-      listWorkers: () => client.listUserWorkers(),
+      listWorkers: (options) => client.listUserWorkers(options),
     };
   } catch {
     return null;

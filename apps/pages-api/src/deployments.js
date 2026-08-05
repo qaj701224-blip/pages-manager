@@ -1,5 +1,6 @@
 import { validateSiteSlug } from '@xd/pages-runtime-protocol';
 
+import { isManagedWfpWorkerName } from './admin-resource-governance.js';
 import { authenticateApiRequest } from './auth.js';
 import { canonicalRequestHash } from './crypto.js';
 import {
@@ -1728,12 +1729,6 @@ function cleanupAfterDrainWindow(env) {
   const configured = Number(env?.WFP_WORKER_CLEANUP_DRAIN_SECONDS || env?.WFP_CLEANUP_DRAIN_SECONDS || 300);
   const seconds = Number.isFinite(configured) && configured >= 0 ? Math.min(configured, 24 * 60 * 60) : 300;
   return new Date(now + seconds * 1000).toISOString();
-}
-
-function isManagedWfpWorkerName(workerName, environment) {
-  if (typeof workerName !== 'string') return false;
-  if (environment === 'staging') return workerName.startsWith('pages-v2-staging-');
-  return workerName.startsWith('pages-v2-') && !workerName.startsWith('pages-v2-staging-');
 }
 
 async function reconcileCommittedDeployment(store, deployment, environment, env) {
