@@ -135,6 +135,29 @@ export function createWfpClient({
       });
     },
 
+    async listUserWorkers() {
+      const workers = [];
+      const perPage = 100;
+      for (let page = 1; ; page += 1) {
+        const url = new URL(scriptsUrl(baseUrl, account, namespace));
+        url.searchParams.set('page', String(page));
+        url.searchParams.set('per_page', String(perPage));
+        const payload = await requestCloudflarePayload(fetch, apiToken, url.toString(), { method: 'GET' });
+        const pageWorkers = readCloudflareListResult(payload);
+        workers.push(
+          ...pageWorkers
+            .map((worker) => ({
+              name: worker?.script?.id || worker?.id || worker?.name,
+              created_on: worker?.created_on || null,
+              modified_on: worker?.modified_on || null,
+            }))
+            .filter((worker) => typeof worker.name === 'string' && worker.name !== '')
+        );
+        if (!cloudflareListHasNextPage(payload, page)) break;
+      }
+      return workers;
+    },
+
     async deleteUserWorker(scriptName) {
       return requestCloudflare(fetch, apiToken, scriptUrl(baseUrl, account, namespace, validateScriptName(scriptName)), {
         method: 'DELETE',
@@ -359,6 +382,11 @@ function cloneJsonObject(value) {
 }
 
 async function requestCloudflare(fetch, apiToken, url, init) {
+  const payload = await requestCloudflarePayload(fetch, apiToken, url, init);
+  return payload?.result ?? payload;
+}
+
+async function requestCloudflarePayload(fetch, apiToken, url, init) {
   const headers = new Headers(init.headers);
   headers.set('Authorization', `Bearer ${apiToken}`);
   const response = await fetch(
@@ -374,7 +402,29 @@ async function requestCloudflare(fetch, apiToken, url, init) {
       message: redactCloudflareError(payload, apiToken),
     });
   }
-  return payload?.result ?? payload;
+  return payload;
+}
+
+function readCloudflareListResult(payload) {
+  if (Array.isArray(payload?.result)) return payload.result;
+  throw invalidCloudflareListResponse();
+}
+
+function cloudflareListHasNextPage(payload, page) {
+  const responsePage = Number(payload?.result_info?.page);
+  const totalPages = Number(payload?.result_info?.total_pages);
+  if (!Number.isInteger(responsePage) || responsePage !== page || !Number.isInteger(totalPages) || totalPages < page) {
+    throw invalidCloudflareListResponse();
+  }
+  return page < totalPages;
+}
+
+function invalidCloudflareListResponse() {
+  return new WfpApiError({
+    status: 502,
+    code: 'WFP_API_RESPONSE_INVALID',
+    message: 'Cloudflare WFP list response was invalid.',
+  });
 }
 
 async function requestCloudflareOk(fetch, apiToken, url, init) {
@@ -434,7 +484,11 @@ function redactCloudflareError(payload, apiToken) {
 }
 
 function scriptUrl(baseUrl, accountId, namespace, scriptName) {
-  return `${baseUrl}/accounts/${accountId}/workers/dispatch/namespaces/${namespace}/scripts/${encodeURIComponent(scriptName)}`;
+  return `${scriptsUrl(baseUrl, accountId, namespace)}/${encodeURIComponent(scriptName)}`;
+}
+
+function scriptsUrl(baseUrl, accountId, namespace) {
+  return `${baseUrl}/accounts/${accountId}/workers/dispatch/namespaces/${namespace}/scripts`;
 }
 
 function normalizeApiBase(value) {

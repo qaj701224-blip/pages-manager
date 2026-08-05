@@ -144,6 +144,128 @@ test('uploadUserWorker sends multipart metadata and module to dispatch namespace
   assert.equal(form.get('worker.mjs').type, 'application/javascript+module');
 });
 
+test('listUserWorkers reads every dispatch namespace scripts page and returns safe metadata', async () => {
+  const requests = [];
+  const client = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'cf_secret_token',
+    dispatchNamespace: 'xd-cell-workers-production',
+    apiBaseUrl: 'https://api.cloudflare.com/client/v4',
+    fetch: async (request) => {
+      requests.push(request);
+      const page = new URL(request.url).searchParams.get('page');
+      if (page === '1') {
+        return Response.json({
+          success: true,
+          result: [
+            {
+              script: { id: 'pages-v2-docs-ver-1' },
+              created_on: '2026-06-01T00:00:00.000Z',
+              modified_on: '2026-06-02T00:00:00.000Z',
+              dispatch_namespace: 'xd-cell-workers-production',
+            },
+          ],
+          result_info: { page: 1, total_pages: 2 },
+        });
+      }
+      return Response.json({
+        success: true,
+        result: [
+          {
+            id: 'pages-v2-blog-ver-2',
+            created_on: '2026-06-03T00:00:00.000Z',
+            modified_on: '2026-06-04T00:00:00.000Z',
+          },
+        ],
+        result_info: { page: 2, total_pages: 2 },
+      });
+    },
+  });
+
+  assert.deepEqual(await client.listUserWorkers(), [
+    {
+      name: 'pages-v2-docs-ver-1',
+      created_on: '2026-06-01T00:00:00.000Z',
+      modified_on: '2026-06-02T00:00:00.000Z',
+    },
+    {
+      name: 'pages-v2-blog-ver-2',
+      created_on: '2026-06-03T00:00:00.000Z',
+      modified_on: '2026-06-04T00:00:00.000Z',
+    },
+  ]);
+  const scriptsEndpoint =
+    'https://api.cloudflare.com/client/v4/accounts/account_1/workers/dispatch/namespaces/xd-cell-workers-production/scripts';
+  assert.deepEqual(
+    requests.map((request) => request.url),
+    [`${scriptsEndpoint}?page=1&per_page=100`, `${scriptsEndpoint}?page=2&per_page=100`]
+  );
+  assert.equal(requests.every((request) => request.headers.get('Authorization') === 'Bearer cf_secret_token'), true);
+});
+
+test('listUserWorkers rejects a malformed list result instead of reporting an empty inventory', async () => {
+  const client = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'cf_secret_token',
+    dispatchNamespace: 'xd-cell-workers-production',
+    fetch: async () => Response.json({ success: true, result: {}, result_info: { page: 1, total_pages: 1 } }),
+  });
+
+  await assert.rejects(
+    () => client.listUserWorkers(),
+    (error) =>
+      error instanceof WfpApiError && error.code === 'WFP_API_RESPONSE_INVALID' && !error.message.includes('cf_secret_token')
+  );
+});
+
+test('listUserWorkers rejects invalid pagination metadata instead of looping indefinitely', async () => {
+  let requests = 0;
+  const client = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'cf_secret_token',
+    dispatchNamespace: 'xd-cell-workers-production',
+    fetch: async () => {
+      requests += 1;
+      if (requests > 3) throw new Error('TEST_REQUEST_LIMIT_EXCEEDED');
+      return Response.json({ success: true, result: [], result_info: { page: 1, total_pages: 'invalid' } });
+    },
+  });
+
+  await assert.rejects(
+    () => client.listUserWorkers(),
+    (error) => error instanceof WfpApiError && error.code === 'WFP_API_RESPONSE_INVALID'
+  );
+  assert.equal(requests, 1);
+});
+
+test('listUserWorkers rejects a short page without pagination metadata', async () => {
+  const client = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'cf_secret_token',
+    dispatchNamespace: 'xd-cell-workers-production',
+    fetch: async () => Response.json({ success: true, result: [] }),
+  });
+
+  await assert.rejects(
+    () => client.listUserWorkers(),
+    (error) => error instanceof WfpApiError && error.code === 'WFP_API_RESPONSE_INVALID'
+  );
+});
+
+test('listUserWorkers rejects pagination metadata for a different page', async () => {
+  const client = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'cf_secret_token',
+    dispatchNamespace: 'xd-cell-workers-production',
+    fetch: async () => Response.json({ success: true, result: [], result_info: { page: 2, total_pages: 2 } }),
+  });
+
+  await assert.rejects(
+    () => client.listUserWorkers(),
+    (error) => error instanceof WfpApiError && error.code === 'WFP_API_RESPONSE_INVALID'
+  );
+});
+
 test('uploadUserWorker can upload static assets before deploying thin assets worker', async () => {
   const requests = [];
   const client = createWfpClient({
