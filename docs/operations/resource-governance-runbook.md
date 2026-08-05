@@ -58,7 +58,7 @@ Cron 默认每 15 分钟小批量执行到期任务。排空速度可按以下�
 - 每批最多 100 个，服务端并发上限为 5。
 - 确认弹窗显示数量和名称预览；执行后逐项显示成功或失败，失败项可单独重试。
 
-退役 route 解绑还依赖 pages-api Worker secret `PAGES_V1_ZONE_ID`。未配置时 v1 清单仍可只读展示，但单个和批量退役会在读取清单或执行任何 Cloudflare 删除前返回 `V1_SITES_UNSUPPORTED`；production 与 staging 必须分别注入目标环境对应的 zone id。
+退役 route 解绑还依赖 pages-api Worker secret `PAGES_V1_ZONE_ID`。未配置时 v1 清单仍可只读展示，但单个和批量退役会在读取清单或执行任何 Cloudflare 删除前返回 `V1_SITES_UNSUPPORTED`；production 与 staging 必须分别注入目标环境对应的 zone id。两个 v1 secret 均由 v2 deploy workflow 直接引用 v1 既有 GitHub Environment secret（`SITES_KV_NAMESPACE_ID`、`CF_ZONE_ID_NEW`）注入；v1 彻底退役删除旧 secret 后，下一次 v2 部署会自动清除 Worker 上的对应 secret，功能回到只读降级。
 
 route 解绑必须满足：hostname 是完整的 `.workers.xd.team` 域名、route pattern 精确为 `${hostname}/*`、当前绑定脚本与 KV metadata 中解析出的脚本完全一致。wildcard route、其它 zone、平台 Worker 或脚本不匹配时必须拒绝。
 

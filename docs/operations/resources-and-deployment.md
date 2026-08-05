@@ -549,7 +549,7 @@ PAGES_CAP_JWT_SECRET_*
 ACCESS_KEY_PEPPER_*
 ```
 
-Cloudflare account id、zone id、D1/KV namespace id 不是凭证，v2 workflow 通常按 `vars` 读取；它们仍然不应写进 public repo。`PAGES_V1_SITES_KV_NAMESPACE_ID` 与 `PAGES_V1_ZONE_ID` 是例外：为避免公开 v1 存量资源标识，它们只从 GitHub Environment `secrets` 可选注入 pages-api，production 与 staging 必须分别配置各自资源；namespace 未配置时关闭 v1 盘点，zone 未配置时清单保持只读但关闭 v1 退役。`PAGES_EXECUTION_MODE`、`WFP_DISPATCH_NAMESPACE`、`CINDY_CONNECTION_ISSUERS` 和 `CINDY_CONNECTION_AUDIENCE` 名称与取值本身不是凭证，但它们是强架构/环境边界，必须按 environment 固定在 template 并通过 PR 评审；issuer 白名单只保存受信 https origin,不保存任何密钥(验签用的是 Cindy 公开 JWKS)。
+Cloudflare account id、zone id、D1/KV namespace id 不是凭证，v2 workflow 通常按 `vars` 读取；它们仍然不应写进 public repo。`PAGES_V1_SITES_KV_NAMESPACE_ID` 与 `PAGES_V1_ZONE_ID` 是例外：为避免公开 v1 存量资源标识，它们只从 GitHub Environment `secrets` 可选注入 pages-api，取值直接引用 v1 既有 secret `SITES_KV_NAMESPACE_ID` 与 `CF_ZONE_ID_NEW`（不新增 GitHub secret），production 与 staging 环境各自解析各自的值；namespace 未配置时关闭 v1 盘点，zone 未配置时清单保持只读但关闭 v1 退役。`PAGES_EXECUTION_MODE`、`WFP_DISPATCH_NAMESPACE`、`CINDY_CONNECTION_ISSUERS` 和 `CINDY_CONNECTION_AUDIENCE` 名称与取值本身不是凭证，但它们是强架构/环境边界，必须按 environment 固定在 template 并通过 PR 评审；issuer 白名单只保存受信 https origin,不保存任何密钥(验签用的是 Cindy 公开 JWKS)。
 
 当前 `deploy-pages-v2.yml` / `deploy-pages-v2-staging.yml` 的 GitHub Environment 配置应按 workflow 实际名称填写：
 

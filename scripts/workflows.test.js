@@ -743,16 +743,16 @@ test('pages v2 deploy workflows use explicit v2 templates and secret injection',
     assert.match(workflow, /SITE_SECRET_ENCRYPTION_KEY: \$\{\{ secrets\.SITE_SECRET_ENCRYPTION_KEY \}\}/);
     assert.match(workflow, /WEBHOOK_URL_ENCRYPTION_KEY: \$\{\{ secrets\.WEBHOOK_URL_ENCRYPTION_KEY \}\}/);
     assert.match(workflow, /XDS_OPENAI_TOKEN: \$\{\{ secrets\.XDS_OPENAI_TOKEN \}\}/);
-    assert.match(workflow, /PAGES_V1_SITES_KV_NAMESPACE_ID: \$\{\{ secrets\.PAGES_V1_SITES_KV_NAMESPACE_ID \}\}/);
-    assert.match(workflow, /PAGES_V1_ZONE_ID: \$\{\{ secrets\.PAGES_V1_ZONE_ID \}\}/);
+    assert.match(workflow, /PAGES_V1_SITES_KV_NAMESPACE_ID: \$\{\{ secrets\.SITES_KV_NAMESPACE_ID \}\}/);
+    assert.match(workflow, /PAGES_V1_ZONE_ID: \$\{\{ secrets\.CF_ZONE_ID_NEW \}\}/);
     assert.doesNotMatch(workflow, /vars\.PAGES_V1_SITES_KV_NAMESPACE_ID/);
     assert.doesNotMatch(workflow, /vars\.PAGES_V1_ZONE_ID/);
     const validatePagesApi = readWorkflowStep(workflow, 'Validate Pages API secrets');
     const injectPagesApi = readWorkflowStep(workflow, 'Inject Pages API secrets');
-    assert.match(validatePagesApi, /PAGES_V1_SITES_KV_NAMESPACE_ID: \$\{\{ secrets\.PAGES_V1_SITES_KV_NAMESPACE_ID \}\}/);
-    assert.match(injectPagesApi, /PAGES_V1_SITES_KV_NAMESPACE_ID: \$\{\{ secrets\.PAGES_V1_SITES_KV_NAMESPACE_ID \}\}/);
-    assert.match(validatePagesApi, /PAGES_V1_ZONE_ID: \$\{\{ secrets\.PAGES_V1_ZONE_ID \}\}/);
-    assert.match(injectPagesApi, /PAGES_V1_ZONE_ID: \$\{\{ secrets\.PAGES_V1_ZONE_ID \}\}/);
+    assert.match(validatePagesApi, /PAGES_V1_SITES_KV_NAMESPACE_ID: \$\{\{ secrets\.SITES_KV_NAMESPACE_ID \}\}/);
+    assert.match(injectPagesApi, /PAGES_V1_SITES_KV_NAMESPACE_ID: \$\{\{ secrets\.SITES_KV_NAMESPACE_ID \}\}/);
+    assert.match(validatePagesApi, /PAGES_V1_ZONE_ID: \$\{\{ secrets\.CF_ZONE_ID_NEW \}\}/);
+    assert.match(injectPagesApi, /PAGES_V1_ZONE_ID: \$\{\{ secrets\.CF_ZONE_ID_NEW \}\}/);
     assert.match(validatePagesApi, /ACCESS_KEY_PEPPER_202606: \$\{\{ secrets\.ACCESS_KEY_PEPPER_202606 \}\}/);
     assert.match(injectPagesApi, /ACCESS_KEY_PEPPER_202606: \$\{\{ secrets\.ACCESS_KEY_PEPPER_202606 \}\}/);
     assert.match(workflow, /DRY_RUN=1 scripts\/put-pages-v2-secrets\.sh apps\/pages-api/);
@@ -788,7 +788,16 @@ test('pages v2 deploy workflows stay isolated from v1 and non-Cloudflare deploy 
 
   assert.doesNotMatch(combined, /scripts\/gen-wrangler\.sh/);
   assert.doesNotMatch(combined, /apps\/server/);
-  assert.doesNotMatch(combined, /CF_ZONE_ID_NEW/);
+  const v1SecretLines = combined
+    .split('\n')
+    .filter((line) => /CF_ZONE_ID_NEW|secrets\.SITES_KV_NAMESPACE_ID/.test(line));
+  assert.ok(v1SecretLines.length > 0, 'v1 governance secrets must be injected into pages-api');
+  for (const line of v1SecretLines) {
+    assert.match(
+      line,
+      /^\s*(?:PAGES_V1_ZONE_ID: \$\{\{ secrets\.CF_ZONE_ID_NEW \}\}|PAGES_V1_SITES_KV_NAMESPACE_ID: \$\{\{ secrets\.SITES_KV_NAMESPACE_ID \}\})\s*$/
+    );
+  }
   assert.doesNotMatch(combined, /docker buildx?|kubectl|ACR_|KUBE_CONFIG_B64|ALIYUN_ACCESS_KEY/);
   assert.match(combined, /CLOUDFLARE_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/);
   assert.match(combined, /CF_API_TOKEN: \$\{\{ secrets\.CF_API_TOKEN \}\}/);

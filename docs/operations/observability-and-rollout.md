@@ -84,7 +84,7 @@
 
 Orphan backfill 与 v1 退役均为平台管理员显式操作。v2 回收统一进入现有 `deployment_resource_cleanup_tasks` 管道，并继续执行 active route 复核、drain window 和失败重试；不要另建旁路删除流程。v1 退役仅处理人工确认不再使用的 KV 站点，unknown 与 platform_reserved Worker 永远只展示、不可选。站点删除成功后的 v2 Worker 也只入 cleanup task，不在删除请求内直接删除脚本。
 
-v1 盘点依赖 pages-api Worker secret `PAGES_V1_SITES_KV_NAMESPACE_ID`，并复用 Cloudflare account 与 API credential secret。缺少配置时，接口按 `V1_SITES_UNSUPPORTED` 返回 503，Console 应保留其它管理能力可用。production 与 staging 必须分别配置对应 namespace，且盘点只接受本环境的 v1 Worker 前缀并显式排除 v2 前缀。
+v1 盘点依赖 pages-api Worker secret `PAGES_V1_SITES_KV_NAMESPACE_ID`，并复用 Cloudflare account 与 API credential secret。该值由 v2 deploy workflow 直接引用 v1 既有 GitHub Environment secret `SITES_KV_NAMESPACE_ID` 注入，不需要新增 GitHub secret。缺少配置时，接口按 `V1_SITES_UNSUPPORTED` 返回 503，Console 应保留其它管理能力可用。production 与 staging 必须分别配置对应 namespace，且盘点只接受本环境的 v1 Worker 前缀并显式排除 v2 前缀。
 
 key rotation 生命周期：
 
