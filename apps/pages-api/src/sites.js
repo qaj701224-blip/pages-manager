@@ -12,6 +12,7 @@ import {
 import { logRuntimeConfigFailure, readRuntimeConfigErrorDiagnostic } from './runtime-config-diagnostics.js';
 import { buildRouteSnapshot, writeRouteSnapshot } from './route-snapshot.js';
 import { createDeploymentProvider as createWfpDeploymentProvider } from './wfp-provider.js';
+import { createSiteWithLegacyV1Takeover } from './legacy-v1/takeover.js';
 
 const VISIBILITIES = new Set(['internal', 'org', 'acl', 'owner', 'disabled']);
 const ACL_SUBJECT_TYPES = new Set(['email', 'department']);
@@ -1033,17 +1034,23 @@ async function createSite(request, env, config, store, actor) {
 
   let site;
   try {
-    site = await store.createSite({
-      id: siteId,
-      slug,
-      ownerType,
-      ownerId,
-      ownerUserId: actor.userId,
-      siteUuid,
-      defaultVisibility: visibility,
-      environment: config.environment,
-      routeId,
-      hostname,
+    site = await createSiteWithLegacyV1Takeover({
+      env,
+      config,
+      store,
+      actor,
+      siteInput: {
+        id: siteId,
+        slug,
+        ownerType,
+        ownerId,
+        ownerUserId: actor.userId,
+        siteUuid,
+        defaultVisibility: visibility,
+        environment: config.environment,
+        routeId,
+        hostname,
+      },
     });
   } catch (error) {
     const response = siteCreateErrorResponse(error);
@@ -1077,8 +1084,17 @@ async function resolveTeamPublishOwner(store, userId, teamIdValue, environment) 
 
 export function siteCreateErrorResponse(error) {
   const message = error instanceof Error ? error.message : '';
+  const code = error?.code || message;
   if (/SITE_SLUG_CONFLICT/.test(message)) {
     return jsonError('SITE_SLUG_CONFLICT', 'Site slug already exists.', 409, 'Choose a different site slug.');
+  }
+  if (code === 'V1_TAKEOVER_STATE_CHANGED') {
+    return jsonError(
+      'HOSTNAME_CLAIM_CONFLICT',
+      'Site hostname is already claimed.',
+      409,
+      '请检查站点状态后重试。'
+    );
   }
   if (/HOSTNAME_CLAIM_CONFLICT/.test(message)) {
     return jsonError(
@@ -1086,6 +1102,14 @@ export function siteCreateErrorResponse(error) {
       'Site hostname is already claimed.',
       409,
       '请换一个站点名，或使用原站点 owner 继续部署。'
+    );
+  }
+  if (code === 'V1_TAKEOVER_CONFIG_UNAVAILABLE' || code === 'V1_TAKEOVER_CLEANUP_FAILED') {
+    return jsonError(
+      'SITE_CREATE_UNAVAILABLE',
+      'Site could not be created right now.',
+      503,
+      'Retry later with the same site name.'
     );
   }
   return null;

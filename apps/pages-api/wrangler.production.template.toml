@@ -47,6 +47,10 @@ database_id = "__D1_DATABASE_ID__"
 binding = "ROUTE_SNAPSHOTS"
 id = "__ROUTE_SNAPSHOTS_KV_ID__"
 
+[[kv_namespaces]]
+binding = "V1_SITES"
+id = "__V1_SITES_KV_NAMESPACE_ID__"
+
 [[durable_objects.bindings]]
 name = "ROUTE_POINTER_LOCKS"
 class_name = "RoutePointerDO"

@@ -135,6 +135,46 @@ test('scheduled handler runs due WFP cleanup tasks', async () => {
   assert.equal((await store.getSiteVersion('ver_old')).artifactAvailability, 'retired');
 });
 
+test('scheduled handler deletes due v1 SITES KV cleanup tasks without using WFP client', async () => {
+  const store = createTestPagesStore({
+    now: () => '2026-06-15T00:00:00.000Z',
+  });
+  const deletedSlugs = [];
+  await store.createDeploymentResourceCleanupTask({
+    id: 'cln_v1_kv',
+    environment: 'production',
+    resourceType: 'v1_sites_kv_record',
+    resourceRef: 'guide',
+    siteId: 'site_1',
+    cleanupReason: 'v1_email_takeover_kv_delete',
+    status: 'pending',
+    cleanupAfter: '2026-06-14T23:59:00.000Z',
+  });
+
+  await worker.scheduled(
+    { scheduledTime: Date.parse('2026-06-15T00:00:00.000Z'), cron: '*/15 * * * *' },
+    {
+      PAGES_ENV: 'production',
+      PAGES_STORE: store,
+      now: () => '2026-06-15T00:00:00.000Z',
+      V1_SITES: {
+        async delete(slug) {
+          deletedSlugs.push(slug);
+        },
+      },
+      WFP_RESOURCE_ADMIN_CLIENT: {
+        deleteWorker: async () => {
+          throw new Error('WFP client must not be called');
+        },
+      },
+    },
+    { waitUntil: (promise) => promise }
+  );
+
+  assert.deepEqual(deletedSlugs, ['guide']);
+  assert.equal((await store.getDeploymentResourceCleanupTask('cln_v1_kv', 'production')).status, 'succeeded');
+});
+
 test('scheduled handler retries failed WFP cleanup tasks', async () => {
   const store = createTestPagesStore({
     now: () => '2026-06-15T00:00:00.000Z',

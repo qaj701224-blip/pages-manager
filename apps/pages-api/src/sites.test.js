@@ -97,6 +97,127 @@ test('create site returns conflict when hostname claim belongs to another owner'
   assert.equal(await store.getSite('site_1'), null);
 });
 
+test('create site takes over an email-matched v1 site before creating v2 state', async () => {
+  const store = await createSeededStore();
+  await store.acquireHostnameClaim({
+    environment: 'production',
+    hostname: 'guide.workers.xd.team',
+    normalizedSlug: 'guide',
+    hostnameFamily: 'workers',
+    ownerSystem: 'v1',
+    ownerId: 'v1:production:guide',
+    ownerRef: 'pages-guide',
+    source: 'backfill_v1_sites',
+  });
+  const cloudflareCalls = [];
+  const deletedKvKeys = [];
+
+  const response = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/sites', {
+      slug: 'guide',
+      visibility: 'org',
+    }),
+    testEnv(store, {
+      V1_SITES: {
+        async get(slug, type) {
+          assert.equal(slug, 'guide');
+          assert.equal(type, 'json');
+          return {
+            name: 'guide',
+            token: 'pages_user@example.com',
+            scriptName: 'pages-guide',
+            url: 'https://guide.workers.xd.team',
+          };
+        },
+        async delete(slug) {
+          deletedKvKeys.push(slug);
+        },
+      },
+      V1_CLOUDFLARE_CLIENT: {
+        async listRoutes() {
+          cloudflareCalls.push('listRoutes');
+          return [{ id: 'route_cf_1', pattern: 'guide.workers.xd.team/*', script: 'pages-guide' }];
+        },
+        async deleteRoute({ routeId }) {
+          cloudflareCalls.push(`deleteRoute:${routeId}`);
+        },
+        async deleteScript({ scriptName }) {
+          cloudflareCalls.push(`deleteScript:${scriptName}`);
+        },
+      },
+      nextId: (prefix) => ({ site: 'site_1', route: 'route_1', aud: 'aud_1', cleanup: 'cleanup_1' })[prefix],
+      nextSiteUuid: () => '4b4c8e8361ef4b47b64f5c20a7db7c47',
+    })
+  );
+
+  assert.equal(response.status, 201, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.site.slug, 'guide');
+  assert.equal('token' in body.site, false);
+  assert.doesNotMatch(JSON.stringify(body), /pages-user@example\.com|pages-guide|user@example\.com/);
+  assert.deepEqual(cloudflareCalls, ['listRoutes', 'deleteRoute:route_cf_1', 'deleteScript:pages-guide']);
+  assert.deepEqual(deletedKvKeys, ['guide']);
+  assert.equal((await store.getHostnameClaim('guide.workers.xd.team')).ownerSystem, 'v2');
+  assert.equal((await store.getHostnameClaim('guide.workers.xd.team')).ownerId, 'site_1');
+});
+
+test('create site keeps v1 state and skips Cloudflare deletion when emails differ', async () => {
+  const store = await createSeededStore();
+  await store.acquireHostnameClaim({
+    environment: 'production',
+    hostname: 'guide.workers.xd.team',
+    normalizedSlug: 'guide',
+    hostnameFamily: 'workers',
+    ownerSystem: 'v1',
+    ownerId: 'v1:production:guide',
+    ownerRef: 'pages-guide',
+    source: 'backfill_v1_sites',
+  });
+  let cloudflareCalls = 0;
+  let deletedKvKeys = 0;
+
+  const response = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/sites', {
+      slug: 'guide',
+      visibility: 'org',
+    }),
+    testEnv(store, {
+      V1_SITES: {
+        async get() {
+          return {
+            name: 'guide',
+            token: 'pages_other@example.com',
+            scriptName: 'pages-guide',
+            url: 'https://guide.workers.xd.team',
+          };
+        },
+        async delete() {
+          deletedKvKeys += 1;
+        },
+      },
+      V1_CLOUDFLARE_CLIENT: {
+        async listRoutes() {
+          cloudflareCalls += 1;
+          return [];
+        },
+        async deleteRoute() {
+          cloudflareCalls += 1;
+        },
+        async deleteScript() {
+          cloudflareCalls += 1;
+        },
+      },
+    })
+  );
+
+  assert.equal(response.status, 409, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'HOSTNAME_CLAIM_CONFLICT');
+  assert.equal(cloudflareCalls, 0);
+  assert.equal(deletedKvKeys, 0);
+  assert.equal((await store.getHostnameClaim('guide.workers.xd.team')).ownerSystem, 'v1');
+  assert.equal(await store.getSite('site_1'), null);
+});
+
 test('creates a site with internal visibility', async () => {
   const store = await createSeededStore();
   const response = await worker.fetch(

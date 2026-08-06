@@ -20,7 +20,13 @@ const DEFAULTS = {
 };
 
 const REQUIRED_TOKENS_BY_APP = {
-  'apps/pages-api': ['CLOUDFLARE_ACCOUNT_ID', 'D1_DATABASE_ID', 'IP_ALLOWLIST', 'ROUTE_SNAPSHOTS_KV_ID'],
+  'apps/pages-api': [
+    'CLOUDFLARE_ACCOUNT_ID',
+    'D1_DATABASE_ID',
+    'IP_ALLOWLIST',
+    'ROUTE_SNAPSHOTS_KV_ID',
+    'V1_SITES_KV_NAMESPACE_ID',
+  ],
   'apps/pages-auth': ['CLOUDFLARE_ACCOUNT_ID', 'D1_DATABASE_ID'],
   'apps/pages-router': ['CLOUDFLARE_ACCOUNT_ID', 'ROUTER_IP_ALLOWLIST_CIDRS', 'ROUTE_SNAPSHOTS_KV_ID'],
   'apps/kv-gateway': ['CLOUDFLARE_ACCOUNT_ID', 'SITE_DATA_KV_ID'],

@@ -40,6 +40,18 @@ v2 legacy staging:    <slug>-staging.pages.xd.team        -> 保留既有 v2 sta
 - router 不读取 v1 `SITES` KV 做访问判定。v1 KV 只能作为 v1 自身存储、回填来源或诊断线索。
 - Cloudflare route specificity 和 partial zone wildcard 能力必须在 staging 实测通过后才能推进 production cutover。
 
+## v1 同名站点 takeover
+
+v2 `POST /.xd-pages/api/sites` 和 `POST /.xd-pages/api/deployments` 共用同一条内部 takeover 编排，不新增用户请求字段，也不区分 CLI 与部署 API 调用方。只有普通 v2 创建先遇到 hostname claim 冲突，且当前 claim 是目标环境的 active v1 claim 时，才读取当前环境绑定的 `V1_SITES` KV。
+
+takeover 必须同时满足：SSO 强认证 actor 有可信邮箱、KV token 的 `pages_<email>` 后缀与 actor 邮箱规范化后一致、KV 中的 `scriptName` 与 v1 claim 的 `owner_ref` 一致、hostname 与环境前缀校验通过。校验失败沿用通用 `HOSTNAME_CLAIM_CONFLICT`，不返回邮箱、token、Worker 名称或 v1 metadata。
+
+通过校验后，pages-api 使用已有 runtime `CF_API_TOKEN`、`CF_ACCOUNT_ID` 和 `CF_ZONE_ID_NEW`：先确认并删除目标 exact route，再删除已验证的 `pages-<slug>` / `pages-staging-<slug>` Worker。Cloudflare 删除只接受目标环境前缀和 exact route，遇到 route 绑定不一致、wildcard、平台保留 Worker 或非 404 错误时 fail closed。
+
+随后由 D1 单批事务把原 v1 claim CAS 更新为 v2 claim，并同时创建 site、route、owner member 和审计事件；CAS 失败会整体回滚。D1 成功后删除 `V1_SITES` 的 slug key；KV 删除失败不回滚已提交的 v2 站点，而是写入 `v1_sites_kv_record` cleanup task，由 scheduled/admin runner 只删除同环境的 KV key。
+
+上线验证至少覆盖：同邮箱成功接管、不同邮箱无任何 Cloudflare DELETE、route/Worker 绑定不一致拒绝、Cloudflare 失败保留 v1 claim、KV 删除失败后 cleanup task 成功重试，以及 staging/production 的 KV、zone、Worker 前缀不串环境。
+
 ## 手动资源 / 配置确认
 
 大部分资源已经存在或由 wrangler template 部署创建，不需要手工新建新的 D1/KV。当前已知前提：
