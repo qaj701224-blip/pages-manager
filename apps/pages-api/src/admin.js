@@ -1179,7 +1179,9 @@ async function backfillAdminWorkerOrphans(request, env, config, store, session) 
         deploymentId: null,
         cleanupReason,
         status: 'pending',
-        cleanupAfter: cleanupAfterWfpDrainWindow(env),
+        // Backfilled orphans have carried no active route for a long time already; the
+        // blue-green drain window protects fresh cutovers and does not apply here.
+        cleanupAfter: readNow(env),
         createdAt: readNow(env),
         updatedAt: readNow(env),
       });
@@ -1276,13 +1278,6 @@ function latestWorkerVersion(versions) {
     (left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')) ||
       String(right.id || '').localeCompare(String(left.id || ''))
   )[0] || null;
-}
-
-function cleanupAfterWfpDrainWindow(env) {
-  const now = Date.parse(readNow(env));
-  const configured = Number(env?.WFP_WORKER_CLEANUP_DRAIN_SECONDS || env?.WFP_CLEANUP_DRAIN_SECONDS || 300);
-  const seconds = Number.isFinite(configured) && configured >= 0 ? Math.min(configured, 24 * 60 * 60) : 300;
-  return new Date(now + seconds * 1000).toISOString();
 }
 
 async function runDeploymentCleanupTask(env, config, store, session, taskId) {

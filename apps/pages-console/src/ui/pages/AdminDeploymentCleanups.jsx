@@ -154,12 +154,10 @@ function CleanupTasksPanel() {
           <RefreshCw size={15} />
           <span>刷新</span>
         </button>
-        {filter === 'failed' ? (
-          <button className="table-action" type="button" disabled={runDueBusy || Boolean(busyId)} onClick={runDueCleanups}>
-            <RotateCw size={15} />
-            重试全部 failed
-          </button>
-        ) : null}
+        <button className="table-action" type="button" disabled={runDueBusy || Boolean(busyId)} onClick={runDueCleanups}>
+          <RotateCw size={15} />
+          执行全部到期任务
+        </button>
       </div>
       {state.notice ? <div className="form-note success">{state.notice.message}</div> : null}
       {state.error ? (

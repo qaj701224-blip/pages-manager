@@ -14,7 +14,7 @@
 
 ## 2. Orphan backfill 与排空速度
 
-在完整扫描结果中选择 `orphan candidate` 或具体原因筛选结果，点击“Backfill cleanup”。无筛选时不提供全库全选；每批最多 100 个 Worker。页面会展示名称预览，并要求输入 `BULK BACKFILL <数量>` 确认。
+在完整扫描结果中选择孤儿候选或具体原因筛选结果，点击“转入回收队列”。无筛选时不提供全库全选；每批最多 100 个 Worker。确认弹窗展示数量与名称预览，点击确认即提交。
 
 服务端会重新读取 namespace 清单，并要求该次读取为 `completeness: "complete"`；随后逐名校验清单存在性、环境前缀、WFP D1 归属、active route 引用和现有 pending/failed/running cleanup task。通过校验的 Worker 写入 `deployment_resource_cleanup_tasks`，站点已删除的版本使用 `site_deleted_backfill`，其余使用 `orphan_backfill`。客户端提交的 Worker 名称和完整性字段都不作为归属证明。
 
@@ -24,7 +24,7 @@ Cron 默认每 15 分钟小批量执行到期任务。排空速度可按以下�
 
 1. 观察 Dashboard 的 Pending、Failed 和最老 Pending 积压时长。
 2. 在目标环境逐步提高 `DEPLOYMENT_CLEANUP_CRON_LIMIT`，每次调整后确认 Cloudflare API 限流和失败率没有上升。
-3. 需要立即处理时，在 Cleanup Tasks 的 failed 筛选中点击“重试全部 failed”；该操作调用 `POST /admin/deployment-cleanups/run-due`，单次 `limit` 不超过 50。
+3. 需要立即处理时，在 Cleanup Tasks 任意筛选下点击“执行全部到期任务”；该操作调用 `POST /admin/deployment-cleanups/run-due`，单次 `limit` 不超过 50。backfill 产生的任务创建即到期（孤儿早已无 active route，蓝绿 drain window 不适用），可立即执行；蓝绿回收任务仍保留 drain window。
 4. 对仍失败的任务先检查 failure stage、drain window 和当前 route 引用，再重试；不要绕过 cleanup task 直接删除 WFP Worker。
 
 示例响应（占位值）：
@@ -47,7 +47,7 @@ Cron 默认每 15 分钟小批量执行到期任务。排空速度可按以下�
 
 单站点退役：
 
-1. 在列表行点击退役，输入站点名称确认。
+1. 在列表行点击退役，确认弹窗会说明将删除的资源，点击确认即执行。
 2. pages-api 只从 KV metadata 解析 account Worker 名称，不接受请求中的 Worker 名称；脚本名必须严格等于当前环境按站点名派生的 `pages-<name>` 或 `pages-staging-<name>`。
 3. 服务端依次校验保留清单和环境前缀、删除 account Worker、解绑精确 hostname route、删除 KV key、释放 hostname claim。
 4. 任一步失败都 fail-closed，响应会标明失败阶段；Worker、精确 route、KV key 或 hostname claim 已处于完成态时允许幂等重试，脚本/route/claim 归属不匹配仍会拒绝。
