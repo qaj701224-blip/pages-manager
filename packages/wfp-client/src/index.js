@@ -145,7 +145,9 @@ export function createWfpClient({
         const firstUrl = scriptsUrl(baseUrl, account, namespace);
         const firstPayload = await requestCloudflarePayload(fetch, apiToken, firstUrl, { method: 'GET' });
         const firstPageWorkers = normalizeListedWorkers(readCloudflareListResult(firstPayload));
-        if (maxWorkers && firstPageWorkers.length > maxWorkers) throw invalidCloudflareListResponse('first page above maxWorkers');
+        if (maxWorkers && firstPageWorkers.length > maxWorkers) {
+          throw invalidCloudflareListResponse('first page above maxWorkers');
+        }
         appendUniqueWorkers(workers, workerNames, firstPageWorkers);
         const firstPage = readCloudflarePagination(firstPayload);
         if (!firstPage) return workers;
@@ -158,7 +160,9 @@ export function createWfpClient({
           : null;
         const pageBounds = [explicitMaxPages, inferredMaxPages].filter(Boolean);
         const maxPages = pageBounds.length > 0 ? Math.min(...pageBounds) : null;
-        if (maxPages && firstPage.totalPages > maxPages) throw invalidCloudflareListResponse('total pages above configured bound');
+        if (maxPages && firstPage.totalPages > maxPages) {
+          throw invalidCloudflareListResponse('total pages above configured bound');
+        }
 
         for (let page = 2; page <= firstPage.totalPages; page += 1) {
           const url = new URL(firstUrl);
@@ -499,7 +503,9 @@ async function readNamespaceScriptCount({ fetch, apiToken, baseUrl, account, nam
     method: 'GET',
   });
   const scriptCount = payload?.result?.script_count;
-  if (!Number.isInteger(scriptCount) || scriptCount < 0) throw invalidCloudflareListResponse(describeShape('namespace result', payload?.result));
+  if (!Number.isInteger(scriptCount) || scriptCount < 0) {
+    throw invalidCloudflareListResponse(describeShape('namespace result', payload?.result));
+  }
   return scriptCount;
 }
 
@@ -515,7 +521,9 @@ function invalidCloudflareListResponse(detail) {
 // Shape descriptions surface only field names and types, never values, so they stay log-safe.
 function describeShape(label, value) {
   if (Array.isArray(value)) return `${label} is array`;
-  if (!value || typeof value !== 'object') return `${label} is ${value === null ? 'null' : typeof value}`;
+  if (!value || typeof value !== 'object') {
+    return `${label} is ${value === null ? 'null' : typeof value}`;
+  }
   const keys = Object.keys(value)
     .filter((key) => /^[a-zA-Z0-9_]{1,32}$/.test(key))
     .sort()
