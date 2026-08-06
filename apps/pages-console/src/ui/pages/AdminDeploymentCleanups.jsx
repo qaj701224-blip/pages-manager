@@ -21,10 +21,10 @@ const CLEANUP_FILTERS = [
 
 const ORPHAN_FILTERS = [
   ['all', '全部'],
-  ['active_route', 'Active route'],
-  ['rollback', 'Rollback eligible'],
-  ['cleanup', 'Cleanup task'],
-  ['orphan', 'Orphan candidate'],
+  ['active_route', '活跃引用'],
+  ['rollback', '可回滚'],
+  ['cleanup', '回收中'],
+  ['orphan', '孤儿候选'],
 ];
 
 const ORPHAN_REASON_FILTERS = [
@@ -306,10 +306,10 @@ function OrphanScanPanel() {
           ) : null}
           <div className="stats-strip">
             <GovernanceStat label="Worker 总数" value={summary?.total} />
-            <GovernanceStat label="Active route" value={summary?.referencedByActiveRoute} />
-            <GovernanceStat label="Rollback eligible" value={summary?.rollbackEligibleVersion} />
-            <GovernanceStat label="Cleanup task" value={summary?.hasPendingCleanupTask} />
-            <GovernanceStat label="Orphan candidate" value={summary?.orphanCandidates} />
+            <GovernanceStat label="活跃引用" value={summary?.referencedByActiveRoute} />
+            <GovernanceStat label="可回滚" value={summary?.rollbackEligibleVersion} />
+            <GovernanceStat label="回收中" value={summary?.hasPendingCleanupTask} />
+            <GovernanceStat label="孤儿候选" value={summary?.orphanCandidates} />
           </div>
           {selectedRollbackEligibleCount > 0 ? (
             <div className="governance-incomplete-warning" role="alert">
@@ -349,7 +349,7 @@ function OrphanScanPanel() {
               onClick={backfillSelectedWorkers}
             >
               <Archive size={16} />
-              Backfill cleanup
+              转入回收队列
             </button>
           </div>
           <div className="governance-scan-meta">扫描时间：{formatDate(state.scan.scannedAt)}</div>
@@ -452,10 +452,10 @@ function CleanupRow({ task, busy, onRun }) {
 
 function OrphanScanRow({ worker, selected, onToggle, disabled }) {
   const classifications = [];
-  if (worker.referencedByActiveRoute) classifications.push('active route');
-  if (worker.rollbackEligibleVersion) classifications.push('rollback eligible');
-  if (worker.hasPendingCleanupTask) classifications.push('cleanup task');
-  if (worker.orphanCandidate) classifications.push('orphan candidate');
+  if (worker.referencedByActiveRoute) classifications.push('活跃引用');
+  if (worker.rollbackEligibleVersion) classifications.push('可回滚');
+  if (worker.hasPendingCleanupTask) classifications.push('回收中');
+  if (worker.orphanCandidate) classifications.push('孤儿候选');
 
   return (
     <tr>
@@ -465,7 +465,7 @@ function OrphanScanRow({ worker, selected, onToggle, disabled }) {
           checked={selected}
           disabled={disabled || !worker.orphanCandidate}
           aria-label={`选择 ${worker.name}`}
-          title={worker.orphanCandidate ? '选择后可 backfill cleanup' : '只有 orphan candidate 可 backfill'}
+          title={worker.orphanCandidate ? '选择后可转入回收队列' : '只有孤儿候选可转入回收队列'}
           onChange={() => onToggle(worker)}
         />
       </td>
