@@ -107,6 +107,23 @@ test('rejects a staging Worker marker during production takeover validation', as
   );
 });
 
+test('rejects a v1 Worker name that does not match the requested slug', async () => {
+  await assert.rejects(
+    resolveLegacyV1SiteTarget(
+      ownershipInput({
+        sites: kvWith({
+          name: 'guide',
+          token: 'pages_owner@example.com',
+          scriptName: 'pages-other',
+          url: 'https://guide.workers.xd.team',
+        }),
+        claim: activeV1Claim({ ownerRef: 'pages-other' }),
+      })
+    ),
+    { code: 'HOSTNAME_CLAIM_CONFLICT' }
+  );
+});
+
 test('deletes only the verified exact route and v1 Worker in order', async () => {
   const calls = [];
   await cleanupLegacyV1CloudflareSite({
@@ -230,6 +247,71 @@ test('refuses to delete duplicate exact routes instead of choosing one', async (
   assert.equal(deleteCount, 0);
 });
 
+test('refuses a destructive target whose Worker name does not match its slug', async () => {
+  let deleteCount = 0;
+  await assert.rejects(
+    cleanupLegacyV1CloudflareSite({
+      env: {
+        V1_CLOUDFLARE_CLIENT: {
+          async listRoutes() {
+            return [{ id: 'route_cf_1', pattern: 'guide.workers.xd.team/*', script: 'pages-other' }];
+          },
+          async deleteRoute() {
+            deleteCount += 1;
+          },
+          async deleteScript() {
+            deleteCount += 1;
+          },
+        },
+      },
+      config: { environment: 'production' },
+      target: {
+        environment: 'production',
+        slug: 'guide',
+        hostname: 'guide.workers.xd.team',
+        routePattern: 'guide.workers.xd.team/*',
+        scriptName: 'pages-other',
+      },
+    }),
+    { code: 'V1_TAKEOVER_CLEANUP_FAILED' }
+  );
+  assert.equal(deleteCount, 0);
+});
+
+test('refuses to delete a v1 Worker while another route still references it', async () => {
+  let deleteCount = 0;
+  await assert.rejects(
+    cleanupLegacyV1CloudflareSite({
+      env: {
+        V1_CLOUDFLARE_CLIENT: {
+          async listRoutes() {
+            return [
+              { id: 'route_cf_1', pattern: 'guide.workers.xd.team/*', script: 'pages-guide' },
+              { id: 'route_cf_2', pattern: 'docs.workers.xd.team/*', script: 'pages-guide' },
+            ];
+          },
+          async deleteRoute() {
+            deleteCount += 1;
+          },
+          async deleteScript() {
+            deleteCount += 1;
+          },
+        },
+      },
+      config: { environment: 'production' },
+      target: {
+        environment: 'production',
+        slug: 'guide',
+        hostname: 'guide.workers.xd.team',
+        routePattern: 'guide.workers.xd.team/*',
+        scriptName: 'pages-guide',
+      },
+    }),
+    { code: 'V1_TAKEOVER_CLEANUP_FAILED' }
+  );
+  assert.equal(deleteCount, 0);
+});
+
 test('loads all Cloudflare route pages before deleting the verified exact route', async () => {
   const requests = [];
   const env = {
@@ -277,10 +359,7 @@ test('loads all Cloudflare route pages before deleting the verified exact route'
       ['GET', 'https://api.cloudflare.com/client/v4/zones/zone_test/workers/routes?page=1&per_page=100'],
       ['GET', 'https://api.cloudflare.com/client/v4/zones/zone_test/workers/routes?page=2&per_page=100'],
       ['DELETE', 'https://api.cloudflare.com/client/v4/zones/zone_test/workers/routes/route_cf_1'],
-      [
-        'DELETE',
-        'https://api.cloudflare.com/client/v4/accounts/account_test/workers/scripts/pages-guide?force=true',
-      ],
+      ['DELETE', 'https://api.cloudflare.com/client/v4/accounts/account_test/workers/scripts/pages-guide'],
     ]
   );
 });

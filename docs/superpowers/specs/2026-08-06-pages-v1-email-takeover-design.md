@@ -111,7 +111,7 @@ apps/pages-api/src/legacy-v1/
 6. v1 token 严格匹配 actor canonical email。
 7. scriptName 同时满足：
    - 与 claim `owner_ref` 一致；若历史 claim 没有 `owner_ref`，只允许使用 KV 中的 scriptName。
-   - 匹配当前环境的精确 v1 worker 命名规则。
+   - 严格等于从环境和 slug 推导出的 v1 Worker 名称：production 为 `pages-<slug>`，staging 为 `pages-staging-<slug>`。
    - 不属于 pages-api、pages-router、pages-auth、pages-manager、kv-gateway 或 normal-worker slot 等平台保留名称 / 前缀。
 
 任一前置条件不满足都不得调用 Cloudflare DELETE。
@@ -123,8 +123,9 @@ apps/pages-api/src/legacy-v1/
 - route pattern 只能是由已验证 hostname 构造的 `${hostname}/*`。
 - pattern 必须是单个精确 hostname，不含 wildcard，且 hostname 必须属于当前环境的 `workers.xd.team` 命名规则。
 - 删除 route 前先列出 zone routes；找到 exact route 时，其绑定 script 必须等于已验证 scriptName，否则返回安全冲突并拒绝删除。
+- 删除任何资源前，完整分页结果中不得存在目标 exact route 之外仍引用该 scriptName 的 route。
 - exact route 不存在视为已清理，允许幂等重试。
-- 删除 Worker 前查询或执行 DELETE；Cloudflare 明确返回 not found 视为已清理。
+- 删除 Worker 使用非 force DELETE，使并发新增或跨 zone 遗漏的 route 引用继续由 Cloudflare 拒绝；明确返回 not found 视为已清理。
 - Worker 删除只能针对已验证 v1 scriptName，不能接受调用方提供的任意 script。
 - route/script 的其它 4xx、5xx、网络错误或无法解析的响应均 fail closed。
 - 不能删除 wildcard router route、custom domain、KV namespace、D1、v2 Worker、normal-worker slot 或其它 slug 的资源。

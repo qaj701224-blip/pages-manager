@@ -104,7 +104,7 @@ Export `resolveLegacyV1SiteTarget({ sites, actor, claim, environment, slug, host
 - require `claim.ownerSystem === 'v1'` and `claim.status === 'active'`;
 - require the exact environment, normalized slug, hostname family, and hostname;
 - read `await sites.get(slug, 'json')` and reject missing/non-object metadata;
-- require `scriptName` to be a string with the environment v1 prefix;
+- require `scriptName` to equal the environment-and-slug-derived `pages-<slug>` or `pages-staging-<slug>` name;
 - require `claim.ownerRef` to match `scriptName` when ownerRef exists;
 - require `token` to use the exact lowercase `pages_` prefix and compare its email suffix with normalized actor email;
 - return only `{ environment, slug, hostname, routePattern, scriptName, claimOwnerId, claimOwnerRef }`.
@@ -115,7 +115,7 @@ Use error objects with stable internal codes, but map ownership denial to `HOSTN
 
 Export `cleanupLegacyV1CloudflareSite({ env, config, target })` and support `env.V1_CLOUDFLARE_CLIENT` as a test seam. The default client uses `env.fetch || globalThis.fetch`, `env.CF_ACCOUNT_ID`, `env.CF_API_TOKEN`, and `env.CF_ZONE_ID_NEW`.
 
-The adapter must list zone routes, verify the exact target pattern is bound to `target.scriptName`, delete that route, then delete the account Worker script. Normalize 404 as already absent; reject all other failed Cloudflare responses with `V1_TAKEOVER_CLEANUP_FAILED`. Sanitize Cloudflare error payloads before internal diagnostics.
+The adapter must list every zone route page, verify the exact target pattern is bound to `target.scriptName`, and reject cleanup when any other route still references that script. Delete the exact route, then delete the account Worker script without `force=true` so concurrent references remain provider-blocked. Normalize 404 as already absent; reject all other failed Cloudflare responses with `V1_TAKEOVER_CLEANUP_FAILED`. Sanitize Cloudflare error payloads before internal diagnostics.
 
 - [ ] **Step 3: Run the focused tests and make them pass.**
 

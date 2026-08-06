@@ -1,9 +1,7 @@
+import { legacyHostnameForSlug, legacyScriptNameForSlug } from './naming.js';
+
 const LEGACY_TOKEN_PREFIX = 'pages_';
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const V1_WORKER_PREFIXES = new Map([
-  ['production', 'pages-'],
-  ['staging', 'pages-staging-'],
-]);
 
 export async function resolveLegacyV1SiteTarget({ sites, actor, claim, environment, slug, hostname }) {
   if (!isActiveV1Claim(claim, { environment, slug, hostname })) {
@@ -22,7 +20,7 @@ export async function resolveLegacyV1SiteTarget({ sites, actor, claim, environme
   if (legacyHostnameForSlug(environment, slug) !== hostname) throw takeoverConflictError();
 
   const scriptName = normalizeScriptName(site.scriptName);
-  if (!isLegacyV1ScriptName(scriptName, environment)) throw takeoverConflictError();
+  if (scriptName !== legacyScriptNameForSlug(environment, slug)) throw takeoverConflictError();
   if (claim.ownerRef && claim.ownerRef !== scriptName) throw takeoverConflictError();
 
   const tokenEmail = legacyTokenEmail(site.token);
@@ -67,18 +65,6 @@ function normalizeScriptName(value) {
   const scriptName = value.trim();
   if (!scriptName || scriptName.includes('/') || scriptName.includes('\\')) return null;
   return scriptName;
-}
-
-function isLegacyV1ScriptName(scriptName, environment) {
-  const workerPrefix = V1_WORKER_PREFIXES.get(environment);
-  if (!workerPrefix || !scriptName || !scriptName.startsWith(workerPrefix)) return false;
-  return environment !== 'production' || !scriptName.startsWith('pages-staging-');
-}
-
-function legacyHostnameForSlug(environment, slug) {
-  if (!V1_WORKER_PREFIXES.has(environment) || typeof slug !== 'string' || !slug) return null;
-  const label = environment === 'staging' ? `${slug}-staging` : slug;
-  return `${label}.workers.xd.team`;
 }
 
 function hostnameFromSite(site) {

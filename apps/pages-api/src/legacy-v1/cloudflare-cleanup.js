@@ -1,8 +1,6 @@
+import { legacyHostnameForSlug, legacyScriptNameForSlug } from './naming.js';
+
 const CLOUDFLARE_API_BASE = 'https://api.cloudflare.com/client/v4';
-const V1_WORKER_PREFIXES = new Map([
-  ['production', 'pages-'],
-  ['staging', 'pages-staging-'],
-]);
 const PROTECTED_SCRIPT_NAMES = new Set([
   'pages-api',
   'pages-api-staging',
@@ -30,8 +28,13 @@ export async function cleanupLegacyV1CloudflareSite({ env, config, target }) {
     const exactRoute = exactRoutes[0];
     if (exactRoute) {
       if (exactRoute.script !== target.scriptName || !exactRoute.id) throw cleanupFailedError();
-      await client.deleteRoute({ zoneId: env.CF_ZONE_ID_NEW, routeId: exactRoute.id });
     }
+    const otherScriptRoutes = routes.filter(
+      (route) => route !== exactRoute && route?.script === target.scriptName
+    );
+    if (otherScriptRoutes.length > 0) throw cleanupFailedError();
+
+    if (exactRoute) await client.deleteRoute({ zoneId: env.CF_ZONE_ID_NEW, routeId: exactRoute.id });
 
     await client.deleteScript({ accountId: env.CF_ACCOUNT_ID, scriptName: target.scriptName });
     return { ok: true };
@@ -42,9 +45,9 @@ export async function cleanupLegacyV1CloudflareSite({ env, config, target }) {
 }
 
 function validateTarget(target, environment) {
-  const prefix = V1_WORKER_PREFIXES.get(environment);
-  if (!prefix || !target || target.environment !== environment) throw cleanupFailedError();
+  if (!target || target.environment !== environment) throw cleanupFailedError();
   const expectedHostname = legacyHostnameForSlug(environment, target.slug);
+  const expectedScriptName = legacyScriptNameForSlug(environment, target.slug);
   if (!expectedHostname || target.hostname !== expectedHostname) throw cleanupFailedError();
   if (typeof target.hostname !== 'string' || !target.hostname.endsWith('.workers.xd.team')) {
     throw cleanupFailedError();
@@ -53,7 +56,7 @@ function validateTarget(target, environment) {
   if (!isValidHostnameLabel(target.hostname)) throw cleanupFailedError();
   if (
     typeof target.scriptName !== 'string' ||
-    !isLegacyV1ScriptName(target.scriptName, environment) ||
+    target.scriptName !== expectedScriptName ||
     target.scriptName.includes('/') ||
     PROTECTED_SCRIPT_NAMES.has(target.scriptName) ||
     PROTECTED_SCRIPT_PREFIXES.some((protectedPrefix) => target.scriptName.startsWith(protectedPrefix))
@@ -101,7 +104,7 @@ function createCloudflareClient(env) {
     },
     async deleteScript({ accountId: requestedAccountId, scriptName }) {
       return cloudflareFetch(
-        `/accounts/${encodeURIComponent(requestedAccountId)}/workers/scripts/${encodeURIComponent(scriptName)}?force=true`,
+        `/accounts/${encodeURIComponent(requestedAccountId)}/workers/scripts/${encodeURIComponent(scriptName)}`,
         token,
         fetchImpl,
         { method: 'DELETE', acceptNotFound: true }
@@ -124,18 +127,6 @@ async function cloudflareFetch(
   const payload = await response.json().catch(() => null);
   if (!response.ok || payload?.success === false) throw cleanupFailedError();
   return includeMetadata ? payload : payload?.result ?? payload;
-}
-
-function isLegacyV1ScriptName(scriptName, environment) {
-  const prefix = V1_WORKER_PREFIXES.get(environment);
-  if (!prefix || !scriptName.startsWith(prefix)) return false;
-  return environment !== 'production' || !scriptName.startsWith('pages-staging-');
-}
-
-function legacyHostnameForSlug(environment, slug) {
-  if (typeof slug !== 'string' || !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(slug)) return null;
-  const label = environment === 'staging' ? `${slug}-staging` : slug;
-  return `${label}.workers.xd.team`;
 }
 
 function cleanupFailedError() {
