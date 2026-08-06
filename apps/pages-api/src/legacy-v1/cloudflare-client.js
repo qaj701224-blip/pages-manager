@@ -32,6 +32,14 @@ export function createLegacyV1CloudflareClient(env) {
         { method: 'DELETE', acceptNotFound: true }
       );
     },
+    async createRoute({ zoneId: requestedZoneId, pattern, script }) {
+      return cloudflareFetch(
+        `/zones/${encodeURIComponent(requestedZoneId)}/workers/routes`,
+        token,
+        fetchImpl,
+        { method: 'POST', json: { pattern, script } }
+      );
+    },
     async deleteScript({ accountId: requestedAccountId, scriptName }) {
       return cloudflareFetch(
         `/accounts/${encodeURIComponent(requestedAccountId)}/workers/scripts/${encodeURIComponent(scriptName)}`,
@@ -47,11 +55,15 @@ async function cloudflareFetch(
   path,
   token,
   fetchImpl,
-  { method = 'GET', acceptNotFound = false, includeMetadata = false } = {}
+  { method = 'GET', acceptNotFound = false, includeMetadata = false, json } = {}
 ) {
   const response = await fetchImpl(`${CLOUDFLARE_API_BASE}${path}`, {
     method,
-    headers: { Authorization: `Bearer ${token}` },
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(json ? { 'Content-Type': 'application/json' } : {}),
+    },
+    ...(json ? { body: JSON.stringify(json) } : {}),
   });
   if (acceptNotFound && response.status === 404) return null;
   const payload = await response.json().catch(() => null);

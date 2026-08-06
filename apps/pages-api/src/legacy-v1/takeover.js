@@ -1,5 +1,9 @@
 import { newId } from '../id.js';
-import { cleanupLegacyV1CloudflareSite } from './cloudflare-cleanup.js';
+import {
+  cleanupLegacyV1WorkerScript,
+  detachLegacyV1CloudflareRoute,
+  restoreLegacyV1CloudflareRoute,
+} from './cloudflare-cleanup.js';
 import { resolveLegacyV1SiteTarget } from './ownership.js';
 
 export async function createSiteWithLegacyV1Takeover({ env, config, store, actor, siteInput }) {
@@ -38,7 +42,7 @@ export async function createSiteWithLegacyV1Takeover({ env, config, store, actor
     throw takeoverError('V1_TAKEOVER_CONFIG_UNAVAILABLE');
   }
 
-  const cloudflareCleanup = await cleanupLegacyV1CloudflareSite({ env, config, target });
+  const cleanupPlan = await detachLegacyV1CloudflareRoute({ env, config, target });
 
   let latestTarget;
   try {
@@ -51,10 +55,17 @@ export async function createSiteWithLegacyV1Takeover({ env, config, store, actor
       hostname: siteInput.hostname,
     });
   } catch (error) {
-    if (errorCode(error) === 'HOSTNAME_CLAIM_CONFLICT') throw takeoverError('V1_TAKEOVER_STATE_CHANGED');
-    throw takeoverError('V1_TAKEOVER_CONFIG_UNAVAILABLE');
+    const mappedError =
+      errorCode(error) === 'HOSTNAME_CLAIM_CONFLICT'
+        ? takeoverError('V1_TAKEOVER_STATE_CHANGED')
+        : takeoverError('V1_TAKEOVER_CONFIG_UNAVAILABLE');
+    await restoreRouteIfClaimUnchanged({ env, config, store, claim, target, cleanupPlan });
+    throw mappedError;
   }
-  if (!sameTarget(target, latestTarget)) throw takeoverError('V1_TAKEOVER_STATE_CHANGED');
+  if (!sameTarget(target, latestTarget)) {
+    await restoreRouteIfClaimUnchanged({ env, config, store, claim, target, cleanupPlan });
+    throw takeoverError('V1_TAKEOVER_STATE_CHANGED');
+  }
 
   const auditEvent = {
     id: nextId(env, 'aud'),
@@ -77,11 +88,15 @@ export async function createSiteWithLegacyV1Takeover({ env, config, store, actor
     createdAt: readNow(env),
   };
 
-  const site = await store.createSiteByTakingOverV1Claim(
-    { ...siteInput, auditEvent },
-    claim,
-    config.environment
-  );
+  let site;
+  try {
+    site = await store.createSiteByTakingOverV1Claim({ ...siteInput, auditEvent }, claim, config.environment);
+  } catch (error) {
+    await restoreRouteIfClaimUnchanged({ env, config, store, claim, target, cleanupPlan });
+    throw error;
+  }
+
+  const cloudflareCleanup = await cleanupLegacyV1WorkerScript({ env, config, target, cleanupPlan });
 
   if (cloudflareCleanup.workerCleanup !== 'deleted') {
     await deferLegacyV1WorkerCleanup({
@@ -101,6 +116,22 @@ export async function createSiteWithLegacyV1Takeover({ env, config, store, actor
   }
 
   return site;
+}
+
+async function restoreRouteIfClaimUnchanged({ env, config, store, claim, target, cleanupPlan }) {
+  if (!cleanupPlan.routeDetached) return;
+  let latestClaim;
+  try {
+    latestClaim = await store.getHostnameClaim(target.hostname);
+  } catch {
+    throw takeoverError('V1_TAKEOVER_CLEANUP_FAILED');
+  }
+  if (!sameClaimSnapshot(claim, latestClaim)) return;
+  try {
+    await restoreLegacyV1CloudflareRoute({ env, config, target, cleanupPlan });
+  } catch {
+    throw takeoverError('V1_TAKEOVER_CLEANUP_FAILED');
+  }
 }
 
 async function deferLegacyV1WorkerCleanup({ env, config, store, siteInput, target, workerCleanup }) {
@@ -162,6 +193,25 @@ function sameTarget(left, right) {
     left.scriptName === right.scriptName &&
     left.claimOwnerId === right.claimOwnerId &&
     left.claimOwnerRef === right.claimOwnerRef
+  );
+}
+
+function sameClaimSnapshot(left, right) {
+  return Boolean(
+    left &&
+      right &&
+      left.id === right.id &&
+      left.environment === right.environment &&
+      left.hostname === right.hostname &&
+      left.normalizedSlug === right.normalizedSlug &&
+      left.hostnameFamily === right.hostnameFamily &&
+      left.ownerSystem === 'v1' &&
+      right.ownerSystem === 'v1' &&
+      left.ownerId === right.ownerId &&
+      (left.ownerRef || null) === (right.ownerRef || null) &&
+      left.status === 'active' &&
+      right.status === 'active' &&
+      (left.createdAt || null) === (right.createdAt || null)
   );
 }
 

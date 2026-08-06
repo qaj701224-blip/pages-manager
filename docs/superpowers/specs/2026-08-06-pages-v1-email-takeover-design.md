@@ -123,14 +123,14 @@ apps/pages-api/src/legacy-v1/
 - route pattern 只能是由已验证 hostname 构造的 `${hostname}/*`。
 - pattern 必须是单个精确 hostname，不含 wildcard，且 hostname 必须属于当前环境的 `workers.xd.team` 命名规则。
 - 删除 route 前先列出 zone routes；找到 exact route 时，其绑定 script 必须等于已验证 scriptName，否则返回安全冲突并拒绝删除。
-- 删除任何资源前，完整分页结果中不得存在目标 exact route 之外仍引用该 scriptName 的 route。
+- 完整分页结果中存在目标 exact route 之外仍引用该 scriptName 的 route 时，仍可只删除已验证 exact route，但必须保留 Worker 并进入延迟清理。
 - exact route 不存在视为已清理，允许幂等重试。
 - 删除 Worker 使用非 force DELETE，使并发新增或跨 zone 遗漏的 route 引用继续由 Cloudflare 拒绝；明确返回 not found 视为已清理。
 - Worker 删除只能针对已验证 v1 scriptName，不能接受调用方提供的任意 script。
-- route/script 的其它 4xx、5xx、网络错误或无法解析的响应均 fail closed。
+- route 查询、删除或补偿恢复的其它 4xx、5xx、网络错误或无法解析的响应均 fail closed；D1 已提交后的 Worker 删除失败进入延迟清理。
 - 不能删除 wildcard router route、custom domain、KV namespace、D1、v2 Worker、normal-worker slot 或其它 slug 的资源。
 
-清理顺序是 exact route → Worker。先移除 exact route，避免已删除 Worker 仍被更具体的 route 命中而遮蔽 v2 wildcard router。
+提交顺序是 exact route → KV 复核 → D1 claim CAS / site 创建 → Worker。先移除 exact route，避免旧 route 遮蔽 v2 wildcard router；但 Worker 必须等 D1 v2 归属提交成功后才能删除。
 
 ## 数据流与一致性
 
@@ -145,15 +145,17 @@ apps/pages-api/src/legacy-v1/
 1. handler 或 pending site creation 调用 `takeoverV1Site`。
 2. takeover service 查询 exact hostname claim。不是 live v1 claim时返回 `not_needed`，调用方进入原有 createSite 路径，由 store 的现有冲突门禁作最终裁决。
 3. ownership 模块读取 v1 KV，校验 actor email、token 和完整资源定位信息。
-4. Cloudflare 模块幂等删除 exact route，再幂等删除 Worker。
-5. store 执行 `createSiteByTakingOverV1Claim` 单个 D1 batch：
+4. Cloudflare 模块幂等删除 exact route，但暂不删除 Worker。
+5. 再次读取同一 KV key，确认安全 target 未变化。
+6. store 执行 `createSiteByTakingOverV1Claim` 单个 D1 batch：
    - 再次确认不存在 active v2 同 slug site。
    - CAS 校验原 claim 的 hostname、environment、slug、owner system、owner id、owner ref 和允许状态仍与已验证 snapshot 一致。
    - 把原 claim 原地更新为新的 v2 claim，设置 `owner_system = 'v2'`、`owner_id = site.id`、`owner_ref = route.id`、`status = 'active'`、`source = 'v1_email_takeover'`，清空 release / hold 字段。
    - 插入 `sites`、`site_routes`、owner `site_members`。
    - 写入不含邮箱、token 和完整 KV metadata 的 audit event，记录 actor user id、hostname、v1 owner id / ref 和 takeover result。
-6. D1 batch 成功后删除 `V1_SITES` 的 slug key。
-7. 返回普通 created site，deployment 路径继续上传和发布。
+7. KV 复核或 D1 提交失败时，只在原 active v1 claim snapshot 未变化时恢复同一 exact route；claim 已经变成 v2 时不恢复旧 route。
+8. D1 batch 成功后删除或延迟清理 Worker，再删除 `V1_SITES` 的 slug key。
+9. 返回普通 created site，deployment 路径继续上传和发布。
 
 D1 batch 必须通过 guard statement 或等价机制确保 claim CAS 未命中时整个 batch 失败；不能先把 claim release 再调用普通 `createSite`，否则并发请求可能在空窗期抢占 hostname。
 
@@ -174,13 +176,13 @@ D1 已完成 v2 接管后，v1 KV 只剩历史残留，不再具有 hostname 权
 - 不同邮箱请求并发：邮箱不匹配的请求在 Cloudflare 删除前失败；匹配邮箱请求可以继续。
 - takeover 与平台人工修复并发：D1 claim snapshot CAS 是最终门禁。claim 任意 owner/status/ref 变化都会拒绝提交。
 - Cloudflare route 在验证后被其它操作改绑：DELETE 必须使用 route id 前重新确认 API 返回的绑定信息；若 Cloudflare API 不支持条件删除，则检测到不一致或删除结果不确定时 fail closed，并依赖人工检查。
-- KV 在 ownership 验证后变化：D1 CAS 不能证明 KV 未变化，因此 D1 batch 前再次读取 KV 并比较验证用的 token、scriptName 和关键定位字段；变化时拒绝接管。
+- KV 在 ownership 验证后变化：D1 CAS 不能证明 KV 未变化，因此 D1 batch 前再次读取 KV 并比较验证用的 token、scriptName 和关键定位字段；变化时拒绝接管，并在 claim snapshot 未变化时恢复原 exact route。
 
 ## 错误语义
 
-- `HOSTNAME_CLAIM_CONFLICT`（409）：不可接管、claim 不是 active v1 claim、邮箱不匹配、actor 无 email、v1 metadata 不足或资源定位不一致。响应沿用现有通用文案，不泄露 v1 owner。
+- `HOSTNAME_CLAIM_CONFLICT`（409）：不可接管、claim 不是 active v1 claim、邮箱不匹配、actor 无 email、v1 metadata 不足或资源定位不一致。响应沿用现有通用文案，不泄露 v1 owner，并标记 `retryable=false`，避免调用方对确定性占用重复请求。
 - `V1_TAKEOVER_CONFIG_UNAVAILABLE`（503）：实际出现可候选 v1 claim，但 `V1_SITES`、account、zone 或 token 配置不可用。
-- `V1_TAKEOVER_CLEANUP_FAILED`（503）：安全校验已通过，但 Cloudflare route / Worker 查询或删除失败。action 提示重试或联系平台维护者，不返回 Cloudflare detail。
+- `V1_TAKEOVER_CLEANUP_FAILED`（503）：安全校验已通过，但 D1 提交前的 Cloudflare route 查询、删除或补偿恢复失败。action 提示重试或联系平台维护者，不返回 Cloudflare detail。
 - `V1_TAKEOVER_STATE_CHANGED`（409）：资源清理后 D1 claim 或 KV snapshot 已变化，无法安全提交。调用方使用新的 Idempotency-Key 重试。
 - `SITE_SLUG_CONFLICT`（409）：D1 中已有有效 v2 同 slug site，保持现有语义。
 

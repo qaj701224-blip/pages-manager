@@ -3,8 +3,17 @@ import test from 'node:test';
 
 import { createTestPagesStore } from '../test-store.js';
 import { resolveLegacyV1SiteTarget } from './ownership.js';
-import { cleanupLegacyV1CloudflareSite } from './cloudflare-cleanup.js';
+import {
+  cleanupLegacyV1WorkerScript,
+  detachLegacyV1CloudflareRoute,
+  restoreLegacyV1CloudflareRoute,
+} from './cloudflare-cleanup.js';
 import { createSiteWithLegacyV1Takeover } from './takeover.js';
+
+async function cleanupLegacyV1CloudflareSite(input) {
+  const cleanupPlan = await detachLegacyV1CloudflareRoute(input);
+  return cleanupLegacyV1WorkerScript({ ...input, cleanupPlan });
+}
 
 function activeV1Claim(overrides = {}) {
   return {
@@ -396,6 +405,61 @@ test('loads all Cloudflare route pages before deleting the verified exact route'
   );
 });
 
+test('restores a detached exact route through the Cloudflare API', async () => {
+  const requests = [];
+  const env = {
+    CF_ACCOUNT_ID: 'account_test',
+    CF_API_TOKEN: 'token_test',
+    CF_ZONE_ID_NEW: 'zone_test',
+    fetch: async (url, init) => {
+      requests.push({ url, method: init.method, body: init.body || null });
+      if (init.method === 'GET') {
+        return new Response(
+          JSON.stringify({ success: true, result: [], result_info: { page: 1, total_pages: 1 } }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response(JSON.stringify({ success: true, result: { id: 'route_restored' } }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    },
+  };
+  const target = {
+    environment: 'production',
+    slug: 'guide',
+    hostname: 'guide.workers.xd.team',
+    routePattern: 'guide.workers.xd.team/*',
+    scriptName: 'pages-guide',
+  };
+
+  const result = await restoreLegacyV1CloudflareRoute({
+    env,
+    config: { environment: 'production' },
+    target,
+    cleanupPlan: {
+      routePattern: target.routePattern,
+      scriptName: target.scriptName,
+      routeDetached: true,
+      hasOtherScriptRoutes: false,
+    },
+  });
+
+  assert.deepEqual(result, { routeRestore: 'restored' });
+  assert.deepEqual(requests, [
+    {
+      url: 'https://api.cloudflare.com/client/v4/zones/zone_test/workers/routes?page=1&per_page=100',
+      method: 'GET',
+      body: null,
+    },
+    {
+      url: 'https://api.cloudflare.com/client/v4/zones/zone_test/workers/routes',
+      method: 'POST',
+      body: JSON.stringify({ pattern: 'guide.workers.xd.team/*', script: 'pages-guide' }),
+    },
+  ]);
+});
+
 test('refuses a production target with a staging hostname or Worker prefix', async () => {
   let deleteCount = 0;
   await assert.rejects(
@@ -535,6 +599,204 @@ test('takes over a matching v1 site and defers only KV deletion failures', async
   const cleanupTasks = await store.listDeploymentResourceCleanupTasks({ environment: 'production' });
   assert.equal(cleanupTasks[0].resourceType, 'v1_sites_kv_record');
   assert.deepEqual(env.deletes, ['guide']);
+});
+
+test('commits the v2 claim before deleting the detached v1 Worker', async () => {
+  const store = await legacyStore();
+  const calls = [];
+  const createSiteByTakingOverV1Claim = store.createSiteByTakingOverV1Claim.bind(store);
+  store.createSiteByTakingOverV1Claim = async (...args) => {
+    calls.push('commitClaim');
+    return createSiteByTakingOverV1Claim(...args);
+  };
+  const env = takeoverEnv({
+    cloudflare: {
+      async listRoutes() {
+        calls.push('listRoutes');
+        return [{ id: 'route_cf_1', pattern: 'guide.workers.xd.team/*', script: 'pages-guide' }];
+      },
+      async deleteRoute({ routeId }) {
+        calls.push(`deleteRoute:${routeId}`);
+      },
+      async deleteScript({ scriptName }) {
+        calls.push(`deleteScript:${scriptName}`);
+      },
+    },
+  });
+
+  await createSiteWithLegacyV1Takeover({
+    env,
+    config: { environment: 'production', siteDomainSuffix: 'workers.xd.team' },
+    store,
+    actor: { type: 'user', userId: 'usr_1', email: 'OWNER@example.com' },
+    siteInput: siteInput(),
+  });
+
+  assert.deepEqual(calls, [
+    'listRoutes',
+    'deleteRoute:route_cf_1',
+    'commitClaim',
+    'deleteScript:pages-guide',
+  ]);
+});
+
+test('restores the detached v1 route when ownership changes before the v2 claim commit', async () => {
+  const store = await legacyStore();
+  const calls = [];
+  let routePresent = true;
+  let kvValue = {
+    name: 'guide',
+    token: 'pages_owner@example.com',
+    scriptName: 'pages-guide',
+    url: 'https://guide.workers.xd.team',
+  };
+  const env = takeoverEnv({
+    cloudflare: {
+      async listRoutes() {
+        calls.push('listRoutes');
+        return routePresent
+          ? [{ id: 'route_cf_1', pattern: 'guide.workers.xd.team/*', script: 'pages-guide' }]
+          : [];
+      },
+      async deleteRoute({ routeId }) {
+        calls.push(`deleteRoute:${routeId}`);
+        routePresent = false;
+        kvValue = { ...kvValue, token: 'pages_other@example.com' };
+      },
+      async createRoute({ pattern, script }) {
+        calls.push(`createRoute:${pattern}:${script}`);
+        routePresent = true;
+      },
+      async deleteScript() {
+        calls.push('deleteScript');
+      },
+    },
+  });
+  env.V1_SITES.get = async (slug, type) => {
+    assert.equal(slug, 'guide');
+    assert.equal(type, 'json');
+    return kvValue;
+  };
+
+  await assert.rejects(
+    createSiteWithLegacyV1Takeover({
+      env,
+      config: { environment: 'production', siteDomainSuffix: 'workers.xd.team' },
+      store,
+      actor: { type: 'user', userId: 'usr_1', email: 'owner@example.com' },
+      siteInput: siteInput(),
+    }),
+    { code: 'V1_TAKEOVER_STATE_CHANGED' }
+  );
+
+  assert.deepEqual(calls, [
+    'listRoutes',
+    'deleteRoute:route_cf_1',
+    'listRoutes',
+    'createRoute:guide.workers.xd.team/*:pages-guide',
+  ]);
+  assert.equal(await store.getSite('site_1'), null);
+  assert.equal((await store.getHostnameClaim('guide.workers.xd.team')).ownerSystem, 'v1');
+});
+
+test('restores the detached v1 route when the D1 claim CAS fails without changing the claim', async () => {
+  const store = await legacyStore();
+  const calls = [];
+  let routePresent = true;
+  store.createSiteByTakingOverV1Claim = async () => {
+    const error = new Error('V1_TAKEOVER_STATE_CHANGED');
+    error.code = 'V1_TAKEOVER_STATE_CHANGED';
+    throw error;
+  };
+  const env = takeoverEnv({
+    cloudflare: {
+      async listRoutes() {
+        calls.push('listRoutes');
+        return routePresent
+          ? [{ id: 'route_cf_1', pattern: 'guide.workers.xd.team/*', script: 'pages-guide' }]
+          : [];
+      },
+      async deleteRoute({ routeId }) {
+        calls.push(`deleteRoute:${routeId}`);
+        routePresent = false;
+      },
+      async createRoute({ pattern, script }) {
+        calls.push(`createRoute:${pattern}:${script}`);
+        routePresent = true;
+      },
+      async deleteScript() {
+        calls.push('deleteScript');
+      },
+    },
+  });
+
+  await assert.rejects(
+    createSiteWithLegacyV1Takeover({
+      env,
+      config: { environment: 'production', siteDomainSuffix: 'workers.xd.team' },
+      store,
+      actor: { type: 'user', userId: 'usr_1', email: 'owner@example.com' },
+      siteInput: siteInput(),
+    }),
+    { code: 'V1_TAKEOVER_STATE_CHANGED' }
+  );
+
+  assert.deepEqual(calls, [
+    'listRoutes',
+    'deleteRoute:route_cf_1',
+    'listRoutes',
+    'createRoute:guide.workers.xd.team/*:pages-guide',
+  ]);
+  assert.equal(await store.getSite('site_1'), null);
+  assert.equal((await store.getHostnameClaim('guide.workers.xd.team')).ownerSystem, 'v1');
+});
+
+test('does not restore the old route when a concurrent takeover already committed the v2 claim', async () => {
+  const store = await legacyStore();
+  const calls = [];
+  const commitConcurrentTakeover = store.createSiteByTakingOverV1Claim.bind(store);
+  store.createSiteByTakingOverV1Claim = async (input, expectedClaim, environment) => {
+    await commitConcurrentTakeover(
+      { ...input, id: 'site_concurrent', routeId: 'route_concurrent' },
+      expectedClaim,
+      environment
+    );
+    const error = new Error('V1_TAKEOVER_STATE_CHANGED');
+    error.code = 'V1_TAKEOVER_STATE_CHANGED';
+    throw error;
+  };
+  const env = takeoverEnv({
+    cloudflare: {
+      async listRoutes() {
+        calls.push('listRoutes');
+        return [{ id: 'route_cf_1', pattern: 'guide.workers.xd.team/*', script: 'pages-guide' }];
+      },
+      async deleteRoute({ routeId }) {
+        calls.push(`deleteRoute:${routeId}`);
+      },
+      async createRoute() {
+        calls.push('createRoute');
+      },
+      async deleteScript() {
+        calls.push('deleteScript');
+      },
+    },
+  });
+
+  await assert.rejects(
+    createSiteWithLegacyV1Takeover({
+      env,
+      config: { environment: 'production', siteDomainSuffix: 'workers.xd.team' },
+      store,
+      actor: { type: 'user', userId: 'usr_1', email: 'owner@example.com' },
+      siteInput: siteInput(),
+    }),
+    { code: 'V1_TAKEOVER_STATE_CHANGED' }
+  );
+
+  assert.deepEqual(calls, ['listRoutes', 'deleteRoute:route_cf_1']);
+  assert.equal((await store.getHostnameClaim('guide.workers.xd.team')).ownerSystem, 'v2');
+  assert.equal((await store.findSiteBySlug('production', 'guide')).id, 'site_concurrent');
 });
 
 test('takes over a matching v1 site while deferring a shared Worker cleanup', async () => {

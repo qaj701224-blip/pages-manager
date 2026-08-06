@@ -1101,7 +1101,8 @@ export function siteCreateErrorResponse(error) {
       'HOSTNAME_CLAIM_CONFLICT',
       'Site hostname is already claimed.',
       409,
-      '请换一个站点名，或使用原站点 owner 继续部署。'
+      '这是确定性冲突，请勿用同一账号和站点名重复重试；请换一个站点名，或使用原站点 owner 继续部署。',
+      { retryable: false }
     );
   }
   if (code === 'V1_TAKEOVER_CONFIG_UNAVAILABLE' || code === 'V1_TAKEOVER_CLEANUP_FAILED') {

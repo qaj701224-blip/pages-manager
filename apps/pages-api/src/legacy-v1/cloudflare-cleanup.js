@@ -1,16 +1,10 @@
 import { createLegacyV1CloudflareClient } from './cloudflare-client.js';
 import { isSafeLegacyV1SiteScriptName, legacyHostnameForSlug } from './naming.js';
 
-export async function cleanupLegacyV1CloudflareSite({ env, config, target }) {
+export async function detachLegacyV1CloudflareRoute({ env, config, target }) {
   validateTarget(target, config?.environment);
 
-  let client;
-  try {
-    client = env.V1_CLOUDFLARE_CLIENT || createLegacyV1CloudflareClient(env);
-  } catch {
-    throw cleanupFailedError();
-  }
-  let otherScriptRoutes;
+  const client = resolveClient(env);
   try {
     const routes = await client.listRoutes({ zoneId: env.CF_ZONE_ID_NEW });
     if (!Array.isArray(routes)) throw cleanupFailedError();
@@ -21,20 +15,79 @@ export async function cleanupLegacyV1CloudflareSite({ env, config, target }) {
     if (exactRoute) {
       if (exactRoute.script !== target.scriptName || !exactRoute.id) throw cleanupFailedError();
     }
-    otherScriptRoutes = routes.filter((route) => route !== exactRoute && route?.script === target.scriptName);
+    const hasOtherScriptRoutes = routes.some((route) => route !== exactRoute && route?.script === target.scriptName);
 
     if (exactRoute) await client.deleteRoute({ zoneId: env.CF_ZONE_ID_NEW, routeId: exactRoute.id });
+    return {
+      routePattern: target.routePattern,
+      scriptName: target.scriptName,
+      routeDetached: Boolean(exactRoute),
+      hasOtherScriptRoutes,
+    };
   } catch (error) {
     if (error?.code === 'V1_TAKEOVER_CLEANUP_FAILED') throw error;
     throw cleanupFailedError();
   }
+}
 
-  if (otherScriptRoutes.length > 0) return { workerCleanup: 'deferred_shared_route' };
+export async function restoreLegacyV1CloudflareRoute({ env, config, target, cleanupPlan }) {
+  validateTarget(target, config?.environment);
+  validateCleanupPlan(target, cleanupPlan);
+  if (!cleanupPlan.routeDetached) return { routeRestore: 'not_needed' };
+
+  const client = resolveClient(env);
+  try {
+    const routes = await client.listRoutes({ zoneId: env.CF_ZONE_ID_NEW });
+    if (!Array.isArray(routes)) throw cleanupFailedError();
+    const exactRoutes = routes.filter((route) => route?.pattern === target.routePattern);
+    if (exactRoutes.length > 1) throw cleanupFailedError();
+    if (exactRoutes.length === 1) {
+      if (exactRoutes[0]?.script !== target.scriptName) throw cleanupFailedError();
+      return { routeRestore: 'already_restored' };
+    }
+    await client.createRoute({
+      zoneId: env.CF_ZONE_ID_NEW,
+      pattern: target.routePattern,
+      script: target.scriptName,
+    });
+    return { routeRestore: 'restored' };
+  } catch (error) {
+    if (error?.code === 'V1_TAKEOVER_CLEANUP_FAILED') throw error;
+    throw cleanupFailedError();
+  }
+}
+
+export async function cleanupLegacyV1WorkerScript({ env, config, target, cleanupPlan }) {
+  validateTarget(target, config?.environment);
+  validateCleanupPlan(target, cleanupPlan);
+
+  if (cleanupPlan.hasOtherScriptRoutes) return { workerCleanup: 'deferred_shared_route' };
+  const client = resolveClient(env);
   try {
     await client.deleteScript({ accountId: env.CF_ACCOUNT_ID, scriptName: target.scriptName });
     return { workerCleanup: 'deleted' };
   } catch {
     return { workerCleanup: 'deferred_delete_failed' };
+  }
+}
+
+function resolveClient(env) {
+  try {
+    return env.V1_CLOUDFLARE_CLIENT || createLegacyV1CloudflareClient(env);
+  } catch {
+    throw cleanupFailedError();
+  }
+}
+
+function validateCleanupPlan(target, cleanupPlan) {
+  if (
+    !cleanupPlan ||
+    cleanupPlan.routePattern !== target.routePattern ||
+    cleanupPlan.scriptName !== target.scriptName ||
+    typeof cleanupPlan.routeDetached !== 'boolean' ||
+    typeof cleanupPlan.hasOtherScriptRoutes !== 'boolean'
+  ) {
+    throw cleanupFailedError();
   }
 }
 

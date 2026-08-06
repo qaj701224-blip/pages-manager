@@ -32,6 +32,7 @@ export function buildOpenApi(config) {
                 code: { type: 'string' },
                 message: { type: 'string' },
                 action: { type: 'string' },
+                retryable: { type: 'boolean' },
               },
             },
           },

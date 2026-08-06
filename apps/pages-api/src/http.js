@@ -4,9 +4,10 @@ export function jsonOk(data, status = 200) {
   return jsonResponse(data, status, { 'Cache-Control': 'no-store' });
 }
 
-export function jsonError(code, message, status, action) {
+export function jsonError(code, message, status, action, diagnostics = {}) {
   const error = { code, message };
   if (action) error.action = action;
+  if (typeof diagnostics.retryable === 'boolean') error.retryable = diagnostics.retryable;
   return jsonResponse({ error }, status, { 'Cache-Control': 'no-store' });
 }
 

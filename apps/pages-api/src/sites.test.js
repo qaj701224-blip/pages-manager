@@ -93,6 +93,7 @@ test('create site returns conflict when hostname claim belongs to another owner'
   const body = await response.json();
   assert.equal(response.status, 409);
   assert.equal(body.error.code, 'HOSTNAME_CLAIM_CONFLICT');
+  assert.equal(body.error.retryable, false);
   assert.match(body.error.action, /换一个站点名|原站点/);
   assert.equal(await store.getSite('site_1'), null);
 });

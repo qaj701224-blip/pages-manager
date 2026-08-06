@@ -17,6 +17,7 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
   assert.equal(body.info.title, 'XD Cell API');
   assert.equal(body.info.description, 'Control plane API for XD Cell.');
   assert.deepEqual(body.servers, [{ url: 'https://api.pages.xd.team' }]);
+  assert.equal(body.components.schemas.ErrorResponse.properties.error.properties.retryable.type, 'boolean');
   assert.ok(body.paths['/.xd-pages/api/sites']);
   assert.ok(body.components.schemas.AdminUser);
   assert.deepEqual(body.components.schemas.AdminUsersResponse.required, ['users', 'pagination']);
