@@ -132,9 +132,10 @@ test('resource governance actions require complete scans and expose safe domain 
   assert.match(adminDeploymentCleanupsSource, /rel="noopener noreferrer"/);
   assert.match(adminV1SitesSource, /bulkRetireAdminV1Sites/);
   assert.match(adminV1SitesSource, /deleteAdminV1Site/);
-  assert.match(adminV1SitesSource, /confirmation\.trim\(\) !== site\.name/);
-  assert.match(adminV1SitesSource, /已取消退役/);
-  assert.match(adminV1SitesSource, /已取消批量退役/);
+  assert.match(adminV1SitesSource, /globalThis\.confirm\?\./);
+  assert.match(adminV1SitesSource, /确认退役 v1 站点/);
+  assert.match(adminV1SitesSource, /确认批量退役/);
+  assert.doesNotMatch(adminV1SitesSource, /globalThis\.prompt/);
   assert.match(adminV1SitesSource, /platform_reserved/);
   assert.match(adminV1SitesSource, /unknown/);
   assert.match(adminV1SitesSource, /site\.canRetire === true/);

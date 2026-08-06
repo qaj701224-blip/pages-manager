@@ -83,16 +83,10 @@ export function AdminV1Sites() {
 
   async function retireSite(site) {
     if (site.canRetire !== true || busyName || bulkBusy) return;
-    const confirmation = globalThis.prompt?.(`输入站点名 ${site.name} 确认退役该 v1 站点`);
-    if (confirmation === null || confirmation === undefined) return;
-    if (confirmation.trim() !== site.name) {
-      setState((current) => ({
-        ...current,
-        error: new Error(`确认输入与站点名不一致，已取消退役。请输入 ${site.name} 后重试。`),
-        notice: null,
-      }));
-      return;
-    }
+    const confirmed = globalThis.confirm?.(
+      `确认退役 v1 站点 ${site.name}？将删除 Worker、解绑 route、删除 KV 记录并释放域名。`
+    );
+    if (!confirmed) return;
     setBusyName(site.name);
     setState((current) => ({ ...current, error: null, notice: null }));
     try {
@@ -117,16 +111,8 @@ export function AdminV1Sites() {
   async function retireSelectedSites() {
     const names = selectedDeletableSites.map((site) => site.name);
     if (names.length === 0 || bulkBusy || busyName) return;
-    const confirmation = globalThis.prompt?.(`输入 BULK RETIRE ${names.length} 确认批量退役 v1 站点：${names.join(', ')}`);
-    if (confirmation === null || confirmation === undefined) return;
-    if (confirmation.trim() !== `BULK RETIRE ${names.length}`) {
-      setState((current) => ({
-        ...current,
-        error: new Error(`确认输入不正确，已取消批量退役。请输入 BULK RETIRE ${names.length} 后重试。`),
-        notice: null,
-      }));
-      return;
-    }
+    const confirmed = globalThis.confirm?.(`确认批量退役 ${names.length} 个 v1 站点？\n${names.join(', ')}`);
+    if (!confirmed) return;
     setBulkBusy(true);
     setState((current) => ({ ...current, error: null, notice: null }));
     try {
@@ -287,7 +273,7 @@ function V1SiteRow({ site, now, selected, onToggle, onRetire, busy, disabled }) 
           className="table-action danger"
           type="button"
           disabled={!canRetire || disabled || busy}
-          title={canRetire ? `输入 ${site.name} 确认退役` : blockedReason}
+          title={canRetire ? `退役 ${site.name}` : blockedReason}
           onClick={() => onRetire(site)}
         >
           <Trash2 size={16} />

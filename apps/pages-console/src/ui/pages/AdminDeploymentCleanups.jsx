@@ -90,8 +90,8 @@ function CleanupTasksPanel() {
   }
 
   async function runCleanup(task) {
-    const confirmation = globalThis.prompt?.(`输入 RUN ${task.id} 确认执行 WFP cleanup`);
-    if (confirmation !== `RUN ${task.id}`) return;
+    const confirmed = globalThis.confirm?.(`确认立即执行 cleanup task？将删除 Worker ${task.resourceRef}。`);
+    if (!confirmed) return;
     setBusyId(task.id);
     setState((current) => ({ ...current, error: null, notice: null }));
     try {
@@ -245,10 +245,10 @@ function OrphanScanPanel() {
     const names = selectedWorkers.map((worker) => worker.name);
     if (!completeScan || names.length === 0 || backfillBusy) return;
     const rollbackWarning = selectedRollbackEligibleCount > 0 ? '；其中包含删除后不可回滚的版本' : '';
-    const confirmation = globalThis.prompt?.(
-      `输入 BULK BACKFILL ${names.length} 确认创建 cleanup task${rollbackWarning}：${names.join(', ')}`
+    const confirmed = globalThis.confirm?.(
+      `确认把 ${names.length} 个 Worker 转入回收队列${rollbackWarning}？\n${names.join(', ')}`
     );
-    if (confirmation !== `BULK BACKFILL ${names.length}`) return;
+    if (!confirmed) return;
     setBackfillBusy(true);
     setState((current) => ({ ...current, error: null }));
     try {
