@@ -22,7 +22,7 @@ const CLEANUP_FILTERS = [
 const ORPHAN_FILTERS = [
   ['all', '全部'],
   ['active_route', '活跃引用'],
-  ['rollback', '可回滚'],
+  ['rollback', '可回滚旧版'],
   ['cleanup', '回收中'],
   ['orphan', '孤儿候选'],
 ];
@@ -305,7 +305,7 @@ function OrphanScanPanel() {
           <div className="stats-strip">
             <GovernanceStat label="Worker 总数" value={summary?.total} />
             <GovernanceStat label="活跃引用" value={summary?.referencedByActiveRoute} />
-            <GovernanceStat label="可回滚" value={summary?.rollbackEligibleVersion} />
+            <GovernanceStat label="可回滚旧版" value={summary?.rollbackEligibleVersion} />
             <GovernanceStat label="回收中" value={summary?.hasPendingCleanupTask} />
             <GovernanceStat label="孤儿候选" value={summary?.orphanCandidates} />
           </div>
@@ -451,7 +451,7 @@ function CleanupRow({ task, busy, onRun }) {
 function OrphanScanRow({ worker, selected, onToggle, disabled }) {
   const classifications = [];
   if (worker.referencedByActiveRoute) classifications.push('活跃引用');
-  if (worker.rollbackEligibleVersion) classifications.push('可回滚');
+  if (worker.rollbackEligibleVersion) classifications.push('可回滚旧版');
   if (worker.hasPendingCleanupTask) classifications.push('回收中');
   if (worker.orphanCandidate) classifications.push('孤儿候选');
 

@@ -45,7 +45,9 @@ export function buildWorkerOrphanScan({
       const rollbackVersions = liveVersions.filter((version) => version.artifactAvailability === 'active');
       const cleanupTasks = cleanupTasksByWorker.get(worker.name) || [];
       const referencedByActiveRoute = activeRoutes.length > 0;
-      const rollbackEligibleVersion = rollbackVersions.length > 0;
+      // The live version's artifact is trivially active; "rollback eligible" only means
+      // something for workers that are not the current route target.
+      const rollbackEligibleVersion = !referencedByActiveRoute && rollbackVersions.length > 0;
       const hasPendingCleanupTask = cleanupTasks.length > 0;
       const orphanReason = classifyOrphanReason({
         referencedByActiveRoute,

@@ -246,7 +246,7 @@ test('admin worker orphan scan classifies managed WFP scripts without deciding d
   assert.deepEqual(scan.summary, {
     total: 6,
     referencedByActiveRoute: 1,
-    rollbackEligibleVersion: 2,
+    rollbackEligibleVersion: 1,
     hasPendingCleanupTask: 1,
     orphanCandidates: 4,
     orphanReasons: {
@@ -265,7 +265,7 @@ test('admin worker orphan scan classifies managed WFP scripts without deciding d
       item.orphanReason,
     ]),
     [
-      ['pages-v2-active', true, true, false, false, null],
+      ['pages-v2-active', true, false, false, false, null],
       ['pages-v2-rollback', false, true, false, true, 'stale_previous_version'],
       ['pages-v2-pending', false, false, true, false, null],
       ['pages-v2-unknown', false, false, false, true, 'no_d1_reference'],
