@@ -38,7 +38,7 @@ export async function createSiteWithLegacyV1Takeover({ env, config, store, actor
     throw takeoverError('V1_TAKEOVER_CONFIG_UNAVAILABLE');
   }
 
-  await cleanupLegacyV1CloudflareSite({ env, config, target });
+  const cloudflareCleanup = await cleanupLegacyV1CloudflareSite({ env, config, target });
 
   let latestTarget;
   try {
@@ -83,6 +83,17 @@ export async function createSiteWithLegacyV1Takeover({ env, config, store, actor
     config.environment
   );
 
+  if (cloudflareCleanup.workerCleanup !== 'deleted') {
+    await deferLegacyV1WorkerCleanup({
+      env,
+      config,
+      store,
+      siteInput,
+      target,
+      workerCleanup: cloudflareCleanup.workerCleanup,
+    });
+  }
+
   try {
     await env.V1_SITES.delete(siteInput.slug);
   } catch {
@@ -90,6 +101,28 @@ export async function createSiteWithLegacyV1Takeover({ env, config, store, actor
   }
 
   return site;
+}
+
+async function deferLegacyV1WorkerCleanup({ env, config, store, siteInput, target, workerCleanup }) {
+  if (typeof store.createDeploymentResourceCleanupTask !== 'function') return;
+  const cleanupReason =
+    workerCleanup === 'deferred_shared_route'
+      ? 'v1_email_takeover_shared_route'
+      : 'v1_email_takeover_worker_delete_failed';
+  try {
+    await store.createDeploymentResourceCleanupTask({
+      id: nextId(env, 'cleanup'),
+      environment: config.environment,
+      resourceType: 'v1_worker_script',
+      resourceRef: target.scriptName,
+      siteId: siteInput.id,
+      cleanupReason,
+      status: 'pending',
+      cleanupAfter: readNow(env),
+    });
+  } catch {
+    // The exact v1 route is already removed; operators can reconcile the unreferenced Worker later.
+  }
 }
 
 async function deferLegacyV1KvCleanup({ env, config, store, siteInput }) {

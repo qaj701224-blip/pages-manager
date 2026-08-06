@@ -278,38 +278,70 @@ test('refuses a destructive target whose Worker name does not match its slug', a
   assert.equal(deleteCount, 0);
 });
 
-test('refuses to delete a v1 Worker while another route still references it', async () => {
-  let deleteCount = 0;
-  await assert.rejects(
-    cleanupLegacyV1CloudflareSite({
-      env: {
-        V1_CLOUDFLARE_CLIENT: {
-          async listRoutes() {
-            return [
-              { id: 'route_cf_1', pattern: 'guide.workers.xd.team/*', script: 'pages-guide' },
-              { id: 'route_cf_2', pattern: 'docs.workers.xd.team/*', script: 'pages-guide' },
-            ];
-          },
-          async deleteRoute() {
-            deleteCount += 1;
-          },
-          async deleteScript() {
-            deleteCount += 1;
-          },
+test('deletes the exact route but defers Worker cleanup while another route still references it', async () => {
+  const calls = [];
+  const result = await cleanupLegacyV1CloudflareSite({
+    env: {
+      V1_CLOUDFLARE_CLIENT: {
+        async listRoutes() {
+          calls.push('listRoutes');
+          return [
+            { id: 'route_cf_1', pattern: 'guide.workers.xd.team/*', script: 'pages-guide' },
+            { id: 'route_cf_2', pattern: 'docs.workers.xd.team/*', script: 'pages-guide' },
+          ];
+        },
+        async deleteRoute({ routeId }) {
+          calls.push(`deleteRoute:${routeId}`);
+        },
+        async deleteScript() {
+          calls.push('deleteScript');
         },
       },
-      config: { environment: 'production' },
-      target: {
-        environment: 'production',
-        slug: 'guide',
-        hostname: 'guide.workers.xd.team',
-        routePattern: 'guide.workers.xd.team/*',
-        scriptName: 'pages-guide',
+    },
+    config: { environment: 'production' },
+    target: {
+      environment: 'production',
+      slug: 'guide',
+      hostname: 'guide.workers.xd.team',
+      routePattern: 'guide.workers.xd.team/*',
+      scriptName: 'pages-guide',
+    },
+  });
+
+  assert.deepEqual(result, { workerCleanup: 'deferred_shared_route' });
+  assert.deepEqual(calls, ['listRoutes', 'deleteRoute:route_cf_1']);
+});
+
+test('defers Worker cleanup when script deletion fails after deleting the exact route', async () => {
+  const calls = [];
+  const result = await cleanupLegacyV1CloudflareSite({
+    env: {
+      V1_CLOUDFLARE_CLIENT: {
+        async listRoutes() {
+          calls.push('listRoutes');
+          return [{ id: 'route_cf_1', pattern: 'guide.workers.xd.team/*', script: 'pages-guide' }];
+        },
+        async deleteRoute({ routeId }) {
+          calls.push(`deleteRoute:${routeId}`);
+        },
+        async deleteScript({ scriptName }) {
+          calls.push(`deleteScript:${scriptName}`);
+          throw new Error('cloudflare unavailable');
+        },
       },
-    }),
-    { code: 'V1_TAKEOVER_CLEANUP_FAILED' }
-  );
-  assert.equal(deleteCount, 0);
+    },
+    config: { environment: 'production' },
+    target: {
+      environment: 'production',
+      slug: 'guide',
+      hostname: 'guide.workers.xd.team',
+      routePattern: 'guide.workers.xd.team/*',
+      scriptName: 'pages-guide',
+    },
+  });
+
+  assert.deepEqual(result, { workerCleanup: 'deferred_delete_failed' });
+  assert.deepEqual(calls, ['listRoutes', 'deleteRoute:route_cf_1', 'deleteScript:pages-guide']);
 });
 
 test('loads all Cloudflare route pages before deleting the verified exact route', async () => {
@@ -503,6 +535,77 @@ test('takes over a matching v1 site and defers only KV deletion failures', async
   const cleanupTasks = await store.listDeploymentResourceCleanupTasks({ environment: 'production' });
   assert.equal(cleanupTasks[0].resourceType, 'v1_sites_kv_record');
   assert.deepEqual(env.deletes, ['guide']);
+});
+
+test('takes over a matching v1 site while deferring a shared Worker cleanup', async () => {
+  const store = await legacyStore();
+  const calls = [];
+  const env = takeoverEnv({
+    cloudflare: {
+      async listRoutes() {
+        calls.push('listRoutes');
+        return [
+          { id: 'route_cf_1', pattern: 'guide.workers.xd.team/*', script: 'pages-guide' },
+          { id: 'route_cf_2', pattern: 'docs.workers.xd.team/*', script: 'pages-guide' },
+        ];
+      },
+      async deleteRoute({ routeId }) {
+        calls.push(`deleteRoute:${routeId}`);
+      },
+      async deleteScript() {
+        calls.push('deleteScript');
+      },
+    },
+  });
+
+  const site = await createSiteWithLegacyV1Takeover({
+    env,
+    config: { environment: 'production', siteDomainSuffix: 'workers.xd.team' },
+    store,
+    actor: { type: 'user', userId: 'usr_1', email: 'OWNER@example.com' },
+    siteInput: siteInput(),
+  });
+
+  assert.equal(site.id, 'site_1');
+  assert.equal((await store.getHostnameClaim('guide.workers.xd.team')).ownerSystem, 'v2');
+  assert.deepEqual(calls, ['listRoutes', 'deleteRoute:route_cf_1']);
+  const cleanupTasks = await store.listDeploymentResourceCleanupTasks({ environment: 'production' });
+  assert.equal(cleanupTasks.length, 1);
+  assert.equal(cleanupTasks[0].resourceType, 'v1_worker_script');
+  assert.equal(cleanupTasks[0].resourceRef, 'pages-guide');
+  assert.equal(cleanupTasks[0].cleanupReason, 'v1_email_takeover_shared_route');
+  assert.doesNotMatch(JSON.stringify(cleanupTasks[0]), /owner@example\.com|pages_owner/);
+});
+
+test('takes over a matching v1 site when Worker deletion must be retried', async () => {
+  const store = await legacyStore();
+  const env = takeoverEnv({
+    cloudflare: {
+      async listRoutes() {
+        return [{ id: 'route_cf_1', pattern: 'guide.workers.xd.team/*', script: 'pages-guide' }];
+      },
+      async deleteRoute() {},
+      async deleteScript() {
+        throw new Error('cloudflare unavailable');
+      },
+    },
+  });
+
+  const site = await createSiteWithLegacyV1Takeover({
+    env,
+    config: { environment: 'production', siteDomainSuffix: 'workers.xd.team' },
+    store,
+    actor: { type: 'user', userId: 'usr_1', email: 'OWNER@example.com' },
+    siteInput: siteInput(),
+  });
+
+  assert.equal(site.id, 'site_1');
+  assert.equal((await store.getHostnameClaim('guide.workers.xd.team')).ownerSystem, 'v2');
+  const cleanupTasks = await store.listDeploymentResourceCleanupTasks({ environment: 'production' });
+  assert.equal(cleanupTasks.length, 1);
+  assert.equal(cleanupTasks[0].resourceType, 'v1_worker_script');
+  assert.equal(cleanupTasks[0].resourceRef, 'pages-guide');
+  assert.equal(cleanupTasks[0].cleanupReason, 'v1_email_takeover_worker_delete_failed');
 });
 
 test('keeps v1 state and performs no destructive call when ownership email differs', async () => {
