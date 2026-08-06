@@ -12,11 +12,12 @@ const SCRIPT_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const BINDING_NAME_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
 
 export class WfpApiError extends Error {
-  constructor({ status, code = 'WFP_API_ERROR', message }) {
+  constructor({ status, code = 'WFP_API_ERROR', message, detail }) {
     super(message || code);
     this.name = 'WfpApiError';
     this.status = status;
     this.code = code;
+    if (detail) this.detail = detail;
   }
 }
 
@@ -144,20 +145,20 @@ export function createWfpClient({
         const firstUrl = scriptsUrl(baseUrl, account, namespace);
         const firstPayload = await requestCloudflarePayload(fetch, apiToken, firstUrl, { method: 'GET' });
         const firstPageWorkers = normalizeListedWorkers(readCloudflareListResult(firstPayload));
-        if (maxWorkers && firstPageWorkers.length > maxWorkers) throw invalidCloudflareListResponse();
+        if (maxWorkers && firstPageWorkers.length > maxWorkers) throw invalidCloudflareListResponse('first page above maxWorkers');
         appendUniqueWorkers(workers, workerNames, firstPageWorkers);
         const firstPage = readCloudflarePagination(firstPayload);
         if (!firstPage) return workers;
-        if (firstPage.page !== 1) throw invalidCloudflareListResponse();
+        if (firstPage.page !== 1) throw invalidCloudflareListResponse('first response reports a later page');
         if (firstPage.totalPages <= 1) return workers;
-        if (firstPageWorkers.length === 0) throw invalidCloudflareListResponse();
+        if (firstPageWorkers.length === 0) throw invalidCloudflareListResponse('empty first page claims more pages');
 
         const inferredMaxPages = maxWorkers
           ? Math.max(1, Math.ceil(maxWorkers / firstPageWorkers.length))
           : null;
         const pageBounds = [explicitMaxPages, inferredMaxPages].filter(Boolean);
         const maxPages = pageBounds.length > 0 ? Math.min(...pageBounds) : null;
-        if (maxPages && firstPage.totalPages > maxPages) throw invalidCloudflareListResponse();
+        if (maxPages && firstPage.totalPages > maxPages) throw invalidCloudflareListResponse('total pages above configured bound');
 
         for (let page = 2; page <= firstPage.totalPages; page += 1) {
           const url = new URL(firstUrl);
@@ -165,11 +166,11 @@ export function createWfpClient({
           const payload = await requestCloudflarePayload(fetch, apiToken, url.toString(), { method: 'GET' });
           const pagination = readCloudflarePagination(payload);
           if (!pagination || pagination.page !== page || pagination.totalPages !== firstPage.totalPages) {
-            throw invalidCloudflareListResponse();
+            throw invalidCloudflareListResponse('page sequence mismatch');
           }
           const pageWorkers = normalizeListedWorkers(readCloudflareListResult(payload));
           appendUniqueWorkers(workers, workerNames, pageWorkers);
-          if (maxWorkers && workers.length > maxWorkers) throw invalidCloudflareListResponse();
+          if (maxWorkers && workers.length > maxWorkers) throw invalidCloudflareListResponse('worker count above maxWorkers');
         }
         return workers;
       };
@@ -440,23 +441,27 @@ async function requestCloudflarePayload(fetch, apiToken, url, init) {
 
 function readCloudflareListResult(payload) {
   if (Array.isArray(payload?.result)) return payload.result;
-  throw invalidCloudflareListResponse();
+  throw invalidCloudflareListResponse(describeShape('payload', payload));
 }
 
 function readCloudflarePagination(payload) {
   if (!Object.prototype.hasOwnProperty.call(payload || {}, 'result_info')) return null;
   const resultInfo = payload.result_info;
-  if (!isPlainObject(resultInfo)) throw invalidCloudflareListResponse();
+  if (!isPlainObject(resultInfo)) throw invalidCloudflareListResponse(describeShape('result_info', resultInfo));
   const responsePage = resultInfo.page;
-  if (!Number.isInteger(responsePage) || responsePage < 1) throw invalidCloudflareListResponse();
+  if (!Number.isInteger(responsePage) || responsePage < 1) {
+    throw invalidCloudflareListResponse(describeShape('result_info', resultInfo));
+  }
   const totalPages = readCloudflareTotalPages(resultInfo);
-  if (totalPages < 1 || totalPages < responsePage) throw invalidCloudflareListResponse();
+  if (totalPages < 1 || totalPages < responsePage) {
+    throw invalidCloudflareListResponse(describeShape('result_info', resultInfo));
+  }
   return { page: responsePage, totalPages };
 }
 
 function readCloudflareTotalPages(resultInfo) {
   if (Object.prototype.hasOwnProperty.call(resultInfo, 'total_pages')) {
-    if (!Number.isInteger(resultInfo.total_pages)) throw invalidCloudflareListResponse();
+    if (!Number.isInteger(resultInfo.total_pages)) throw invalidCloudflareListResponse(describeShape('result_info', resultInfo));
     return resultInfo.total_pages;
   }
   // The dispatch scripts list endpoint has no published contract; some Cloudflare list
@@ -464,7 +469,7 @@ function readCloudflareTotalPages(resultInfo) {
   const perPage = resultInfo.per_page;
   const totalCount = resultInfo.total_count;
   if (!Number.isInteger(perPage) || perPage < 1 || !Number.isInteger(totalCount) || totalCount < 0) {
-    throw invalidCloudflareListResponse();
+    throw invalidCloudflareListResponse(describeShape('result_info', resultInfo));
   }
   return Math.max(1, Math.ceil(totalCount / perPage));
 }
@@ -472,7 +477,7 @@ function readCloudflareTotalPages(resultInfo) {
 function normalizeListedWorkers(workers) {
   return workers.map((worker) => {
     const name = worker?.script?.id || worker?.id || worker?.name;
-    if (typeof name !== 'string' || !name.trim()) throw invalidCloudflareListResponse();
+    if (typeof name !== 'string' || !name.trim()) throw invalidCloudflareListResponse(describeShape('worker item', worker));
     return {
       name: name.trim(),
       created_on: worker?.created_on || null,
@@ -483,7 +488,7 @@ function normalizeListedWorkers(workers) {
 
 function appendUniqueWorkers(target, names, workers) {
   for (const worker of workers) {
-    if (names.has(worker.name)) throw invalidCloudflareListResponse();
+    if (names.has(worker.name)) throw invalidCloudflareListResponse('duplicate worker name');
     names.add(worker.name);
     target.push(worker);
   }
@@ -494,16 +499,28 @@ async function readNamespaceScriptCount({ fetch, apiToken, baseUrl, account, nam
     method: 'GET',
   });
   const scriptCount = payload?.result?.script_count;
-  if (!Number.isInteger(scriptCount) || scriptCount < 0) throw invalidCloudflareListResponse();
+  if (!Number.isInteger(scriptCount) || scriptCount < 0) throw invalidCloudflareListResponse(describeShape('namespace result', payload?.result));
   return scriptCount;
 }
 
-function invalidCloudflareListResponse() {
+function invalidCloudflareListResponse(detail) {
   return new WfpApiError({
     status: 502,
     code: 'WFP_API_RESPONSE_INVALID',
     message: 'Cloudflare WFP list response was invalid.',
+    detail,
   });
+}
+
+// Shape descriptions surface only field names and types, never values, so they stay log-safe.
+function describeShape(label, value) {
+  if (Array.isArray(value)) return `${label} is array`;
+  if (!value || typeof value !== 'object') return `${label} is ${value === null ? 'null' : typeof value}`;
+  const keys = Object.keys(value)
+    .filter((key) => /^[a-zA-Z0-9_]{1,32}$/.test(key))
+    .sort()
+    .slice(0, 8);
+  return keys.length > 0 ? `${label} keys ${keys.join(',')}` : `${label} has no readable keys`;
 }
 
 function normalizePositiveBound(value) {

@@ -353,7 +353,9 @@ function cloudflareFailureCause(error) {
   const candidates = [error?.code, error?.message];
   const code = candidates.find((value) => typeof value === 'string' && /^[A-Z][A-Z0-9_]{2,63}$/.test(value));
   const status = Number.isInteger(error?.status) ? ` (HTTP ${error.status})` : '';
-  return `${code || 'UNEXPECTED'}${status}`;
+  const detail =
+    typeof error?.detail === 'string' && /^[a-zA-Z0-9_,. -]{1,160}$/.test(error.detail) ? ` [${error.detail}]` : '';
+  return `${code || 'UNEXPECTED'}${status}${detail}`;
 }
 
 function readWorkerOrphanScanLimit(env) {

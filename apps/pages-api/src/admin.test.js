@@ -3153,6 +3153,7 @@ test('worker orphan scan failure surfaces a sanitized cause code without upstrea
           throw Object.assign(new Error('WFP_API_RESPONSE_INVALID'), {
             code: 'WFP_API_RESPONSE_INVALID',
             status: 403,
+            detail: 'result_info keys count,cursor',
             secretDetail: 'cf_secret_token',
           });
         },
@@ -3163,7 +3164,10 @@ test('worker orphan scan failure surfaces a sanitized cause code without upstrea
   assert.equal(response.status, 502);
   const body = await response.json();
   assert.equal(body.error.code, 'WORKER_ORPHAN_SCAN_FAILED');
-  assert.equal(body.error.action, 'Cause: WFP_API_RESPONSE_INVALID (HTTP 403). Check Cloudflare credentials and retry.');
+  assert.equal(
+    body.error.action,
+    'Cause: WFP_API_RESPONSE_INVALID (HTTP 403) [result_info keys count,cursor]. Check Cloudflare credentials and retry.'
+  );
   assert.doesNotMatch(JSON.stringify(body), /cf_secret_token/);
 
   const unexpected = await worker.fetch(
