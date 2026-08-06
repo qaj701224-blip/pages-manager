@@ -421,7 +421,6 @@ test('admin v1 sites inventory reports unknown and platform-reserved Workers sep
     canRetire: false,
     token: null,
     platformReserved: true,
-    canRetire: false,
     retireBlockedReason: 'platform_reserved',
     classification: 'platform_reserved',
   });
