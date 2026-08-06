@@ -128,6 +128,9 @@ export function formatV1SitesInventory({ siteKeys, workers, activeV2Sites, envir
         workerModifiedOn: worker?.modified_on || null,
         migratedCandidate: activeV2Slugs.has(site.name),
         canRetire: retireBlockedReason === null,
+        // Legacy API 已墓碑化，该 token 不再具备任何部署/删除能力，仅作平台管理员可见的
+        // 归属标记；除本响应外不得写入审计、日志或其它输出。
+        token: nullableString(metadata.token),
       };
       if (platformReserved) formatted.platformReserved = true;
       if (retireBlockedReason) formatted.retireBlockedReason = retireBlockedReason;

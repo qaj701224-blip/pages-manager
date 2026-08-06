@@ -158,7 +158,8 @@ test('admin v1 site inventory is registered as a read-only operations page', () 
   assert.match(adminV1SitesSource, /疑似废弃/);
   assert.match(adminV1SitesSource, /migratedCandidate/);
   assert.match(adminV1SitesSource, /onRetry=\{reload\}/);
-  assert.doesNotMatch(adminV1SitesSource, /\.metadata|token/i);
+  assert.doesNotMatch(adminV1SitesSource, /\.metadata/i);
+  assert.match(adminV1SitesSource, /归属 Token/);
 });
 
 test('admin errors preserve actionable API guidance and support an optional retry', () => {

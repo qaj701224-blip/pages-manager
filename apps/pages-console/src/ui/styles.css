@@ -1118,6 +1118,7 @@ button {
   font-size: 13px;
   font-weight: 400;
   line-height: 1.5;
+  white-space: nowrap;
   margin-bottom: 1px;
 }
 
@@ -2593,6 +2594,11 @@ button {
 /* forceMount keeps inactive tab content mounted; Radix leaves it visible without this. */
 .admin-governance-tabs .tabs-content[data-state='inactive'] {
   display: none;
+}
+
+.legacy-token {
+  font-size: 12px;
+  word-break: break-all;
 }
 
 .governance-intro {

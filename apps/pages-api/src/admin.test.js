@@ -309,7 +309,7 @@ test('admin worker orphan scan rejects inventories above the configured safety l
   });
 });
 
-test('admin v1 sites inventory strips token metadata and joins workers plus v2 migration candidates', async () => {
+test('admin v1 sites inventory exposes the legacy token marker and joins workers plus v2 migration candidates', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
   await seedPlatformAdmin(store);
   await seedTeamSite(store, { id: 'site_docs_v2', slug: 'docs', teamId: 'team_console' });
@@ -352,8 +352,7 @@ test('admin v1 sites inventory strips token metadata and joins workers plus v2 m
 
   const text = await response.clone().text();
   assert.equal(response.status, 200, text);
-  assert.doesNotMatch(text, /v1-owner-token-placeholder/);
-  assert.doesNotMatch(text, /token/i);
+  assert.match(text, /"token":"v1-owner-token-placeholder"/);
   assert.doesNotMatch(text, /internal-site-uuid|siteUuid/i);
   assert.deepEqual(await response.json(), {
     sites: [
@@ -367,6 +366,7 @@ test('admin v1 sites inventory strips token metadata and joins workers plus v2 m
         workerModifiedOn: '2026-01-02T00:00:00.000Z',
         migratedCandidate: true,
         canRetire: true,
+        token: 'v1-owner-token-placeholder',
       },
       {
         name: 'legacy',
@@ -378,6 +378,7 @@ test('admin v1 sites inventory strips token metadata and joins workers plus v2 m
         workerModifiedOn: null,
         migratedCandidate: false,
         canRetire: true,
+        token: null,
       },
     ],
     unregisteredWorkers: [],
@@ -417,6 +418,8 @@ test('admin v1 sites inventory reports unknown and platform-reserved Workers sep
     workerName: 'pages-api',
     workerModifiedOn: '2026-06-03T00:00:00.000Z',
     migratedCandidate: false,
+    canRetire: false,
+    token: null,
     platformReserved: true,
     canRetire: false,
     retireBlockedReason: 'platform_reserved',

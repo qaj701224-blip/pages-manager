@@ -194,6 +194,7 @@ export function AdminV1Sites() {
                 <th>站点</th>
                 <th>Preset / 网络</th>
                 <th>v1 Worker</th>
+                <th>归属 Token</th>
                 <th>Metadata 更新时间</th>
                 <th>v2 对账</th>
                 <th>操作</th>
@@ -258,6 +259,9 @@ function V1SiteRow({ site, now, selected, onToggle, onRetire, busy, disabled }) 
       <td data-label="v1 Worker">
         <strong>{site.workerName || '未发现'}</strong>
         <span>{site.workerModifiedOn ? `更新 ${formatDate(site.workerModifiedOn)}` : '无 Worker 时间'}</span>
+      </td>
+      <td data-label="归属 Token">
+        <code className="legacy-token">{site.token || '—'}</code>
       </td>
       <td data-label="Metadata 更新时间">
         <strong>{formatDate(site.updatedAt)}</strong>
