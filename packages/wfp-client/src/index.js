@@ -10,6 +10,8 @@ const EXPECTED_NAMESPACE_BY_ENV = {
 };
 const SCRIPT_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const BINDING_NAME_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
+// Termination backstop for cursor pagination when the caller sets no explicit bounds.
+const WFP_UNBOUNDED_CURSOR_PAGE_CAP = 1000;
 
 export class WfpApiError extends Error {
   constructor({ status, code = 'WFP_API_ERROR', message, detail }) {
@@ -150,9 +152,12 @@ export function createWfpClient({
         }
         appendUniqueWorkers(workers, workerNames, firstPageWorkers);
         const firstPage = readCloudflarePagination(firstPayload);
-        if (!firstPage) return workers;
-        if (firstPage.page !== 1) throw invalidCloudflareListResponse('first response reports a later page');
-        if (firstPage.totalPages <= 1) return workers;
+        if (firstPage.mode === 'none') return workers;
+        if (firstPage.mode === 'cursor' && !firstPage.cursor) return workers;
+        if (firstPage.mode === 'page' && firstPage.page !== 1) {
+          throw invalidCloudflareListResponse('first response reports a later page');
+        }
+        if (firstPage.mode === 'page' && firstPage.totalPages <= 1) return workers;
         if (firstPageWorkers.length === 0) throw invalidCloudflareListResponse('empty first page claims more pages');
 
         const inferredMaxPages = maxWorkers
@@ -160,6 +165,38 @@ export function createWfpClient({
           : null;
         const pageBounds = [explicitMaxPages, inferredMaxPages].filter(Boolean);
         const maxPages = pageBounds.length > 0 ? Math.min(...pageBounds) : null;
+
+        if (firstPage.mode === 'cursor') {
+          let cursor = firstPage.cursor;
+          const seenCursors = new Set();
+          const cursorPageCap = maxPages || WFP_UNBOUNDED_CURSOR_PAGE_CAP;
+          let fetchedPages = 1;
+          while (cursor) {
+            if (seenCursors.has(cursor)) throw invalidCloudflareListResponse('repeated pagination cursor');
+            seenCursors.add(cursor);
+            fetchedPages += 1;
+            if (fetchedPages > cursorPageCap) {
+              throw invalidCloudflareListResponse('cursor page count above configured bound');
+            }
+            const url = new URL(firstUrl);
+            url.searchParams.set('cursor', cursor);
+            const payload = await requestCloudflarePayload(fetch, apiToken, url.toString(), { method: 'GET' });
+            const pagination = readCloudflarePagination(payload);
+            if (pagination.mode === 'page') throw invalidCloudflareListResponse('pagination mode changed mid-scan');
+            const pageWorkers = normalizeListedWorkers(readCloudflareListResult(payload));
+            appendUniqueWorkers(workers, workerNames, pageWorkers);
+            if (maxWorkers && workers.length > maxWorkers) {
+              throw invalidCloudflareListResponse('worker count above maxWorkers');
+            }
+            const nextCursor = pagination.mode === 'cursor' ? pagination.cursor : '';
+            if (nextCursor && pageWorkers.length === 0) {
+              throw invalidCloudflareListResponse('empty page claims more data');
+            }
+            cursor = nextCursor;
+          }
+          return workers;
+        }
+
         if (maxPages && firstPage.totalPages > maxPages) {
           throw invalidCloudflareListResponse('total pages above configured bound');
         }
@@ -169,7 +206,7 @@ export function createWfpClient({
           url.searchParams.set('page', String(page));
           const payload = await requestCloudflarePayload(fetch, apiToken, url.toString(), { method: 'GET' });
           const pagination = readCloudflarePagination(payload);
-          if (!pagination || pagination.page !== page || pagination.totalPages !== firstPage.totalPages) {
+          if (pagination.mode !== 'page' || pagination.page !== page || pagination.totalPages !== firstPage.totalPages) {
             throw invalidCloudflareListResponse('page sequence mismatch');
           }
           const pageWorkers = normalizeListedWorkers(readCloudflareListResult(payload));
@@ -449,18 +486,41 @@ function readCloudflareListResult(payload) {
 }
 
 function readCloudflarePagination(payload) {
-  if (!Object.prototype.hasOwnProperty.call(payload || {}, 'result_info')) return null;
+  if (!Object.prototype.hasOwnProperty.call(payload || {}, 'result_info')) return { mode: 'none' };
   const resultInfo = payload.result_info;
   if (!isPlainObject(resultInfo)) throw invalidCloudflareListResponse(describeShape('result_info', resultInfo));
-  const responsePage = resultInfo.page;
-  if (!Number.isInteger(responsePage) || responsePage < 1) {
+  if (Object.prototype.hasOwnProperty.call(resultInfo, 'page')) {
+    const responsePage = resultInfo.page;
+    if (!Number.isInteger(responsePage) || responsePage < 1) {
+      throw invalidCloudflareListResponse(describeShape('result_info', resultInfo));
+    }
+    const totalPages = readCloudflareTotalPages(resultInfo);
+    if (totalPages < 1 || totalPages < responsePage) {
+      throw invalidCloudflareListResponse(describeShape('result_info', resultInfo));
+    }
+    return { mode: 'page', page: responsePage, totalPages };
+  }
+  // Observed live contract: the dispatch scripts list paginates like KV, with
+  // result_info carrying only count/cursor and an empty cursor marking the last page.
+  if (
+    Object.prototype.hasOwnProperty.call(resultInfo, 'cursor') ||
+    Object.prototype.hasOwnProperty.call(resultInfo, 'count')
+  ) {
+    if (Object.prototype.hasOwnProperty.call(resultInfo, 'count') && !Number.isInteger(resultInfo.count)) {
+      throw invalidCloudflareListResponse(describeShape('result_info', resultInfo));
+    }
+    return { mode: 'cursor', cursor: readCloudflareCursor(resultInfo) };
+  }
+  throw invalidCloudflareListResponse(describeShape('result_info', resultInfo));
+}
+
+function readCloudflareCursor(resultInfo) {
+  const cursor = resultInfo.cursor;
+  if (cursor === undefined || cursor === null || cursor === '') return '';
+  if (typeof cursor !== 'string' || !cursor.trim()) {
     throw invalidCloudflareListResponse(describeShape('result_info', resultInfo));
   }
-  const totalPages = readCloudflareTotalPages(resultInfo);
-  if (totalPages < 1 || totalPages < responsePage) {
-    throw invalidCloudflareListResponse(describeShape('result_info', resultInfo));
-  }
-  return { page: responsePage, totalPages };
+  return cursor;
 }
 
 function readCloudflareTotalPages(resultInfo) {

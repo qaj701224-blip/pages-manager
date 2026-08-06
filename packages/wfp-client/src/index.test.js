@@ -310,6 +310,129 @@ test('listUserWorkers derives total pages from per_page/total_count metadata wit
   assert.deepEqual(requests.map((url) => new URL(url).search), ['', '?page=2', '']);
 });
 
+test('listUserWorkers follows cursor pagination as observed on the live dispatch scripts endpoint', async () => {
+  const requests = [];
+  const client = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'cf_secret_token',
+    dispatchNamespace: 'xd-cell-workers-production',
+    fetch: async (request) => {
+      requests.push(request.url);
+      const url = new URL(request.url);
+      if (!url.pathname.endsWith('/scripts')) return Response.json({ success: true, result: { script_count: 3 } });
+      if (url.searchParams.get('cursor') === 'cursor-2') {
+        return Response.json({
+          success: true,
+          result: [{ id: 'pages-v2-blog-ver-3' }],
+          result_info: { count: 1, cursor: '' },
+        });
+      }
+      return Response.json({
+        success: true,
+        result: [{ id: 'pages-v2-docs-ver-1' }, { id: 'pages-v2-docs-ver-2' }],
+        result_info: { count: 2, cursor: 'cursor-2' },
+      });
+    },
+  });
+
+  const inventory = await client.listUserWorkers();
+  assert.deepEqual(
+    inventory.workers.map((worker) => worker.name),
+    ['pages-v2-docs-ver-1', 'pages-v2-docs-ver-2', 'pages-v2-blog-ver-3']
+  );
+  assert.equal(inventory.completeness, 'complete');
+  assert.deepEqual(requests.map((url) => new URL(url).search), ['', '?cursor=cursor-2', '']);
+});
+
+test('listUserWorkers treats a missing or empty cursor as the terminal page', async () => {
+  for (const resultInfo of [{ count: 1 }, { count: 1, cursor: '' }, { count: 1, cursor: null }]) {
+    const client = createWfpClient({
+      accountId: 'account_1',
+      apiToken: 'cf_secret_token',
+      dispatchNamespace: 'xd-cell-workers-production',
+      fetch: async (request) =>
+        request.url.endsWith('/scripts')
+          ? Response.json({ success: true, result: [{ id: 'pages-v2-docs-ver-1' }], result_info: resultInfo })
+          : Response.json({ success: true, result: { script_count: 1 } }),
+    });
+    const inventory = await client.listUserWorkers();
+    assert.deepEqual(inventory.workers.map((worker) => worker.name), ['pages-v2-docs-ver-1']);
+    assert.equal(inventory.completeness, 'complete');
+  }
+});
+
+test('listUserWorkers rejects malformed, repeated, or unproductive cursors', async () => {
+  const malformedCursor = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'cf_secret_token',
+    dispatchNamespace: 'xd-cell-workers-production',
+    fetch: async (request) =>
+      request.url.endsWith('/scripts')
+        ? Response.json({ success: true, result: [{ id: 'pages-v2-docs-ver-1' }], result_info: { count: 1, cursor: 42 } })
+        : Response.json({ success: true, result: { script_count: 1 } }),
+  });
+  await assert.rejects(
+    () => malformedCursor.listUserWorkers(),
+    (error) => error instanceof WfpApiError && error.code === 'WFP_API_RESPONSE_INVALID'
+  );
+
+  const repeatedCursor = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'cf_secret_token',
+    dispatchNamespace: 'xd-cell-workers-production',
+    fetch: async (request) => {
+      const url = new URL(request.url);
+      if (!url.pathname.endsWith('/scripts')) return Response.json({ success: true, result: { script_count: 4 } });
+      const worker = url.searchParams.get('cursor') ? 'pages-v2-blog-ver-2' : 'pages-v2-docs-ver-1';
+      return Response.json({
+        success: true,
+        result: [{ id: worker }],
+        result_info: { count: 1, cursor: 'cursor-loop' },
+      });
+    },
+  });
+  await assert.rejects(
+    () => repeatedCursor.listUserWorkers(),
+    (error) => error instanceof WfpApiError && error.code === 'WFP_API_RESPONSE_INVALID'
+  );
+
+  const emptyPageWithCursor = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'cf_secret_token',
+    dispatchNamespace: 'xd-cell-workers-production',
+    fetch: async (request) => {
+      const url = new URL(request.url);
+      if (!url.pathname.endsWith('/scripts')) return Response.json({ success: true, result: { script_count: 2 } });
+      if (url.searchParams.get('cursor')) {
+        return Response.json({ success: true, result: [], result_info: { count: 0, cursor: 'cursor-next' } });
+      }
+      return Response.json({
+        success: true,
+        result: [{ id: 'pages-v2-docs-ver-1' }],
+        result_info: { count: 1, cursor: 'cursor-2' },
+      });
+    },
+  });
+  await assert.rejects(
+    () => emptyPageWithCursor.listUserWorkers(),
+    (error) => error instanceof WfpApiError && error.code === 'WFP_API_RESPONSE_INVALID'
+  );
+
+  const unknownMetadata = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'cf_secret_token',
+    dispatchNamespace: 'xd-cell-workers-production',
+    fetch: async (request) =>
+      request.url.endsWith('/scripts')
+        ? Response.json({ success: true, result: [{ id: 'pages-v2-docs-ver-1' }], result_info: { unexpected: true } })
+        : Response.json({ success: true, result: { script_count: 1 } }),
+  });
+  await assert.rejects(
+    () => unknownMetadata.listUserWorkers(),
+    (error) => error instanceof WfpApiError && error.code === 'WFP_API_RESPONSE_INVALID'
+  );
+});
+
 test('listUserWorkers accepts count-only single-page metadata and rejects malformed count fields', async () => {
   const singlePage = createWfpClient({
     accountId: 'account_1',
