@@ -777,6 +777,43 @@ async function retireV1SiteRecord({ env, config, store, session, record, client 
   }
   await recordV1RetireAuditSafe(store, env, config, session, base, 'route_unbind', 'allow', 200);
 
+  // The claim must be released before the KV record is deleted: the KV record is the
+  // retry anchor for this site, and every failure after its deletion would strand an
+  // active claim with no admin-channel recovery path.
+  if (existingClaim && !['released', 'held'].includes(existingClaim.status)) {
+    let released;
+    try {
+      released = await store.releaseHostnameClaim({
+        environment: config.environment,
+        hostname,
+        normalizedSlug: record.name,
+        hostnameFamily: 'workers',
+        ownerSystem: 'v1',
+        ownerId: `v1:${config.environment}:${record.name}`,
+        ownerRef: workerName,
+        source: 'v1_delete',
+        status: 'active',
+        releaseReason: 'site_retired',
+        reuseHoldUntil: addSecondsIso(readNow(env), readReuseHoldSeconds(env)),
+        releasedAt: readNow(env),
+      });
+    } catch {
+      released = null;
+    }
+    if (!released?.ok) {
+      await recordV1RetireAuditSafe(store, env, config, session, base, 'hostname_claim_release', 'deny', 502);
+      return v1RetireFailure(
+        record.name,
+        'hostname_claim_release',
+        'V1_SITE_HOSTNAME_CLAIM_RELEASE_FAILED',
+        'Legacy v1 hostname claim could not be released.',
+        502,
+        'Check hostname claims and retry.'
+      );
+    }
+  }
+  await recordV1RetireAuditSafe(store, env, config, session, base, 'hostname_claim_release', 'allow', 200);
+
   try {
     await client.deleteSite(record.name);
   } catch (error) {
@@ -791,43 +828,6 @@ async function retireV1SiteRecord({ env, config, store, session, record, client 
     );
   }
   await recordV1RetireAuditSafe(store, env, config, session, base, 'kv_delete', 'allow', 200);
-
-  if (!existingClaim || ['released', 'held'].includes(existingClaim.status)) {
-    await recordV1RetireAuditSafe(store, env, config, session, base, 'hostname_claim_release', 'allow', 200);
-    return { ...base, status: 'retired' };
-  }
-
-  let released;
-  try {
-    released = await store.releaseHostnameClaim({
-      environment: config.environment,
-      hostname,
-      normalizedSlug: record.name,
-      hostnameFamily: 'workers',
-      ownerSystem: 'v1',
-      ownerId: `v1:${config.environment}:${record.name}`,
-      ownerRef: workerName,
-      source: 'v1_delete',
-      status: 'active',
-      releaseReason: 'site_retired',
-      reuseHoldUntil: addSecondsIso(readNow(env), readReuseHoldSeconds(env)),
-      releasedAt: readNow(env),
-    });
-  } catch {
-    released = null;
-  }
-  if (!released?.ok) {
-    await recordV1RetireAuditSafe(store, env, config, session, base, 'hostname_claim_release', 'deny', 502);
-    return v1RetireFailure(
-      record.name,
-      'hostname_claim_release',
-      'V1_SITE_HOSTNAME_CLAIM_RELEASE_FAILED',
-      'Legacy v1 hostname claim could not be released.',
-      502,
-      'Check hostname claims and retry.'
-    );
-  }
-  await recordV1RetireAuditSafe(store, env, config, session, base, 'hostname_claim_release', 'allow', 200);
   return { ...base, status: 'retired' };
 }
 

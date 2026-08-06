@@ -891,7 +891,31 @@ test('admin v1 retirement fails closed with a hostname claim release stage', asy
   const body = await response.json();
   assert.equal(body.error.code, 'V1_SITE_HOSTNAME_CLAIM_RELEASE_FAILED');
   assert.equal(body.error.stage, 'hostname_claim_release');
-  assert.deepEqual(actions, ['worker', 'route', 'kv']);
+  assert.deepEqual(actions, ['worker', 'route']);
+
+  delete store.releaseHostnameClaim;
+  const retry = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/v1-sites/legacy', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'DELETE',
+    }),
+    env(store, {
+      V1_SITES_ADMIN_CLIENT: {
+        listSites: async () => [
+          { name: 'legacy', metadata: { scriptName: 'pages-legacy', url: 'https://legacy.workers.xd.team' } },
+        ],
+        deleteWorker: async () => actions.push('worker'),
+        unbindRoute: async () => actions.push('route'),
+        deleteSite: async () => actions.push('kv'),
+      },
+    })
+  );
+  assert.equal(retry.status, 200, await retry.clone().text());
+  assert.deepEqual(actions, ['worker', 'route', 'worker', 'route', 'kv']);
+  const claim = await store.getHostnameClaim('legacy.workers.xd.team');
+  assert.equal(claim.status, 'held');
+  assert.equal(claim.releaseReason, 'site_retired');
 });
 
 test('admin v1 retirement reports the failing stage and stops before later destructive steps', async () => {

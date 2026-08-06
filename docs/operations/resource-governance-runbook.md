@@ -49,7 +49,7 @@ Cron 默认每 15 分钟小批量执行到期任务。排空速度可按以下�
 
 1. 在列表行点击退役，确认弹窗会说明将删除的资源，点击确认即执行。
 2. pages-api 只从 KV metadata 解析 account Worker 名称，不接受请求中的 Worker 名称；脚本名必须严格等于当前环境按站点名派生的 `pages-<name>` 或 `pages-staging-<name>`。
-3. 服务端依次校验保留清单和环境前缀、删除 account Worker、解绑精确 hostname route、删除 KV key、释放 hostname claim。
+3. 服务端依次校验保留清单和环境前缀、删除 account Worker、解绑精确 hostname route、释放 hostname claim、最后删除 KV key。KV 记录是重试的检索锚点，必须在其它资源全部处理完后才删除，任何中间失败都可以对同一站点直接重试收敛。
 4. 任一步失败都 fail-closed，响应会标明失败阶段；Worker、精确 route、KV key 或 hostname claim 已处于完成态时允许幂等重试，脚本/route/claim 归属不匹配仍会拒绝。
 
 批量退役：
