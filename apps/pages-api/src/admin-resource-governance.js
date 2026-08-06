@@ -225,7 +225,8 @@ export function createV1SitesAdminClient(env = {}) {
       const key = nullableString(name);
       if (!key) return null;
       const namespace = encodeURIComponent(namespaceId);
-      const url = `${CF_API_BASE_URL}/accounts/${encodeURIComponent(accountId)}/storage/kv/namespaces/${namespace}/values/${encodeURIComponent(key)}`;
+      const account = encodeURIComponent(accountId);
+      const url = `${CF_API_BASE_URL}/accounts/${account}/storage/kv/namespaces/${namespace}/values/${encodeURIComponent(key)}`;
       // KV value reads return the stored JSON directly, without the Cloudflare envelope.
       const response = await fetchImpl(url, { headers: { Authorization: `Bearer ${apiToken}` } });
       if (response.status === 404) return null;
