@@ -331,8 +331,8 @@ test('v1 sites admin client retires a Worker through exact route and KV endpoint
   ]);
 });
 
-test('v1 sites admin client refuses unsafe route patterns and mismatched scripts', async () => {
-  const client = createV1SitesAdminClient({
+test('v1 sites admin client ignores shared wildcard routes but refuses per-hostname residue', async () => {
+  const wildcardOnly = createV1SitesAdminClient({
     CF_ACCOUNT_ID: 'account_1',
     CF_API_TOKEN: 'runtime-secret-placeholder',
     PAGES_V1_ZONE_ID: 'zone_1',
@@ -341,13 +341,69 @@ test('v1 sites admin client refuses unsafe route patterns and mismatched scripts
     fetch: async () =>
       Response.json({
         success: true,
-        result: [{ id: 'route_1', pattern: '*.workers.xd.team/*', script: 'pages-other' }],
+        result: [{ id: 'route_1', pattern: '*.workers.xd.team/*', script: 'pages-router' }],
       }),
   });
+  assert.equal(
+    await wildcardOnly.unbindRoute({ hostname: 'legacy.workers.xd.team', expectedScriptName: 'pages-legacy' }),
+    null
+  );
 
+  const hostnameResidue = createV1SitesAdminClient({
+    CF_ACCOUNT_ID: 'account_1',
+    CF_API_TOKEN: 'runtime-secret-placeholder',
+    PAGES_V1_ZONE_ID: 'zone_1',
+    PAGES_V1_SITES_KV_NAMESPACE_ID: 'namespace_1',
+    PAGES_ENV: 'production',
+    fetch: async () =>
+      Response.json({
+        success: true,
+        result: [
+          { id: 'route_1', pattern: 'legacy.workers.xd.team/*', script: 'pages-legacy' },
+          { id: 'route_2', pattern: 'legacy.workers.xd.team/api*', script: 'pages-other' },
+        ],
+      }),
+  });
   await assert.rejects(
-    () => client.unbindRoute({ hostname: 'legacy.workers.xd.team', expectedScriptName: 'pages-legacy' }),
-    /V1_SITE_ROUTE_UNSAFE/
+    () => hostnameResidue.unbindRoute({ hostname: 'legacy.workers.xd.team', expectedScriptName: 'pages-legacy' }),
+    (error) => /V1_SITE_ROUTE_UNSAFE/.test(error.message) && error.detail === 'extra route targets this hostname'
+  );
+
+  const scriptMismatch = createV1SitesAdminClient({
+    CF_ACCOUNT_ID: 'account_1',
+    CF_API_TOKEN: 'runtime-secret-placeholder',
+    PAGES_V1_ZONE_ID: 'zone_1',
+    PAGES_V1_SITES_KV_NAMESPACE_ID: 'namespace_1',
+    PAGES_ENV: 'production',
+    fetch: async () =>
+      Response.json({
+        success: true,
+        result: [{ id: 'route_1', pattern: 'legacy.workers.xd.team/*', script: 'pages-other' }],
+      }),
+  });
+  await assert.rejects(
+    () => scriptMismatch.unbindRoute({ hostname: 'legacy.workers.xd.team', expectedScriptName: 'pages-legacy' }),
+    (error) => /V1_SITE_ROUTE_UNSAFE/.test(error.message) && error.detail === 'route script mismatch'
+  );
+
+  const listForbidden = createV1SitesAdminClient({
+    CF_ACCOUNT_ID: 'account_1',
+    CF_API_TOKEN: 'runtime-secret-placeholder',
+    PAGES_V1_ZONE_ID: 'zone_1',
+    PAGES_V1_SITES_KV_NAMESPACE_ID: 'namespace_1',
+    PAGES_ENV: 'production',
+    fetch: async () =>
+      new Response(JSON.stringify({ success: false, errors: [{ code: 10000 }] }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+  });
+  await assert.rejects(
+    () => listForbidden.unbindRoute({ hostname: 'legacy.workers.xd.team', expectedScriptName: 'pages-legacy' }),
+    (error) =>
+      /V1_SITE_ROUTE_UNSAFE/.test(error.message) &&
+      error.detail === 'route list read failed' &&
+      error.status === 403
   );
 });
 

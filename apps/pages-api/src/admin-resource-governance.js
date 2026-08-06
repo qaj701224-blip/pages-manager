@@ -279,17 +279,20 @@ export function createV1SitesAdminClient(env = {}) {
           apiToken,
           `${CF_API_BASE_URL}/zones/${encodeURIComponent(zoneId)}/workers/routes`
         );
-      } catch {
-        throw invalidV1Route();
+      } catch (error) {
+        throw invalidV1Route('route list read failed', error);
       }
-      if (!Array.isArray(routesPayload?.result)) throw invalidV1Route();
+      if (!Array.isArray(routesPayload?.result)) throw invalidV1Route('route list malformed');
       const exact = routesPayload.result.find((route) => route?.pattern === `${normalizedHostname}/*`);
-      const relatedUnsafeRoute = routesPayload.result.find((route) =>
-        routePatternMayMatchHostname(route?.pattern, normalizedHostname)
+      // Wildcard-hostname routes are shared infrastructure (the v2 router claims the whole
+      // domain suffix); only extra routes targeting exactly this hostname are per-site residue.
+      const hostnameResidue = routesPayload.result.find(
+        (route) => route !== exact && routeHostnameEquals(route?.pattern, normalizedHostname)
       );
-      if (!exact && relatedUnsafeRoute) throw invalidV1Route();
+      if (hostnameResidue) throw invalidV1Route('extra route targets this hostname');
       if (!exact) return null;
-      if (typeof exact.id !== 'string' || !exact.id || exact.script !== expectedScriptName) throw invalidV1Route();
+      if (typeof exact.id !== 'string' || !exact.id) throw invalidV1Route('route id invalid');
+      if (exact.script !== expectedScriptName) throw invalidV1Route('route script mismatch');
       try {
         return await requestCloudflare(
           fetchImpl,
@@ -391,20 +394,16 @@ function isExactV1Hostname(hostname) {
   return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label);
 }
 
-function routePatternMayMatchHostname(pattern, hostname) {
+function routeHostnameEquals(pattern, hostname) {
   if (typeof pattern !== 'string') return false;
-  const routeHostname = pattern.split('/', 1)[0].toLowerCase();
-  if (routeHostname === hostname) return true;
-  if (!routeHostname.includes('*')) return false;
-  const wildcardPattern = routeHostname
-    .split('*')
-    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-    .join('.*');
-  return new RegExp(`^${wildcardPattern}$`).test(hostname);
+  return pattern.split('/', 1)[0].toLowerCase() === hostname;
 }
 
-function invalidV1Route() {
-  return new Error('V1_SITE_ROUTE_UNSAFE');
+function invalidV1Route(detail, cause) {
+  const error = new Error('V1_SITE_ROUTE_UNSAFE');
+  if (detail) error.detail = detail;
+  if (Number.isInteger(cause?.status)) error.status = cause.status;
+  return error;
 }
 
 function readInventoryListResult(payload) {

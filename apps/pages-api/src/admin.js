@@ -745,7 +745,7 @@ async function retireV1SiteRecord({ env, config, store, session, record, client 
 
   try {
     await client.deleteWorker({ workerName });
-  } catch {
+  } catch (error) {
     await recordV1RetireAuditSafe(store, env, config, session, base, 'worker_delete', 'deny', 502);
     return v1RetireFailure(
       record.name,
@@ -753,14 +753,14 @@ async function retireV1SiteRecord({ env, config, store, session, record, client 
       'V1_SITE_WORKER_DELETE_FAILED',
       'Legacy v1 Worker could not be deleted.',
       502,
-      'Check Cloudflare credentials and retry.'
+      `Cause: ${cloudflareFailureCause(error)}. Check Cloudflare credentials and retry.`
     );
   }
   await recordV1RetireAuditSafe(store, env, config, session, base, 'worker_delete', 'allow', 200);
 
   try {
     await client.unbindRoute({ hostname, expectedScriptName: workerName, environment: config.environment });
-  } catch {
+  } catch (error) {
     await recordV1RetireAuditSafe(store, env, config, session, base, 'route_unbind', 'deny', 502);
     return v1RetireFailure(
       record.name,
@@ -768,14 +768,14 @@ async function retireV1SiteRecord({ env, config, store, session, record, client 
       'V1_SITE_ROUTE_UNBIND_FAILED',
       'Legacy v1 hostname route could not be unbound.',
       502,
-      'Verify the exact route and retry.'
+      `Cause: ${cloudflareFailureCause(error)}. Verify the exact route and retry.`
     );
   }
   await recordV1RetireAuditSafe(store, env, config, session, base, 'route_unbind', 'allow', 200);
 
   try {
     await client.deleteSite(record.name);
-  } catch {
+  } catch (error) {
     await recordV1RetireAuditSafe(store, env, config, session, base, 'kv_delete', 'deny', 502);
     return v1RetireFailure(
       record.name,
@@ -783,7 +783,7 @@ async function retireV1SiteRecord({ env, config, store, session, record, client 
       'V1_SITE_KV_DELETE_FAILED',
       'Legacy v1 site metadata could not be deleted.',
       502,
-      'Check Cloudflare KV credentials and retry.'
+      `Cause: ${cloudflareFailureCause(error)}. Check Cloudflare KV credentials and retry.`
     );
   }
   await recordV1RetireAuditSafe(store, env, config, session, base, 'kv_delete', 'allow', 200);
