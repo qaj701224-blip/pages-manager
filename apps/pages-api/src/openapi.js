@@ -340,11 +340,13 @@ export function buildOpenApi(config) {
           description:
             'User CLI tokens create personal sites by default. Supplying ownerType=team and teamId creates a team-owned ' +
             'site when the user is a team admin or publisher. Access keys cannot use this endpoint.',
+          'x-error-codes': ['SITE_SLUG_CONFLICT', 'HOSTNAME_CLAIM_CONFLICT', 'SITE_CREATE_UNAVAILABLE'],
           responses: {
             201: { description: 'Site created' },
             403: { description: 'Team publisher role required or access key forbidden' },
             404: { description: 'Team not found' },
             409: { description: 'Site slug conflict' },
+            503: { description: 'Site creation or legacy resource cleanup is temporarily unavailable' },
           },
         },
       },
@@ -786,6 +788,7 @@ export function buildOpenApi(config) {
             'SITE_SLUG_CONFLICT',
             'SITE_VISIBILITY_INVALID',
             'HOSTNAME_CLAIM_CONFLICT',
+            'SITE_CREATE_UNAVAILABLE',
             'TEAM_REQUIRED',
             'TEAM_NOT_FOUND',
             'TEAM_PUBLISHER_REQUIRED',
@@ -810,7 +813,7 @@ export function buildOpenApi(config) {
             413: { description: 'Deployment payload too large for the current upload path' },
             500: { description: 'Deployment platform configuration invalid' },
             502: { description: 'Deployment upload or verification failed' },
-            503: { description: 'Deployment capacity exhausted or route snapshot write failed' },
+            503: { description: 'Deployment capacity exhausted, site creation, or route snapshot write failed' },
             409: { description: 'Idempotency conflict' },
           },
         },

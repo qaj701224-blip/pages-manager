@@ -1111,6 +1111,83 @@ class TestPagesStore {
     return cloneRecord(site);
   }
 
+  async createSiteByTakingOverV1Claim(input, expectedClaim, environment) {
+    const now = this.now();
+    const targetEnvironment = environment || input.environment;
+    const normalizedHostname = String(input.hostname || '').toLowerCase();
+    const takeoverError = (code) => {
+      const error = new Error(code);
+      error.code = code;
+      return error;
+    };
+
+    const currentClaim = this.hostnameClaims.get(normalizedHostname) || null;
+    if (
+      !currentClaim ||
+      !expectedClaim ||
+      currentClaim.environment !== targetEnvironment ||
+      currentClaim.hostname !== normalizedHostname ||
+      currentClaim.normalizedSlug !== input.slug ||
+      currentClaim.ownerSystem !== 'v1' ||
+      currentClaim.status !== 'active' ||
+      !sameHostnameClaimSnapshot(currentClaim, expectedClaim)
+    ) {
+      throw takeoverError('V1_TAKEOVER_STATE_CHANGED');
+    }
+    if (this.siteSlugIndex.has(`${targetEnvironment}:${input.slug}`)) throw takeoverError('SITE_SLUG_CONFLICT');
+    if (this.routes.has(input.routeId)) throw takeoverError('ROUTE_EXISTS');
+
+    const site = {
+      id: input.id,
+      slug: input.slug,
+      environment: targetEnvironment,
+      ownerType: input.ownerType || 'user',
+      ownerId: input.ownerId || input.ownerUserId,
+      ownerUserId: input.ownerUserId,
+      defaultVisibility: input.defaultVisibility,
+      executionModeOverride: input.executionModeOverride || null,
+      siteUuid: input.siteUuid,
+      createdAt: now,
+      updatedAt: now,
+      deletedAt: null,
+    };
+    const route = createInitialRoute({ ...input, environment: targetEnvironment, hostname: normalizedHostname }, now);
+    const owner = createOwnerMember(site.id, site.ownerUserId, now);
+    const nextClaim = createHostnameClaim(
+      {
+        ...currentClaim,
+        environment: targetEnvironment,
+        hostname: normalizedHostname,
+        normalizedSlug: input.slug,
+        ownerSystem: 'v2',
+        ownerId: site.id,
+        ownerRef: route.id,
+        status: 'active',
+        source: 'v1_email_takeover',
+        acquiredAt: now,
+        releasedAt: null,
+        reuseHoldUntil: null,
+        releaseReason: null,
+        createdAt: currentClaim.createdAt,
+      },
+      now
+    );
+    if (this.findConflictingHostnameClaimSync({ ...nextClaim, excludeHostname: normalizedHostname })) {
+      throw takeoverError('HOSTNAME_CLAIM_CONFLICT');
+    }
+    if (input.auditEvent && this.failAuditWrites) throw takeoverError('AUDIT_WRITE_FAILED');
+
+    this.hostnameClaims.set(normalizedHostname, nextClaim);
+    this.sites.set(site.id, site);
+    this.siteSlugIndex.set(`${targetEnvironment}:${input.slug}`, site.id);
+    this.routes.set(route.id, route);
+    this.routeBySiteId.set(site.id, route.id);
+    this.siteMembers.set(site.id, [owner]);
+    this.siteAclEntries.set(site.id, []);
+    if (input.auditEvent) await this.recordAuditEvent(input.auditEvent);
+    return cloneRecord(site);
+  }
+
   async getHostnameClaim(hostname) {
     return cloneRecord(this.hostnameClaims.get(String(hostname || '').toLowerCase()) || null);
   }
@@ -2513,6 +2590,21 @@ function normalizeRequiredString(value) {
 
 function normalizeUserEmail(value) {
   return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+function sameHostnameClaimSnapshot(left, right) {
+  return (
+    left.id === right.id &&
+    left.environment === right.environment &&
+    left.hostname === right.hostname &&
+    left.normalizedSlug === right.normalizedSlug &&
+    left.hostnameFamily === right.hostnameFamily &&
+    left.ownerSystem === right.ownerSystem &&
+    left.ownerId === right.ownerId &&
+    left.ownerRef === right.ownerRef &&
+    left.status === right.status &&
+    left.createdAt === right.createdAt
+  );
 }
 
 function normalizeTeamRole(role) {

@@ -10,6 +10,12 @@
 - 存量站点、访问能力、Cloudflare 资源和历史数据全部保留。
 - 不做 v1 到 v2 的自动迁移，不把 Site Publishing Preview 改造成 v2 deployer。
 
+## v2 驱动的同名接管例外
+
+v1 公网管理 API 仍保持退休协议，`apps/server` 不需要恢复运行时能力。唯一的迁移例外由 `apps/pages-api` 在现有站点创建 / 部署 API 内部处理：当 active v1 hostname claim 与目标 slug 冲突时，pages-api 读取自己绑定的 v1 `SITES` KV，并只在强认证 actor 邮箱与 `pages_<email>` 标记一致时清理目标 v1 exact route、Worker script 和 KV 记录，再按 v2 创建站点。
+
+该路径不接受手写 token，也不新增公开 takeover endpoint；邮箱不匹配、资源校验失败或 Cloudflare 安全校验失败均不会删除 v1 资源。D1 claim CAS 和站点创建在一个事务内完成，KV 删除失败只进入 v2 cleanup task，不改变已提交的 v2 归属。v1 完全下线后，pages-api 仍可保留 binding 直到 pending `v1_sites_kv_record` cleanup task 排空；不再依赖 `apps/server` Worker。
+
 ## 运行时协议
 
 ### `apps/server`

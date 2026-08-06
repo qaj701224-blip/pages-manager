@@ -780,13 +780,14 @@ test('pages v2 deploy workflows stay isolated from v1 and non-Cloudflare deploy 
 
   assert.doesNotMatch(combined, /scripts\/gen-wrangler\.sh/);
   assert.doesNotMatch(combined, /apps\/server/);
-  assert.doesNotMatch(combined, /CF_ZONE_ID_NEW/);
+  assert.match(combined, /CF_ZONE_ID_NEW: \$\{\{ secrets\.CF_ZONE_ID_NEW \}\}/);
   assert.doesNotMatch(combined, /docker buildx?|kubectl|ACR_|KUBE_CONFIG_B64|ALIYUN_ACCESS_KEY/);
   assert.match(combined, /CLOUDFLARE_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/);
   assert.match(combined, /CF_API_TOKEN: \$\{\{ secrets\.CF_API_TOKEN \}\}/);
   assert.match(combined, /SLACK_PAGES_ALERT_WEBHOOK_URL: \$\{\{ secrets\.SLACK_PAGES_ALERT_WEBHOOK_URL \}\}/);
   assert.doesNotMatch(combined, /CF_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/);
   assert.doesNotMatch(combined, /SLACK_PAGES_ALERT_WEBHOOK_URL: \$\{\{ vars\.SLACK_PAGES_ALERT_WEBHOOK_URL \}\}/);
+  assert.doesNotMatch(combined, /CF_ZONE_ID_NEW: \$\{\{ vars\./);
 });
 
 test('hostname claims conflict check is manual, read-only by default, and can apply verified backfill', () => {

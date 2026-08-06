@@ -24,6 +24,7 @@ import { runtimeConfigSnapshot, validateRuntimeBindingQuotas } from './runtime-c
 import { notifyDeploymentCapacityExhausted } from './slack-alerts.js';
 import { actorCanManageSite, buildSiteOwnerTransferAuditEvent, hostnameForSlug, siteCreateErrorResponse } from './sites.js';
 import { deliverWebhookEventToSubscriptions } from './webhooks.js';
+import { createSiteWithLegacyV1Takeover } from './legacy-v1/takeover.js';
 
 const encoder = new globalThis.TextEncoder();
 const VISIBILITIES = new Set(['internal', 'org', 'acl', 'owner', 'disabled']);
@@ -272,7 +273,7 @@ async function createDeployment(request, env, config, store, actor, ctx) {
 
   const deployment = deploymentResult.deployment;
   if (site.pendingSiteCreation) {
-    const creationResult = await applyPendingDeploySiteCreation(store, site);
+    const creationResult = await applyPendingDeploySiteCreation(env, config, store, actor, site);
     if (creationResult instanceof Response) {
       await markDeploymentFailed(store, deployment.id, env, {
         errorCode: 'SITE_CREATE_FAILED',
@@ -1443,19 +1444,25 @@ function pendingDeploySiteCreation(config, env, { siteSlug, ownerType, ownerId, 
   };
 }
 
-async function applyPendingDeploySiteCreation(store, site) {
+async function applyPendingDeploySiteCreation(env, config, store, actor, site) {
   try {
-    const created = await store.createSite({
-      id: site.pendingSiteCreation.id,
-      slug: site.pendingSiteCreation.slug,
-      ownerType: site.pendingSiteCreation.ownerType,
-      ownerId: site.pendingSiteCreation.ownerId,
-      ownerUserId: site.pendingSiteCreation.ownerUserId,
-      siteUuid: site.pendingSiteCreation.siteUuid,
-      defaultVisibility: site.pendingSiteCreation.defaultVisibility,
-      environment: site.pendingSiteCreation.environment,
-      routeId: site.pendingSiteCreation.routeId,
-      hostname: site.pendingSiteCreation.hostname,
+    const created = await createSiteWithLegacyV1Takeover({
+      env,
+      config,
+      store,
+      actor,
+      siteInput: {
+        id: site.pendingSiteCreation.id,
+        slug: site.pendingSiteCreation.slug,
+        ownerType: site.pendingSiteCreation.ownerType,
+        ownerId: site.pendingSiteCreation.ownerId,
+        ownerUserId: site.pendingSiteCreation.ownerUserId,
+        siteUuid: site.pendingSiteCreation.siteUuid,
+        defaultVisibility: site.pendingSiteCreation.defaultVisibility,
+        environment: site.pendingSiteCreation.environment,
+        routeId: site.pendingSiteCreation.routeId,
+        hostname: site.pendingSiteCreation.hostname,
+      },
     });
     return {
       site: {

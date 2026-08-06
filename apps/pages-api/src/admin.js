@@ -344,6 +344,9 @@ async function executeDeploymentCleanupTask(env, config, store, task) {
       'Wait for the drain window or refresh.'
     );
   }
+  if (task.resourceType === 'v1_sites_kv_record') {
+    return executeV1SitesKvCleanupTask(env, config, store, task);
+  }
   if (task.resourceType !== 'wfp_user_worker' || !isManagedWfpCleanupResource(task.resourceRef, config.environment)) {
     return cleanupTaskError(
       'CLEANUP_RESOURCE_UNSUPPORTED',
@@ -463,6 +466,83 @@ async function executeDeploymentCleanupTask(env, config, store, task) {
   }
 }
 
+async function executeV1SitesKvCleanupTask(env, config, store, task) {
+  if (task.environment !== config.environment || !isValidV1SitesKvResourceRef(task.resourceRef)) {
+    return cleanupTaskError(
+      'CLEANUP_RESOURCE_UNSUPPORTED',
+      'Cleanup resource is unsupported.',
+      409,
+      'Review the cleanup task resource.'
+    );
+  }
+  if (!env?.V1_SITES || typeof env.V1_SITES.delete !== 'function') {
+    return cleanupTaskError(
+      'CLEANUP_RESOURCE_UNAVAILABLE',
+      'Legacy site cleanup is unavailable.',
+      503,
+      'Check the pages-api KV binding and retry the cleanup task.'
+    );
+  }
+
+  const now = readNow(env);
+  const lockedUntil = new Date(Date.parse(now) + CLEANUP_TASK_LOCK_SECONDS * 1000).toISOString();
+  const running = await store.markDeploymentResourceCleanupRunning({
+    id: task.id,
+    environment: config.environment,
+    lockedUntil,
+    updatedAt: now,
+  });
+  if (!running || running.status !== 'running') {
+    return cleanupTaskError('CLEANUP_TASK_NOT_RUNNABLE', 'Cleanup task cannot run yet.', 409, 'Refresh and retry.');
+  }
+
+  try {
+    await env.V1_SITES.delete(task.resourceRef);
+  } catch {
+    await store.finishDeploymentResourceCleanupTask({
+      id: task.id,
+      environment: config.environment,
+      status: 'failed',
+      errorCode: 'V1_SITES_KV_DELETE_FAILED',
+      errorMessage: 'Legacy site record could not be deleted from KV.',
+      updatedAt: readNow(env),
+    });
+    return cleanupTaskError(
+      'V1_SITES_KV_DELETE_FAILED',
+      'Legacy site record could not be deleted from KV.',
+      502,
+      'Check the pages-api KV binding and retry the cleanup task.'
+    );
+  }
+
+  try {
+    const succeeded = await store.finishDeploymentResourceCleanupTask({
+      id: task.id,
+      environment: config.environment,
+      status: 'succeeded',
+      updatedAt: readNow(env),
+    });
+    return { ok: true, task: succeeded };
+  } catch {
+    try {
+      await store.finishDeploymentResourceCleanupTask({
+        id: task.id,
+        environment: config.environment,
+        status: 'failed',
+        errorCode: 'CLEANUP_STATE_UPDATE_FAILED',
+        errorMessage: 'Cleanup state could not be persisted after KV deletion.',
+        updatedAt: readNow(env),
+      });
+    } catch {}
+    return cleanupTaskError(
+      'CLEANUP_STATE_UPDATE_FAILED',
+      'Cleanup state could not be persisted after KV deletion.',
+      502,
+      'Review the cleanup task and retry after checking KV state.'
+    );
+  }
+}
+
 async function findCleanupActiveRoute(store, config, task) {
   if (typeof store.findActiveRouteByWorkerResource !== 'function') return null;
   return store.findActiveRouteByWorkerResource({
@@ -545,6 +625,14 @@ function isManagedWfpCleanupResource(workerName, environment) {
   if (typeof workerName !== 'string') return false;
   if (environment === 'staging') return workerName.startsWith('pages-v2-staging-');
   return workerName.startsWith('pages-v2-') && !workerName.startsWith('pages-v2-staging-');
+}
+
+function isValidV1SitesKvResourceRef(value) {
+  return (
+    typeof value === 'string' &&
+    value === value.toLowerCase() &&
+    /^[a-z0-9](?:[a-z0-9-]{0,48}[a-z0-9])?$/.test(value)
+  );
 }
 
 async function deleteAdminNormalWorker(request, env, config, store, session, slotId) {

@@ -60,6 +60,7 @@ jobs:
           IP_ALLOWLIST: ${{ vars.IP_ALLOWLIST }}
           PAGES_USER_WORKER_VPC_TUNNEL_ID: ${{ vars.PAGES_USER_WORKER_VPC_TUNNEL_ID }}
           ROUTE_SNAPSHOTS_KV_ID: ${{ vars.PAGES_V2_ROUTE_SNAPSHOTS_KV_ID }}
+          V1_SITES_KV_NAMESPACE_ID: ${{ secrets.SITES_KV_NAMESPACE_ID }}
         run: node scripts/render-pages-v2-wrangler.mjs apps/pages-api production
 
       - name: Generate Pages Auth Wrangler config
@@ -91,6 +92,7 @@ jobs:
         env:
           CF_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ZONE_ID_NEW: ${{ secrets.CF_ZONE_ID_NEW }}
           SLACK_PAGES_ALERT_WEBHOOK_URL: ${{ secrets.SLACK_PAGES_ALERT_WEBHOOK_URL }}
           SITE_SECRET_ENCRYPTION_KEY: ${{ secrets.SITE_SECRET_ENCRYPTION_KEY }}
           WEBHOOK_URL_ENCRYPTION_KEY: ${{ secrets.WEBHOOK_URL_ENCRYPTION_KEY }}
@@ -161,6 +163,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CF_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ZONE_ID_NEW: ${{ secrets.CF_ZONE_ID_NEW }}
           SLACK_PAGES_ALERT_WEBHOOK_URL: ${{ secrets.SLACK_PAGES_ALERT_WEBHOOK_URL }}
           SITE_SECRET_ENCRYPTION_KEY: ${{ secrets.SITE_SECRET_ENCRYPTION_KEY }}
           WEBHOOK_URL_ENCRYPTION_KEY: ${{ secrets.WEBHOOK_URL_ENCRYPTION_KEY }}
