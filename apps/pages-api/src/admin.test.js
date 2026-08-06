@@ -377,8 +377,7 @@ test('admin v1 sites inventory strips token metadata and joins workers plus v2 m
         workerName: null,
         workerModifiedOn: null,
         migratedCandidate: false,
-        canRetire: false,
-        retireBlockedReason: 'worker_missing',
+        canRetire: true,
       },
     ],
     unregisteredWorkers: [],
@@ -497,6 +496,127 @@ test('admin can retire a v1 site only from KV metadata and releases its hostname
   assert.equal(claim.releaseReason, 'site_retired');
   const audits = await store.listAuditEvents({ environment: 'production' });
   assert.ok(audits.some((event) => event.eventType === 'admin.v1_site_retire' && event.metadata?.stage === 'kv_delete'));
+});
+
+test('admin v1 retirement resolves scriptName from the KV value when list metadata omits it', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  const actions = [];
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/v1-sites/legacy', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'DELETE',
+    }),
+    env(store, {
+      V1_SITES_ADMIN_CLIENT: {
+        listSites: async () => [
+          { name: 'legacy', metadata: { url: 'https://legacy.workers.xd.team', updatedAt: '2026-06-01T00:00:00.000Z' } },
+        ],
+        getSiteRecord: async (name) => {
+          actions.push(['getSiteRecord', name]);
+          return { scriptName: 'pages-legacy' };
+        },
+        deleteWorker: async ({ workerName }) => actions.push(['deleteWorker', workerName]),
+        unbindRoute: async ({ hostname, expectedScriptName }) => actions.push(['unbindRoute', hostname, expectedScriptName]),
+        deleteSite: async (name) => actions.push(['deleteSite', name]),
+      },
+    })
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.deepEqual(actions, [
+    ['getSiteRecord', 'legacy'],
+    ['deleteWorker', 'pages-legacy'],
+    ['unbindRoute', 'legacy.workers.xd.team', 'pages-legacy'],
+    ['deleteSite', 'legacy'],
+  ]);
+});
+
+test('admin v1 retirement handles KV value read errors, mismatches, and absent fields safely', async () => {
+  const failingStore = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(failingStore);
+  let destructiveCalls = 0;
+  const failing = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/v1-sites/legacy', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'DELETE',
+    }),
+    env(failingStore, {
+      V1_SITES_ADMIN_CLIENT: {
+        listSites: async () => [{ name: 'legacy', metadata: { url: 'https://legacy.workers.xd.team' } }],
+        getSiteRecord: async () => {
+          throw new Error('CLOUDFLARE_RESOURCE_INVENTORY_FAILED');
+        },
+        deleteWorker: async () => {
+          destructiveCalls += 1;
+        },
+        unbindRoute: async () => {
+          destructiveCalls += 1;
+        },
+        deleteSite: async () => {
+          destructiveCalls += 1;
+        },
+      },
+    })
+  );
+  assert.equal(failing.status, 502, await failing.clone().text());
+  assert.equal((await failing.json()).error.code, 'V1_SITE_METADATA_READ_FAILED');
+
+  const mismatchStore = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(mismatchStore);
+  const mismatch = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/v1-sites/legacy', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'DELETE',
+    }),
+    env(mismatchStore, {
+      V1_SITES_ADMIN_CLIENT: {
+        listSites: async () => [{ name: 'legacy', metadata: { url: 'https://legacy.workers.xd.team' } }],
+        getSiteRecord: async () => ({ scriptName: 'pages-other' }),
+        deleteWorker: async () => {
+          destructiveCalls += 1;
+        },
+        unbindRoute: async () => {
+          destructiveCalls += 1;
+        },
+        deleteSite: async () => {
+          destructiveCalls += 1;
+        },
+      },
+    })
+  );
+  assert.equal(mismatch.status, 409, await mismatch.clone().text());
+  assert.equal((await mismatch.json()).error.code, 'V1_SITE_SCRIPT_INVALID');
+  assert.equal(destructiveCalls, 0);
+
+  const derivedStore = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(derivedStore);
+  const derivedActions = [];
+  const derived = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/v1-sites/legacy', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'DELETE',
+    }),
+    env(derivedStore, {
+      V1_SITES_ADMIN_CLIENT: {
+        listSites: async () => [{ name: 'legacy', metadata: { url: 'https://legacy.workers.xd.team' } }],
+        deleteWorker: async ({ workerName }) => derivedActions.push(['deleteWorker', workerName]),
+        unbindRoute: async ({ hostname, expectedScriptName }) =>
+          derivedActions.push(['unbindRoute', hostname, expectedScriptName]),
+        deleteSite: async (name) => derivedActions.push(['deleteSite', name]),
+      },
+    })
+  );
+  assert.equal(derived.status, 200, await derived.clone().text());
+  assert.deepEqual(derivedActions, [
+    ['deleteWorker', 'pages-legacy'],
+    ['unbindRoute', 'legacy.workers.xd.team', 'pages-legacy'],
+    ['deleteSite', 'legacy'],
+  ]);
 });
 
 test('admin v1 retirement hard-refuses reserved Worker names before Cloudflare deletion', async () => {

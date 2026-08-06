@@ -278,10 +278,10 @@ test('v1 inventory marks every non-retirable condition explicitly', () => {
   assert.deepEqual(
     inventory.map((site) => [site.name, site.canRetire, site.retireBlockedReason]),
     [
-      ['absent-worker', false, 'worker_missing'],
+      ['absent-worker', true, undefined],
       ['malformed', false, 'script_name_invalid'],
       ['mismatch', false, 'script_name_mismatch'],
-      ['missing', false, 'script_name_missing'],
+      ['missing', true, undefined],
       ['ready', true, undefined],
       ['reserved', false, 'platform_reserved'],
     ]

@@ -597,7 +597,28 @@ async function bulkRetireAdminV1Sites(request, env, config, store, session) {
 
 async function retireV1SiteRecord({ env, config, store, session, record, client }) {
   const reservedWorkerNames = readV1ReservedWorkerNames(env);
-  const workerName = record.scriptName;
+  const resolvedScriptName = await resolveV1RetireScriptName({ record, client, environment: config.environment });
+  if (resolvedScriptName.error) {
+    await recordV1RetireAuditSafe(
+      store,
+      env,
+      config,
+      session,
+      { name: record.name, workerName: null, hostname: null },
+      'metadata_read',
+      'deny',
+      resolvedScriptName.httpStatus
+    );
+    return v1RetireFailure(
+      record.name,
+      'metadata_read',
+      resolvedScriptName.error.code,
+      resolvedScriptName.error.message,
+      resolvedScriptName.httpStatus,
+      resolvedScriptName.error.action
+    );
+  }
+  const workerName = resolvedScriptName.workerName;
   const expectedWorkerName = expectedV1WorkerName(record.name, config.environment);
   const earlyBase = { name: record.name, workerName: expectedWorkerName, hostname: null };
   if (
@@ -839,6 +860,41 @@ async function recordV1RetireAuditSafe(store, env, config, session, site, stage,
   try {
     await recordV1RetireAudit(store, env, config, session, site, stage, decision, statusCode);
   } catch {}
+}
+
+async function resolveV1RetireScriptName({ record, client, environment }) {
+  if (record.scriptName) return { workerName: record.scriptName };
+  // v1 stores scriptName only in the KV value body, not in list-key metadata (deploy.js
+  // writes a reduced metadata object), so retirement reads the authoritative record here.
+  if (typeof client.getSiteRecord === 'function') {
+    let value;
+    try {
+      value = await client.getSiteRecord(record.name);
+    } catch {
+      return {
+        httpStatus: 502,
+        error: {
+          code: 'V1_SITE_METADATA_READ_FAILED',
+          message: 'Legacy v1 site record could not be read.',
+          action: 'Check Cloudflare KV credentials and retry.',
+        },
+      };
+    }
+    if (!value) {
+      return {
+        httpStatus: 404,
+        error: {
+          code: 'V1_SITE_NOT_FOUND',
+          message: 'Legacy v1 site was not found.',
+          action: 'Refresh the v1 site inventory.',
+        },
+      };
+    }
+    if (value.scriptName) return { workerName: value.scriptName };
+  }
+  // The strict validation below requires scriptName to equal the derived per-site name,
+  // so the derived name is the only value a missing field could legally hold.
+  return { workerName: expectedV1WorkerName(record.name, environment) };
 }
 
 function findV1SiteRecord(siteKeys, name) {

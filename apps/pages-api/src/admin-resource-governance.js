@@ -105,15 +105,19 @@ export function formatV1SitesInventory({ siteKeys, workers, activeV2Sites, envir
         managedWorkers.get(metadataWorkerName || expectedWorkerName) ||
         managedWorkers.get(expectedWorkerName) ||
         null;
-      const scriptNameStatus = classifyV1ScriptName({ siteName: site.name, scriptName: metadataWorkerName, environment });
+      // scriptName lives in the KV value body, not in list-key metadata; a missing field is
+      // normal and retirement re-reads the authoritative record, so only a present-but-wrong
+      // value blocks here. A missing Worker does not block either: the retire chain treats
+      // already-deleted resources as idempotent successes and still cleans route/KV/claim.
+      const scriptNameStatus = metadataWorkerName
+        ? classifyV1ScriptName({ siteName: site.name, scriptName: metadataWorkerName, environment })
+        : 'valid';
       const platformReserved = reservedWorkerNames.has(expectedWorkerName) || reservedWorkerNames.has(metadataWorkerName);
       const retireBlockedReason = platformReserved
         ? 'platform_reserved'
         : scriptNameStatus !== 'valid'
           ? scriptNameStatus
-          : !worker
-            ? 'worker_missing'
-            : null;
+          : null;
       const formatted = {
         name: site.name,
         url: nullableString(metadata.url),
@@ -215,6 +219,21 @@ export function createV1SitesAdminClient(env = {}) {
         cursor = nextCursor;
       } while (cursor);
       return sites;
+    },
+
+    async getSiteRecord(name) {
+      const key = nullableString(name);
+      if (!key) return null;
+      const namespace = encodeURIComponent(namespaceId);
+      const url = `${CF_API_BASE_URL}/accounts/${encodeURIComponent(accountId)}/storage/kv/namespaces/${namespace}/values/${encodeURIComponent(key)}`;
+      // KV value reads return the stored JSON directly, without the Cloudflare envelope.
+      const response = await fetchImpl(url, { headers: { Authorization: `Bearer ${apiToken}` } });
+      if (response.status === 404) return null;
+      if (!response.ok) throw invalidInventoryResponse();
+      const value = await response.json().catch(() => null);
+      if (!isPlainObject(value)) throw invalidInventoryResponse();
+      // Whitelist the fields retirement needs; the stored value also carries the site token.
+      return { scriptName: nullableString(value.scriptName) };
     },
 
     async listWorkers() {
