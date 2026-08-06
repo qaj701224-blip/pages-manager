@@ -2315,7 +2315,7 @@ test('user owner-scoped access keys can create a new personal site during deploy
   assert.equal((await store.getRouteBySiteId(site.id)).hostname, 'new-personal.workers.xd.team');
 });
 
-test('direct deployment takes over an email-matched v1 site before uploading v2', async () => {
+test('direct deployment takes over an email-matched v1 site while deferring a shared Worker cleanup', async () => {
   const store = await createSeededStore();
   const ownerScopedKey = await seedAccessKey(store, 'ak_owner_takeover', ['deploy:site'], null);
   await store.acquireHostnameClaim({
@@ -2349,7 +2349,10 @@ test('direct deployment takes over an email-matched v1 site before uploading v2'
     V1_CLOUDFLARE_CLIENT: {
       async listRoutes() {
         cloudflareCalls.push('listRoutes');
-        return [{ id: 'route_cf_1', pattern: 'legacy-guide.workers.xd.team/*', script: 'pages-legacy-guide' }];
+        return [
+          { id: 'route_cf_1', pattern: 'legacy-guide.workers.xd.team/*', script: 'pages-legacy-guide' },
+          { id: 'route_cf_2', pattern: 'docs.workers.xd.team/*', script: 'pages-legacy-guide' },
+        ];
       },
       async deleteRoute({ routeId }) {
         cloudflareCalls.push(`deleteRoute:${routeId}`);
@@ -2382,10 +2385,14 @@ test('direct deployment takes over an email-matched v1 site before uploading v2'
   assert.equal(body.deployment.siteId, 'site_takeover');
   assert.equal(body.route.hostname, 'legacy-guide.workers.xd.team');
   assert.doesNotMatch(JSON.stringify(body), /pages-user@example\.com|pages-legacy-guide/);
-  assert.deepEqual(cloudflareCalls, ['listRoutes', 'deleteRoute:route_cf_1', 'deleteScript:pages-legacy-guide']);
+  assert.deepEqual(cloudflareCalls, ['listRoutes', 'deleteRoute:route_cf_1']);
   assert.deepEqual(deletedKvKeys, ['legacy-guide']);
   assert.equal((await store.getHostnameClaim('legacy-guide.workers.xd.team')).ownerSystem, 'v2');
   assert.equal((await store.findSiteBySlug('production', 'legacy-guide')).id, 'site_takeover');
+  const cleanupTasks = await store.listDeploymentResourceCleanupTasks({ environment: 'production' });
+  assert.equal(cleanupTasks.length, 1);
+  assert.equal(cleanupTasks[0].resourceType, 'v1_worker_script');
+  assert.equal(cleanupTasks[0].resourceRef, 'pages-legacy-guide');
 });
 
 test('new site deploy idempotency conflict does not create an empty site first', async () => {
