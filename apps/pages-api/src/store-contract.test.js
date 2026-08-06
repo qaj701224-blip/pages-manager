@@ -114,6 +114,119 @@ test('D1 test adapter rolls back an entire batch when one statement fails', asyn
   });
 });
 
+test('site stores atomically convert an active v1 claim into a v2 site', async () => {
+  for (const backend of storeBackends) {
+    const { store, dispose } = await backend.create();
+    try {
+      await store.acquireHostnameClaim({
+        environment: 'production',
+        hostname: 'guide.workers.xd.team',
+        normalizedSlug: 'guide',
+        hostnameFamily: 'workers',
+        ownerSystem: 'v1',
+        ownerId: 'v1:production:guide',
+        ownerRef: 'pages-guide',
+        source: 'backfill_v1_sites',
+      });
+      const expectedClaim = await store.getHostnameClaim('guide.workers.xd.team');
+
+      const site = await store.createSiteByTakingOverV1Claim(
+        {
+          id: 'site_1',
+          slug: 'guide',
+          ownerType: 'user',
+          ownerId: 'usr_1',
+          ownerUserId: 'usr_1',
+          siteUuid: 'uuid_1',
+          defaultVisibility: 'org',
+          environment: 'production',
+          routeId: 'route_1',
+          hostname: 'guide.workers.xd.team',
+          auditEvent: {
+            id: 'audit_1',
+            environment: 'production',
+            eventType: 'site.v1_takeover',
+            actorUserId: 'usr_1',
+            actorType: 'user',
+            siteId: 'site_1',
+            routeId: 'route_1',
+            versionId: null,
+            decision: 'allow',
+            statusCode: 201,
+            traceId: null,
+            ipHash: null,
+            userAgentHash: null,
+            metadata: { source: 'v1_email_takeover', previousOwnerSystem: 'v1' },
+            createdAt: NOW,
+          },
+        },
+        expectedClaim,
+        'production'
+      );
+
+      assert.equal(site.id, 'site_1');
+      const claim = await store.getHostnameClaim('guide.workers.xd.team');
+      assert.equal(claim.ownerSystem, 'v2');
+      assert.equal(claim.ownerId, 'site_1');
+      assert.equal(claim.source, 'v1_email_takeover');
+      assert.equal((await store.getRouteBySiteId('site_1')).hostname, 'guide.workers.xd.team');
+      assert.equal((await store.listSiteMembers('site_1'))[0].role, 'owner');
+      assert.equal((await store.listAuditEvents({ environment: 'production' })).some((event) => event.id === 'audit_1'), true);
+    } finally {
+      dispose();
+    }
+  }
+});
+
+test('site stores reject stale v1 claim snapshots without partial takeover state', async () => {
+  for (const backend of storeBackends) {
+    const { store, dispose } = await backend.create();
+    try {
+      await store.acquireHostnameClaim({
+        environment: 'production',
+        hostname: 'guide.workers.xd.team',
+        normalizedSlug: 'guide',
+        hostnameFamily: 'workers',
+        ownerSystem: 'v1',
+        ownerId: 'v1:production:guide',
+        ownerRef: 'pages-guide',
+        source: 'backfill_v1_sites',
+      });
+      const expectedClaim = await store.getHostnameClaim('guide.workers.xd.team');
+      await store.releaseHostnameClaim({
+        ...expectedClaim,
+        reuseHoldUntil: NOW,
+        releaseReason: 'test_state_change',
+      });
+
+      await assert.rejects(
+        () =>
+          store.createSiteByTakingOverV1Claim(
+            {
+              id: 'site_1',
+              slug: 'guide',
+              ownerType: 'user',
+              ownerId: 'usr_1',
+              ownerUserId: 'usr_1',
+              siteUuid: 'uuid_1',
+              defaultVisibility: 'org',
+              environment: 'production',
+              routeId: 'route_1',
+              hostname: 'guide.workers.xd.team',
+            },
+            expectedClaim,
+            'production'
+          ),
+        { code: 'V1_TAKEOVER_STATE_CHANGED' }
+      );
+      assert.equal(await store.getSite('site_1'), null);
+      assert.equal(await store.getRouteBySiteId('site_1'), null);
+    } finally {
+      dispose();
+    }
+  }
+});
+
 for (const backend of storeBackends) {
   test(`${backend.name} contract: sites enforce environment-scoped slugs and create owner authority`, async () => {
     const fixture = await backend.create();

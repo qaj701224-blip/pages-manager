@@ -2147,6 +2147,297 @@ test('admin can review and run WFP cleanup tasks after the drain window', async 
   );
 });
 
+test('admin can run a v1 SITES KV cleanup task without using the WFP cleanup client', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  const deletedSlugs = [];
+  await seedPlatformAdmin(store);
+  await store.createDeploymentResourceCleanupTask({
+    id: 'cln_v1_kv',
+    environment: 'production',
+    resourceType: 'v1_sites_kv_record',
+    resourceRef: 'guide',
+    siteId: 'site_guide',
+    cleanupReason: 'v1_email_takeover_kv_delete',
+    status: 'pending',
+    cleanupAfter: '2026-07-01T23:59:00.000Z',
+  });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/deployment-cleanups/cln_v1_kv/run', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'POST',
+    }),
+    env(store, {
+      V1_SITES: {
+        async delete(slug) {
+          deletedSlugs.push(slug);
+        },
+      },
+      WFP_RESOURCE_ADMIN_CLIENT: {
+        deleteWorker: async () => {
+          throw new Error('WFP client must not be called');
+        },
+      },
+    })
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.equal((await response.json()).task.resourceType, 'v1_sites_kv_record');
+  assert.deepEqual(deletedSlugs, ['guide']);
+  assert.equal((await store.getDeploymentResourceCleanupTask('cln_v1_kv', 'production')).status, 'succeeded');
+});
+
+test('admin marks a v1 SITES KV cleanup task failed when KV deletion is unavailable', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await store.createDeploymentResourceCleanupTask({
+    id: 'cln_v1_kv_failed',
+    environment: 'production',
+    resourceType: 'v1_sites_kv_record',
+    resourceRef: 'guide',
+    cleanupReason: 'v1_email_takeover_kv_delete',
+    status: 'pending',
+    cleanupAfter: '2026-07-01T23:59:00.000Z',
+  });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/deployment-cleanups/cln_v1_kv_failed/run', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'POST',
+    }),
+    env(store, {
+      V1_SITES: {
+        async delete() {
+          throw new Error('kv unavailable');
+        },
+      },
+    })
+  );
+
+  assert.equal(response.status, 502, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'V1_SITES_KV_DELETE_FAILED');
+  const task = await store.getDeploymentResourceCleanupTask('cln_v1_kv_failed', 'production');
+  assert.equal(task.status, 'failed');
+  assert.equal(task.lastErrorCode, 'V1_SITES_KV_DELETE_FAILED');
+  assert.equal(task.lastErrorMessage, 'Legacy site record could not be deleted from KV.');
+  assert.doesNotMatch(JSON.stringify(task), /kv unavailable|pages_|@example\.com/);
+});
+
+test('admin rejects unsafe v1 SITES KV cleanup resource refs before deletion', async () => {
+  const resourceRefs = ['Guide', 'guide/other', 'guide*', '..', 'guide.workers.xd.team'];
+  for (const [index, resourceRef] of resourceRefs.entries()) {
+    const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+    let deleteCount = 0;
+    await seedPlatformAdmin(store);
+    await store.createDeploymentResourceCleanupTask({
+      id: `cln_v1_kv_unsafe_${index}`,
+      environment: 'production',
+      resourceType: 'v1_sites_kv_record',
+      resourceRef,
+      cleanupReason: 'v1_email_takeover_kv_delete',
+      status: 'pending',
+      cleanupAfter: '2026-07-01T23:59:00.000Z',
+    });
+
+    const response = await worker.fetch(
+      internalConsoleRequest(`/.xd-pages/api/console/admin/deployment-cleanups/cln_v1_kv_unsafe_${index}/run`, {
+        userId: 'usr_root',
+        admin: true,
+        method: 'POST',
+      }),
+      env(store, {
+        V1_SITES: {
+          async delete() {
+            deleteCount += 1;
+          },
+        },
+      })
+    );
+
+    assert.equal(response.status, 409, await response.clone().text());
+    assert.equal((await response.json()).error.code, 'CLEANUP_RESOURCE_UNSUPPORTED');
+    assert.equal(deleteCount, 0);
+    assert.equal(
+      (await store.getDeploymentResourceCleanupTask(`cln_v1_kv_unsafe_${index}`, 'production')).status,
+      'pending'
+    );
+  }
+});
+
+test('admin deletes an unreferenced deferred v1 Worker after revalidating its site slug', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  const calls = [];
+  await seedPlatformAdmin(store);
+  await seedV1WorkerCleanupTask(store, { taskId: 'cln_v1_worker' });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/deployment-cleanups/cln_v1_worker/run', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'POST',
+    }),
+    env(store, {
+      V1_CLOUDFLARE_CLIENT: {
+        async listRoutes() {
+          calls.push('listRoutes');
+          return [];
+        },
+        async deleteScript({ scriptName }) {
+          calls.push(`deleteScript:${scriptName}`);
+        },
+      },
+      WFP_RESOURCE_ADMIN_CLIENT: {
+        async deleteWorker() {
+          throw new Error('WFP cleanup client must not be called');
+        },
+      },
+    })
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.deepEqual(calls, ['listRoutes', 'deleteScript:pages-guide']);
+  assert.equal((await store.getDeploymentResourceCleanupTask('cln_v1_worker', 'production')).status, 'succeeded');
+});
+
+test('admin keeps a deferred v1 Worker while any Cloudflare route still references it', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  let deleteCount = 0;
+  await seedPlatformAdmin(store);
+  await seedV1WorkerCleanupTask(store, {
+    taskId: 'cln_v1_worker_shared',
+    cleanupReason: 'v1_email_takeover_shared_route',
+  });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/deployment-cleanups/cln_v1_worker_shared/run', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'POST',
+    }),
+    env(store, {
+      V1_CLOUDFLARE_CLIENT: {
+        async listRoutes() {
+          return [{ id: 'route_shared', pattern: 'docs.workers.xd.team/*', script: 'pages-guide' }];
+        },
+        async deleteScript() {
+          deleteCount += 1;
+        },
+      },
+    })
+  );
+
+  assert.equal(response.status, 409, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'CLEANUP_RESOURCE_ACTIVE');
+  assert.equal(deleteCount, 0);
+  const task = await store.getDeploymentResourceCleanupTask('cln_v1_worker_shared', 'production');
+  assert.equal(task.status, 'failed');
+  assert.equal(task.lastErrorCode, 'CLEANUP_RESOURCE_ACTIVE');
+});
+
+test('admin rejects a deferred v1 Worker that does not exactly match its site slug', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  let cloudflareCalls = 0;
+  await seedPlatformAdmin(store);
+  await seedV1WorkerCleanupTask(store, {
+    taskId: 'cln_v1_worker_mismatch',
+    resourceRef: 'pages-other',
+  });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/deployment-cleanups/cln_v1_worker_mismatch/run', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'POST',
+    }),
+    env(store, {
+      V1_CLOUDFLARE_CLIENT: {
+        async listRoutes() {
+          cloudflareCalls += 1;
+          return [];
+        },
+        async deleteScript() {
+          cloudflareCalls += 1;
+        },
+      },
+    })
+  );
+
+  assert.equal(response.status, 409, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'CLEANUP_RESOURCE_UNSUPPORTED');
+  assert.equal(cloudflareCalls, 0);
+  assert.equal(
+    (await store.getDeploymentResourceCleanupTask('cln_v1_worker_mismatch', 'production')).status,
+    'pending'
+  );
+});
+
+test('admin never treats a protected platform Worker as a deferred v1 site Worker', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  let cloudflareCalls = 0;
+  await seedPlatformAdmin(store);
+  await seedV1WorkerCleanupTask(store, {
+    taskId: 'cln_v1_worker_protected',
+    slug: 'manager',
+    resourceRef: 'pages-manager',
+  });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/deployment-cleanups/cln_v1_worker_protected/run', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'POST',
+    }),
+    env(store, {
+      V1_CLOUDFLARE_CLIENT: {
+        async listRoutes() {
+          cloudflareCalls += 1;
+          return [];
+        },
+        async deleteScript() {
+          cloudflareCalls += 1;
+        },
+      },
+    })
+  );
+
+  assert.equal(response.status, 409, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'CLEANUP_RESOURCE_UNSUPPORTED');
+  assert.equal(cloudflareCalls, 0);
+});
+
+test('admin marks a deferred v1 Worker cleanup failed when Cloudflare deletion fails', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await seedV1WorkerCleanupTask(store, { taskId: 'cln_v1_worker_failed' });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/deployment-cleanups/cln_v1_worker_failed/run', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'POST',
+    }),
+    env(store, {
+      V1_CLOUDFLARE_CLIENT: {
+        async listRoutes() {
+          return [];
+        },
+        async deleteScript() {
+          throw new Error('raw cloudflare failure');
+        },
+      },
+    })
+  );
+
+  assert.equal(response.status, 502, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'V1_WORKER_DELETE_FAILED');
+  const task = await store.getDeploymentResourceCleanupTask('cln_v1_worker_failed', 'production');
+  assert.equal(task.status, 'failed');
+  assert.equal(task.lastErrorCode, 'V1_WORKER_DELETE_FAILED');
+  assert.doesNotMatch(JSON.stringify(task), /raw cloudflare failure/);
+});
+
 test('admin WFP cleanup deletes user worker through dispatch namespace API', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
   const requests = [];
@@ -3356,6 +3647,40 @@ async function seedPlatformAdmin(store, userId = 'usr_root') {
     userId,
     grantedByUserId: 'usr_bootstrap',
     grantReason: 'test',
+  });
+}
+
+async function seedV1WorkerCleanupTask(
+  store,
+  {
+    taskId,
+    slug = 'guide',
+    resourceRef = `pages-${slug}`,
+    cleanupReason = 'v1_email_takeover_worker_delete_failed',
+  }
+) {
+  const siteId = `site_${slug}`;
+  await store.createSite({
+    id: siteId,
+    slug,
+    ownerUserId: 'usr_root',
+    ownerType: 'user',
+    ownerId: 'usr_root',
+    siteUuid: `uuid_${siteId}`,
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: `route_${siteId}`,
+    hostname: `${slug}.workers.xd.team`,
+  });
+  await store.createDeploymentResourceCleanupTask({
+    id: taskId,
+    environment: 'production',
+    resourceType: 'v1_worker_script',
+    resourceRef,
+    siteId,
+    cleanupReason,
+    status: 'pending',
+    cleanupAfter: '2026-07-01T23:59:00.000Z',
   });
 }
 

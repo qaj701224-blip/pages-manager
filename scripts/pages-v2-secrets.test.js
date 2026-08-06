@@ -28,6 +28,7 @@ const baseEnv = {
   DRY_RUN: '1',
   CF_ACCOUNT_ID: 'cf-account',
   CF_API_TOKEN: 'cf-runtime-token',
+  CF_ZONE_ID_NEW: 'cf-zone-id',
   SLACK_PAGES_ALERT_WEBHOOK_URL: testSlackWebhookUrl,
   SITE_SECRET_ENCRYPTION_KEY: 'site-secret-encryption-key',
   WEBHOOK_URL_ENCRYPTION_KEY: 'webhook-url-encryption-key',
@@ -109,6 +110,7 @@ test('pages-api secret injection includes WFP runtime secrets and access key pep
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /CF_ACCOUNT_ID/);
   assert.match(result.stdout, /CF_API_TOKEN/);
+  assert.match(result.stdout, /CF_ZONE_ID_NEW/);
   assert.match(result.stdout, /SLACK_PAGES_ALERT_WEBHOOK_URL/);
   assert.match(result.stdout, /SITE_SECRET_ENCRYPTION_KEY/);
   assert.match(result.stdout, /WEBHOOK_URL_ENCRYPTION_KEY/);

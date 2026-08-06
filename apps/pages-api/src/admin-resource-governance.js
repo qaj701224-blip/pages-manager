@@ -193,7 +193,9 @@ export function createV1SitesAdminClient(env = {}) {
   const accountId = nullableString(env.CF_ACCOUNT_ID);
   const apiToken = nullableString(env.CF_API_TOKEN);
   const namespaceId = nullableString(env.PAGES_V1_SITES_KV_NAMESPACE_ID);
-  const configuredZoneId = nullableString(env.PAGES_V1_ZONE_ID);
+  // CF_ZONE_ID_NEW is the required runtime secret shared with v1 takeover; the retired
+  // PAGES_V1_ZONE_ID name is still honored for injected overrides.
+  const configuredZoneId = nullableString(env.PAGES_V1_ZONE_ID) || nullableString(env.CF_ZONE_ID_NEW);
   const fetchImpl = env.fetch || globalThis.fetch;
   if (!accountId || !apiToken || !namespaceId || typeof fetchImpl !== 'function') return null;
 

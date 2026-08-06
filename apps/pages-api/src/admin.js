@@ -17,6 +17,10 @@ import { newId } from './id.js';
 import { handleConsoleAdminWebhooksApi } from './webhooks.js';
 import { buildSiteOwnerTransferAuditEvent, refreshActiveRouteSnapshot } from './sites.js';
 import { ensureCanChangeTeamAdminRole, ensureCanRemoveTeamMember } from './teams.js';
+import {
+  cleanupDeferredLegacyV1WorkerScript,
+  resolveDeferredLegacyV1WorkerTarget,
+} from './legacy-v1/deferred-worker-cleanup.js';
 import { createWfpClient, readWfpConfig } from '@xd/wfp-client';
 import {
   buildWorkerOrphanScan,
@@ -1404,6 +1408,12 @@ async function executeDeploymentCleanupTask(env, config, store, task) {
       'Wait for the drain window or refresh.'
     );
   }
+  if (task.resourceType === 'v1_sites_kv_record') {
+    return executeV1SitesKvCleanupTask(env, config, store, task);
+  }
+  if (task.resourceType === 'v1_worker_script') {
+    return executeV1WorkerCleanupTask(env, config, store, task);
+  }
   if (task.resourceType !== 'wfp_user_worker' || !isManagedWfpWorkerName(task.resourceRef, config.environment)) {
     return cleanupTaskError(
       'CLEANUP_RESOURCE_UNSUPPORTED',
@@ -1607,6 +1617,172 @@ async function validateCleanupWfpOwnership(store, config, task) {
   }
 }
 
+async function executeV1WorkerCleanupTask(env, config, store, task) {
+  const site = typeof store.getSite === 'function' && task.siteId ? await store.getSite(task.siteId) : null;
+  const target = resolveDeferredLegacyV1WorkerTarget({ environment: config.environment, task, site });
+  if (!target) {
+    return cleanupTaskError(
+      'CLEANUP_RESOURCE_UNSUPPORTED',
+      'Cleanup resource is unsupported.',
+      409,
+      'Review the cleanup task resource.'
+    );
+  }
+
+  const now = readNow(env);
+  const lockedUntil = new Date(Date.parse(now) + CLEANUP_TASK_LOCK_SECONDS * 1000).toISOString();
+  const running = await store.markDeploymentResourceCleanupRunning({
+    id: task.id,
+    environment: config.environment,
+    lockedUntil,
+    updatedAt: now,
+  });
+  if (!running || running.status !== 'running') {
+    return cleanupTaskError('CLEANUP_TASK_NOT_RUNNABLE', 'Cleanup task cannot run yet.', 409, 'Refresh and retry.');
+  }
+
+  let result;
+  try {
+    result = await cleanupDeferredLegacyV1WorkerScript({ env, target });
+  } catch {
+    await store.finishDeploymentResourceCleanupTask({
+      id: task.id,
+      environment: config.environment,
+      status: 'failed',
+      errorCode: 'V1_WORKER_DELETE_FAILED',
+      errorMessage: 'Legacy Worker could not be safely deleted from Cloudflare.',
+      updatedAt: readNow(env),
+    });
+    return cleanupTaskError(
+      'V1_WORKER_DELETE_FAILED',
+      'Legacy Worker could not be safely deleted from Cloudflare.',
+      502,
+      'Check Cloudflare credentials and route references, then retry the cleanup task.'
+    );
+  }
+
+  if (result.workerCleanup === 'deferred_shared_route') {
+    await store.finishDeploymentResourceCleanupTask({
+      id: task.id,
+      environment: config.environment,
+      status: 'failed',
+      errorCode: 'CLEANUP_RESOURCE_ACTIVE',
+      errorMessage: 'Legacy Worker is still referenced by a Cloudflare route.',
+      updatedAt: readNow(env),
+    });
+    return cleanupTaskError(
+      'CLEANUP_RESOURCE_ACTIVE',
+      'Cleanup resource is still referenced by an active route.',
+      409,
+      'Remove the remaining route reference before deleting this Worker.'
+    );
+  }
+
+  try {
+    const succeeded = await store.finishDeploymentResourceCleanupTask({
+      id: task.id,
+      environment: config.environment,
+      status: 'succeeded',
+      updatedAt: readNow(env),
+    });
+    return { ok: true, task: succeeded };
+  } catch {
+    try {
+      await store.finishDeploymentResourceCleanupTask({
+        id: task.id,
+        environment: config.environment,
+        status: 'failed',
+        errorCode: 'CLEANUP_STATE_UPDATE_FAILED',
+        errorMessage: 'Cleanup state could not be persisted after Worker deletion.',
+        updatedAt: readNow(env),
+      });
+    } catch {}
+    return cleanupTaskError(
+      'CLEANUP_STATE_UPDATE_FAILED',
+      'Cleanup state could not be persisted after Worker deletion.',
+      502,
+      'Review the cleanup task and retry after checking D1 state.'
+    );
+  }
+}
+
+async function executeV1SitesKvCleanupTask(env, config, store, task) {
+  if (task.environment !== config.environment || !isValidV1SitesKvResourceRef(task.resourceRef)) {
+    return cleanupTaskError(
+      'CLEANUP_RESOURCE_UNSUPPORTED',
+      'Cleanup resource is unsupported.',
+      409,
+      'Review the cleanup task resource.'
+    );
+  }
+  if (!env?.V1_SITES || typeof env.V1_SITES.delete !== 'function') {
+    return cleanupTaskError(
+      'CLEANUP_RESOURCE_UNAVAILABLE',
+      'Legacy site cleanup is unavailable.',
+      503,
+      'Check the pages-api KV binding and retry the cleanup task.'
+    );
+  }
+
+  const now = readNow(env);
+  const lockedUntil = new Date(Date.parse(now) + CLEANUP_TASK_LOCK_SECONDS * 1000).toISOString();
+  const running = await store.markDeploymentResourceCleanupRunning({
+    id: task.id,
+    environment: config.environment,
+    lockedUntil,
+    updatedAt: now,
+  });
+  if (!running || running.status !== 'running') {
+    return cleanupTaskError('CLEANUP_TASK_NOT_RUNNABLE', 'Cleanup task cannot run yet.', 409, 'Refresh and retry.');
+  }
+
+  try {
+    await env.V1_SITES.delete(task.resourceRef);
+  } catch {
+    await store.finishDeploymentResourceCleanupTask({
+      id: task.id,
+      environment: config.environment,
+      status: 'failed',
+      errorCode: 'V1_SITES_KV_DELETE_FAILED',
+      errorMessage: 'Legacy site record could not be deleted from KV.',
+      updatedAt: readNow(env),
+    });
+    return cleanupTaskError(
+      'V1_SITES_KV_DELETE_FAILED',
+      'Legacy site record could not be deleted from KV.',
+      502,
+      'Check the pages-api KV binding and retry the cleanup task.'
+    );
+  }
+
+  try {
+    const succeeded = await store.finishDeploymentResourceCleanupTask({
+      id: task.id,
+      environment: config.environment,
+      status: 'succeeded',
+      updatedAt: readNow(env),
+    });
+    return { ok: true, task: succeeded };
+  } catch {
+    try {
+      await store.finishDeploymentResourceCleanupTask({
+        id: task.id,
+        environment: config.environment,
+        status: 'failed',
+        errorCode: 'CLEANUP_STATE_UPDATE_FAILED',
+        errorMessage: 'Cleanup state could not be persisted after KV deletion.',
+        updatedAt: readNow(env),
+      });
+    } catch {}
+    return cleanupTaskError(
+      'CLEANUP_STATE_UPDATE_FAILED',
+      'Cleanup state could not be persisted after KV deletion.',
+      502,
+      'Review the cleanup task and retry after checking KV state.'
+    );
+  }
+}
+
 async function findCleanupActiveRoute(store, config, task) {
   if (typeof store.findActiveRouteByWorkerResource !== 'function') return null;
   return store.findActiveRouteByWorkerResource({
@@ -1699,6 +1875,14 @@ function createWfpScanAdminClient(env, config) {
   } catch {
     return null;
   }
+}
+
+function isValidV1SitesKvResourceRef(value) {
+  return (
+    typeof value === 'string' &&
+    value === value.toLowerCase() &&
+    /^[a-z0-9](?:[a-z0-9-]{0,48}[a-z0-9])?$/.test(value)
+  );
 }
 
 async function deleteAdminNormalWorker(request, env, config, store, session, slotId) {

@@ -116,6 +116,7 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
     'SITE_SLUG_CONFLICT',
     'SITE_VISIBILITY_INVALID',
     'HOSTNAME_CLAIM_CONFLICT',
+    'SITE_CREATE_UNAVAILABLE',
     'TEAM_REQUIRED',
     'TEAM_NOT_FOUND',
     'TEAM_PUBLISHER_REQUIRED',
@@ -133,6 +134,11 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
     'RUNTIME_CONFIG_UNSUPPORTED',
     'ROUTE_SNAPSHOT_WRITE_FAILED',
     'IDEMPOTENCY_CONFLICT',
+  ]);
+  assert.deepEqual(body.paths['/.xd-pages/api/sites'].post['x-error-codes'], [
+    'SITE_SLUG_CONFLICT',
+    'HOSTNAME_CLAIM_CONFLICT',
+    'SITE_CREATE_UNAVAILABLE',
   ]);
   assert.equal(
     body.paths['/.xd-pages/api/sites/{site}/secrets'].put.requestBody.content['application/json'].schema.$ref,

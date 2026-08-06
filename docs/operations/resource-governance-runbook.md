@@ -6,7 +6,7 @@
 
 在 Admin Console 打开 `Deployment Cleanups → Orphan Scan`，点击“开始扫描”。扫描只读取当前环境的 dispatch namespace，并与 D1 中的 active route、可回滚版本和 cleanup task 对账。
 
-上游 scripts 清单端点没有正式的分页契约。客户端会防御性解析 `result`，仅当 `result_info` 完全缺失时才接受 undocumented 单页结果；只要 `result_info` 存在，就必须包含合法的原生正整数 `page` / `total_pages`。随后读取 namespace 详情的 `script_count` 做完整性校验。首次数量不一致会自动重试一次；仍不一致时返回 `completeness: "incomplete"`、`scannedCount` 与 `namespaceScriptCount`。
+上游 scripts 清单端点没有正式的分页契约，线上实测为 KV 同款 cursor 分页。客户端会防御性解析 `result`，仅当 `result_info` 完全缺失时才接受 undocumented 单页结果；`result_info` 存在时必须匹配三种合法形态之一（`page`+`total_pages`、`page`+`per_page`/`total_count`、`count`/`cursor`），否则 fail-closed。随后读取 namespace 详情的 `script_count` 做完整性校验。首次数量不一致会自动重试一次；仍不一致时返回 `completeness: "incomplete"`、`scannedCount` 与 `namespaceScriptCount`。
 
 `incomplete` 结果只能查看、筛选和重新扫描，不能触发 backfill。未来任何回收决策都必须基于 `completeness: "complete"` 的扫描结果；不允许通过手工改请求绕过这个门禁。
 
@@ -58,7 +58,7 @@ Cron 默认每 15 分钟小批量执行到期任务。排空速度可按以下�
 - 每批最多 100 个，服务端并发上限为 5。
 - 确认弹窗显示数量和名称预览；执行后逐项显示成功或失败，失败项可单独重试。
 
-退役 route 解绑还依赖 pages-api Worker secret `PAGES_V1_ZONE_ID`。未配置时 v1 清单仍可只读展示，但单个和批量退役会在读取清单或执行任何 Cloudflare 删除前返回 `V1_SITES_UNSUPPORTED`；production 与 staging 必须分别注入目标环境对应的 zone id。两个 v1 secret 均由 v2 deploy workflow 直接引用 v1 既有 GitHub Environment secret（`SITES_KV_NAMESPACE_ID`、`CF_ZONE_ID_NEW`）注入；v1 彻底退役删除旧 secret 后，下一次 v2 部署会自动清除 Worker 上的对应 secret，功能回到只读降级。
+退役 route 解绑复用 pages-api 必配 runtime secret `CF_ZONE_ID_NEW`（v1 接管功能同用）。未配置时 v1 清单仍可只读展示，但单个和批量退役会在执行任何 Cloudflare 删除前返回 `V1_SITES_UNSUPPORTED`；production 与 staging 各自注入目标环境的值。v1 相关 secret 均由 v2 deploy workflow 直接引用 v1 既有 GitHub Environment secret（`SITES_KV_NAMESPACE_ID`、`CF_ZONE_ID_NEW`）注入；历史遗留的可选 secret `PAGES_V1_ZONE_ID` 已废弃，部署脚本会自动清理 Worker 上的残留值。
 
 route 解绑必须满足：hostname 是完整的 `.workers.xd.team` 域名、route pattern 精确为 `${hostname}/*`、当前绑定脚本与 KV metadata 中解析出的脚本完全一致。wildcard route、其它 zone、平台 Worker 或脚本不匹配时必须拒绝。
 

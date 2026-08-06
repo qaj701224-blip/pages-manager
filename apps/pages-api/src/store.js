@@ -2062,6 +2062,187 @@ export class D1PagesStore {
     return cloneRecord(site);
   }
 
+  async createSiteByTakingOverV1Claim(input, expectedClaim, environment) {
+    const now = this.now();
+    const targetEnvironment = environment || input.environment;
+    const normalizedHostname = String(input.hostname || '').toLowerCase();
+    const takeoverError = (code) => {
+      const error = new Error(code);
+      error.code = code;
+      return error;
+    };
+
+    if (
+      !expectedClaim ||
+      expectedClaim.environment !== targetEnvironment ||
+      expectedClaim.hostname !== normalizedHostname ||
+      expectedClaim.normalizedSlug !== input.slug ||
+      expectedClaim.ownerSystem !== 'v1' ||
+      expectedClaim.status !== 'active'
+    ) {
+      throw takeoverError('V1_TAKEOVER_STATE_CHANGED');
+    }
+    if (await this.findSiteBySlug(targetEnvironment, input.slug)) throw takeoverError('SITE_SLUG_CONFLICT');
+
+    const site = {
+      id: input.id,
+      slug: input.slug,
+      environment: targetEnvironment,
+      ownerType: input.ownerType || 'user',
+      ownerId: input.ownerId || input.ownerUserId,
+      ownerUserId: input.ownerUserId,
+      defaultVisibility: input.defaultVisibility,
+      executionModeOverride: input.executionModeOverride || null,
+      siteUuid: input.siteUuid,
+      createdAt: now,
+      updatedAt: now,
+      deletedAt: null,
+    };
+    const route = createInitialRoute({ ...input, environment: targetEnvironment, hostname: normalizedHostname }, now);
+    const member = createOwnerMember(site.id, site.ownerUserId, now);
+    const hostnameClaim = createHostnameClaim(
+      {
+        id: expectedClaim.id,
+        environment: targetEnvironment,
+        hostname: normalizedHostname,
+        normalizedSlug: input.slug,
+        hostnameFamily: input.hostnameFamily || expectedClaim.hostnameFamily,
+        ownerSystem: 'v2',
+        ownerId: site.id,
+        ownerRef: route.id,
+        status: 'active',
+        source: 'v1_email_takeover',
+        acquiredAt: now,
+        createdAt: expectedClaim.createdAt,
+      },
+      now
+    );
+    const conflictingClaim = await this.findConflictingHostnameClaim({
+      ...hostnameClaim,
+      excludeHostname: hostnameClaim.hostname,
+    });
+    if (conflictingClaim) throw takeoverError('HOSTNAME_CLAIM_CONFLICT');
+
+    const claimUpdate = this.db
+      .prepare(
+        `UPDATE hostname_claims
+        SET owner_system = 'v2', owner_id = ?, owner_ref = ?, status = 'active', source = ?,
+          acquired_at = ?, lease_expires_at = NULL, released_at = NULL, reuse_hold_until = NULL,
+          release_reason = NULL, updated_at = ?
+        WHERE hostname = ? AND environment = ? AND normalized_slug = ?
+          AND id = ? AND hostname_family = ? AND created_at = ?
+          AND owner_system = 'v1' AND owner_id = ? AND status = 'active'
+          AND (owner_ref = ? OR owner_ref IS NULL)
+          AND NOT EXISTS (
+            SELECT 1 FROM hostname_claims
+            WHERE environment = ? AND normalized_slug = ?
+              AND (
+                status IN ('pending', 'active', 'conflicted')
+                OR (status = 'held' AND (reuse_hold_until IS NULL OR reuse_hold_until > ?))
+              )
+              AND hostname != ?
+          )`
+      )
+      .bind(
+        hostnameClaim.ownerId,
+        hostnameClaim.ownerRef,
+        hostnameClaim.source,
+        hostnameClaim.acquiredAt,
+        hostnameClaim.updatedAt,
+        hostnameClaim.hostname,
+        hostnameClaim.environment,
+        hostnameClaim.normalizedSlug,
+        expectedClaim.id,
+        expectedClaim.hostnameFamily,
+        expectedClaim.createdAt,
+        expectedClaim.ownerId,
+        expectedClaim.ownerRef,
+        hostnameClaim.environment,
+        hostnameClaim.normalizedSlug,
+        now,
+        hostnameClaim.hostname
+      );
+    const claimGuard = this.db
+      .prepare(`SELECT json_extract('{"ok":true}', CASE WHEN changes() = 1 THEN '$.ok' ELSE ? END)`)
+      .bind('V1_TAKEOVER_STATE_CHANGED');
+
+    const statements = [
+      claimUpdate,
+      claimGuard,
+      this.db
+        .prepare(
+          `INSERT INTO sites (
+            id, slug, environment, owner_type, owner_id, owner_user_id, default_visibility, execution_mode_override, site_uuid,
+            created_at, updated_at, deleted_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .bind(
+          site.id,
+          site.slug,
+          site.environment,
+          site.ownerType,
+          site.ownerId,
+          site.ownerUserId,
+          site.defaultVisibility,
+          site.executionModeOverride,
+          site.siteUuid,
+          site.createdAt,
+          site.updatedAt,
+          site.deletedAt
+        ),
+      this.db
+        .prepare(
+          `INSERT INTO site_routes (
+            id, hostname, site_id, environment, runtime, execution_provider, worker_name,
+            dispatch_type, dispatch_binding_name, slot_id,
+            active_version_id, visibility, policy_version, route_generation,
+            runtime_config_generation, runtime_config_lock_id, runtime_config_lock_expires_at,
+            route_status, cache_tier, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .bind(
+          route.id,
+          route.hostname,
+          route.siteId,
+          route.environment,
+          route.runtime,
+          route.executionProvider,
+          route.workerName,
+          route.dispatchType,
+          route.dispatchBindingName,
+          route.slotId,
+          route.activeVersionId,
+          route.visibility,
+          route.policyVersion,
+          route.routeGeneration,
+          route.runtimeConfigGeneration,
+          null,
+          null,
+          route.routeStatus,
+          route.cacheTier,
+          route.createdAt,
+          route.updatedAt
+        ),
+      this.db
+        .prepare(`INSERT INTO site_members (site_id, user_id, role, created_by, created_at) VALUES (?, ?, ?, ?, ?)`)
+        .bind(member.siteId, member.userId, member.role, member.createdBy, member.createdAt),
+    ];
+    if (input.auditEvent) statements.push(this.auditEventStatement(input.auditEvent));
+
+    try {
+      await this.db.batch(statements);
+    } catch (error) {
+      if (String(error?.message || error).includes('V1_TAKEOVER_STATE_CHANGED')) {
+        throw takeoverError('V1_TAKEOVER_STATE_CHANGED');
+      }
+      if (!isSqliteConstraintError(error)) throw error;
+      if (await this.findSiteBySlug(targetEnvironment, input.slug)) throw takeoverError('SITE_SLUG_CONFLICT');
+      throw takeoverError('HOSTNAME_CLAIM_CONFLICT');
+    }
+
+    return cloneRecord(site);
+  }
+
   createHostnameClaimGuardStatement(claim) {
     return this.db
       .prepare(

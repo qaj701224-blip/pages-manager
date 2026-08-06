@@ -32,6 +32,7 @@ const baseEnv = {
   CLOUDFLARE_ACCOUNT_ID: 'dummy-account',
   D1_DATABASE_ID: 'dummy-pages-d1',
   ROUTE_SNAPSHOTS_KV_ID: 'dummy-route-snapshots-kv',
+  V1_SITES_KV_NAMESPACE_ID: 'dummy-v1-sites-kv',
   SITE_DATA_KV_ID: 'dummy-site-data-kv',
   ACCESS_KEY_ACTIVE_PEPPER_ID: 'pepper_2026_06',
   ACCESS_KEY_PEPPERS: 'pepper_2026_06:ACCESS_KEY_PEPPER_202606',
@@ -201,6 +202,8 @@ test('production pages-api config renders explicit production template values on
   assert.match(config, /database_id = "dummy-pages-d1"/);
   assert.match(config, /binding = "ROUTE_SNAPSHOTS"/);
   assert.match(config, /id = "dummy-route-snapshots-kv"/);
+  assert.match(config, /binding = "V1_SITES"/);
+  assert.match(config, /id = "dummy-v1-sites-kv"/);
   assert.doesNotMatch(config, /binding = "PAGES_AUTH"/);
   assert.doesNotMatch(config, /service = "pages-auth"/);
   assert.doesNotMatch(config, /api-staging\.pages\.xd\.team/);
@@ -317,7 +320,13 @@ test('pages-api config binds XDS outbound requests to the office VPC network', (
 });
 
 test('pages-api config requires resource ids and keeps template execution mode', () => {
-  for (const name of ['CLOUDFLARE_ACCOUNT_ID', 'D1_DATABASE_ID', 'ROUTE_SNAPSHOTS_KV_ID', 'IP_ALLOWLIST']) {
+  for (const name of [
+    'CLOUDFLARE_ACCOUNT_ID',
+    'D1_DATABASE_ID',
+    'ROUTE_SNAPSHOTS_KV_ID',
+    'V1_SITES_KV_NAMESPACE_ID',
+    'IP_ALLOWLIST',
+  ]) {
     const result = runRenderer(['apps/pages-api', 'production'], withoutEnv(name));
 
     assert.notEqual(result.status, 0, `${name} should be required`);
