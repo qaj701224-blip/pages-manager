@@ -536,18 +536,19 @@ ROUTER_IP_ALLOWLIST_CIDRS
 
 v2 wrangler template 声明 API/Auth custom domain 和 router route。`pages-router` / `pages-router-staging` 的 route 使用 `zone_name = "xd.team"`，因此 workflow 不需要额外引入 `CLOUDFLARE_ZONE_ID`，但 `CLOUDFLARE_API_TOKEN` 必须具备部署 Worker、创建/更新 Worker route 和 custom domain 绑定的权限。DNSPod CNAME 与证书 DCV 不由当前 workflow 自动管理。
 
-GitHub Environment `secrets` 只放高敏配置：
+GitHub Environment `secrets` 放高敏配置，以及明确不公开的 v1 存量资源标识：
 
 ```text
 CLOUDFLARE_API_TOKEN
 CF_API_TOKEN
+PAGES_V1_SITES_KV_NAMESPACE_ID
 SSO_CLIENT_SECRET
 PAGES_SESSION_JWT_SECRET_*
 PAGES_CAP_JWT_SECRET_*
 ACCESS_KEY_PEPPER_*
 ```
 
-Cloudflare account id、D1/KV namespace id 不是凭证，v2 workflow 按 `vars` 读取；它们仍然不应写进 public repo。`PAGES_EXECUTION_MODE`、`WFP_DISPATCH_NAMESPACE`、`CINDY_CONNECTION_ISSUERS` 和 `CINDY_CONNECTION_AUDIENCE` 名称与取值本身不是凭证，但它们是强架构/环境边界，必须按 environment 固定在 template 并通过 PR 评审；issuer 白名单只保存受信 https origin,不保存任何密钥(验签用的是 Cindy 公开 JWKS)。
+Cloudflare account id、zone id、D1/KV namespace id 不是凭证，v2 workflow 通常按 `vars` 读取；它们仍然不应写进 public repo。`PAGES_V1_SITES_KV_NAMESPACE_ID` 是例外：为避免公开 v1 存量资源标识，它只从 GitHub Environment `secrets` 可选注入 pages-api，取值直接引用 v1 既有 secret `SITES_KV_NAMESPACE_ID`（不新增 GitHub secret），production 与 staging 环境各自解析各自的值；namespace 未配置时关闭 v1 盘点。v1 退役的 route 解绑复用必配 runtime secret `CF_ZONE_ID_NEW`，缺失时清单保持只读但关闭 v1 退役。`PAGES_EXECUTION_MODE`、`WFP_DISPATCH_NAMESPACE`、`CINDY_CONNECTION_ISSUERS` 和 `CINDY_CONNECTION_AUDIENCE` 名称与取值本身不是凭证，但它们是强架构/环境边界，必须按 environment 固定在 template 并通过 PR 评审；issuer 白名单只保存受信 https origin,不保存任何密钥(验签用的是 Cindy 公开 JWKS)。
 
 当前 `deploy-pages-v2.yml` / `deploy-pages-v2-staging.yml` 的 GitHub Environment 配置应按 workflow 实际名称填写：
 
@@ -562,6 +563,7 @@ Cloudflare account id、D1/KV namespace id 不是凭证，v2 workflow 按 `vars`
 | `ROUTER_IP_ALLOWLIST_CIDRS`           | var     | `pages-router` wrangler 渲染   | 必填，router 缺失或无效时 fail closed |
 | `CLOUDFLARE_API_TOKEN`                | secret  | Wrangler 部署                  | 只能用于 GitHub Actions / Wrangler，不注入 Worker runtime；权限需覆盖 Worker 部署、Worker route 和 custom domain 绑定 |
 | `CF_API_TOKEN`                        | secret  | `pages-api` runtime            | 通过 `scripts/put-pages-v2-secrets.sh apps/pages-api` 注入，供 Cloudflare Workers / WFP API 调用 |
+| `PAGES_V1_SITES_KV_NAMESPACE_ID`      | secret  | `pages-api` runtime            | 当前环境 v1 SITES KV namespace id；可选，缺失时 v1 盘点返回 `V1_SITES_UNSUPPORTED`，production / staging 必须不同 |
 | `SLACK_PAGES_ALERT_WEBHOOK_URL`       | secret  | `pages-api` runtime            | Slack Incoming Webhook URL；用于 slot 容量耗尽等平台运维告警，只注入 `pages-api`，不能写入 wrangler template、GitHub Vars 或文档 |
 | `WEBHOOK_URL_ENCRYPTION_KEY`          | secret  | `pages-api` runtime            | 平台 Webhook 订阅目标 URL 加密 key；独立于站点级 secret key，只注入 `pages-api` |
 | `XDS_OPENAI_TOKEN`                    | secret  | `pages-api` / `pages-auth` runtime | XDS / OA `list-by-email` 签名 token，只注入需要部门 hydration 的系统 Worker；请求必须通过 `XD_OFFICE_NET` VPC Network binding |
@@ -572,7 +574,7 @@ Cloudflare account id、D1/KV namespace id 不是凭证，v2 workflow 按 `vars`
 
 v2 平台部署使用独立 workflow：`deploy-pages-v2.yml` 在 GitHub Actions 中显示为 `Deploy XD Cell Production`，只允许 `workflow_dispatch` 手动部署 production；`deploy-pages-v2-staging.yml` 显示为 `Deploy XD Cell Staging`，支持手动部署，也可以在 `staging` 分支的 v2 app / package / render script 相关文件变更时自动部署。它们只处理 v2 系统 Worker：`pages-api`、`pages-auth`、`pages-router`、`pages-kv-gateway`、`pages-console`，不部署 v1 `apps/server`、ACK、用户站点或发布执行器。首次 `component=all` 部署的依赖顺序必须是：先执行 D1 migrations，再部署 `pages-auth`，再部署带 `PAGES_AUTH` service binding 的 `pages-api`，随后部署 `pages-kv-gateway`，最后 provision slot 并部署 `pages-router`，并在系统 Worker 可用后构建部署 `pages-console`。
 
-v2 runtime secret 注入使用 `scripts/put-pages-v2-secrets.sh <app>`。它会在部署前用 `DRY_RUN=1` 校验 registry 和必需 secret 是否齐全，部署后再写入 Worker secret。`pages-api` 只注入 `CF_ACCOUNT_ID`、`CF_API_TOKEN`、`SLACK_PAGES_ALERT_WEBHOOK_URL`、`SITE_SECRET_ENCRYPTION_KEY`、`WEBHOOK_URL_ENCRYPTION_KEY`、`XDS_OPENAI_TOKEN`、和 `ACCESS_KEY_PEPPER_*`；`pages-auth` 注入 `SSO_CLIENT_SECRET`、`XDS_OPENAI_TOKEN` 和 `PAGES_SESSION_JWT_SECRET_*`；`pages-router` 注入 `PAGES_SESSION_JWT_SECRET_*` 和 `PAGES_CAP_JWT_SECRET_*`；`pages-kv-gateway` 只注入 `PAGES_CAP_JWT_SECRET_*`；`pages-console` 注入 `PAGES_SESSION_JWT_SECRET_*`。
+v2 runtime secret 注入使用 `scripts/put-pages-v2-secrets.sh <app>`。它会在部署前用 `DRY_RUN=1` 校验 registry 和必需 secret 是否齐全，部署后再写入 Worker secret。`pages-api` 注入 `CF_ACCOUNT_ID`、`CF_API_TOKEN`、`SLACK_PAGES_ALERT_WEBHOOK_URL`、`SITE_SECRET_ENCRYPTION_KEY`、`WEBHOOK_URL_ENCRYPTION_KEY`、`XDS_OPENAI_TOKEN` 和 `ACCESS_KEY_PEPPER_*`；如果配置了 `PAGES_V1_SITES_KV_NAMESPACE_ID`，也会作为可选 secret 注入，清空时脚本会删除 Worker 上的旧值；已废弃的 `PAGES_V1_ZONE_ID` 会被脚本持续清理残留。`pages-auth` 注入 `SSO_CLIENT_SECRET`、`XDS_OPENAI_TOKEN` 和 `PAGES_SESSION_JWT_SECRET_*`；`pages-router` 注入 `PAGES_SESSION_JWT_SECRET_*` 和 `PAGES_CAP_JWT_SECRET_*`；`pages-kv-gateway` 只注入 `PAGES_CAP_JWT_SECRET_*`；`pages-console` 注入 `PAGES_SESSION_JWT_SECRET_*`。
 
 `SLACK_PAGES_ALERT_MENTION_USER_ID` 是 `pages-api` wrangler template 中固定的非敏感告警接收人 id，用于 legacy slot 容量告警正文里的单次 Slack mention。`PAGES_NORMAL_WORKER_SLOT_EXPAND_BY` 只作为历史兼容配置和测试输入保留，当前 router 部署不再用它新增 slot。
 

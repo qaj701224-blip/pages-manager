@@ -133,7 +133,13 @@ function AdminSiteRow({ site }) {
     <tr>
       <td data-label="站点">
         <strong>{site.slug}</strong>
-        <span>{url || site.id}</span>
+        {url && isSafeExternalUrl(url) ? (
+          <a href={url} target="_blank" rel="noopener noreferrer">
+            {url}
+          </a>
+        ) : (
+          <span>{site.id}</span>
+        )}
       </td>
       <td data-label="Owner">
         <div className="owner-cell">
@@ -161,6 +167,15 @@ function AdminSiteRow({ site }) {
       </td>
     </tr>
   );
+}
+
+function isSafeExternalUrl(value) {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:';
+  } catch {
+    return false;
+  }
 }
 
 function AdminNotFound({ backTo, label, title }) {

@@ -809,9 +809,15 @@ test('wrangler templates include required WFP vars without runtime token placeho
   assert.match(stagingTemplate, /SITE_SECRET_ENCRYPTION_KEY: encryption key for site-level runtime secrets/);
   assert.match(productionTemplate, /WEBHOOK_URL_ENCRYPTION_KEY: encryption key for platform webhook target URLs/);
   assert.match(stagingTemplate, /WEBHOOK_URL_ENCRYPTION_KEY: encryption key for platform webhook target URLs/);
+  assert.match(productionTemplate, /# Optional Worker secret:\n# - PAGES_V1_SITES_KV_NAMESPACE_ID: v1 SITES KV namespace id/);
+  assert.match(stagingTemplate, /# Optional Worker secret:\n# - PAGES_V1_SITES_KV_NAMESPACE_ID: v1 SITES KV namespace id/);
+  assert.match(productionTemplate, /reuses the required CF_ZONE_ID_NEW runtime secret/);
+  assert.match(stagingTemplate, /reuses the required CF_ZONE_ID_NEW runtime secret/);
   assert.doesNotMatch(`${productionTemplate}\n${stagingTemplate}`, /__PAGES_EXECUTION_MODE__/);
   assert.doesNotMatch(`${productionTemplate}\n${stagingTemplate}`, /SITE_SECRET_ENCRYPTION_KEY\s*=/);
   assert.doesNotMatch(`${productionTemplate}\n${stagingTemplate}`, /WEBHOOK_URL_ENCRYPTION_KEY\s*=/);
+  assert.doesNotMatch(`${productionTemplate}\n${stagingTemplate}`, /PAGES_V1_SITES_KV_NAMESPACE_ID\s*=/);
+  assert.doesNotMatch(`${productionTemplate}\n${stagingTemplate}`, /PAGES_V1_ZONE_ID\s*=/);
   assert.doesNotMatch(`${productionTemplate}\n${stagingTemplate}`, /CF_API_TOKEN|CF_ACCOUNT_ID/);
 });
 

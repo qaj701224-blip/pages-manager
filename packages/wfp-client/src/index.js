@@ -10,13 +10,16 @@ const EXPECTED_NAMESPACE_BY_ENV = {
 };
 const SCRIPT_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const BINDING_NAME_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
+// Termination backstop for cursor pagination when the caller sets no explicit bounds.
+const WFP_UNBOUNDED_CURSOR_PAGE_CAP = 1000;
 
 export class WfpApiError extends Error {
-  constructor({ status, code = 'WFP_API_ERROR', message }) {
+  constructor({ status, code = 'WFP_API_ERROR', message, detail }) {
     super(message || code);
     this.name = 'WfpApiError';
     this.status = status;
     this.code = code;
+    if (detail) this.detail = detail;
   }
 }
 
@@ -133,6 +136,101 @@ export function createWfpClient({
       return requestCloudflareOk(fetch, apiToken, scriptUrl(baseUrl, account, namespace, validateScriptName(scriptName)), {
         method: 'GET',
       });
+    },
+
+    async listUserWorkers(options = {}) {
+      const maxWorkers = normalizePositiveBound(options.maxWorkers);
+      const explicitMaxPages = normalizePositiveBound(options.maxPages);
+      const readList = async () => {
+        const workers = [];
+        const workerNames = new Set();
+        const firstUrl = scriptsUrl(baseUrl, account, namespace);
+        const firstPayload = await requestCloudflarePayload(fetch, apiToken, firstUrl, { method: 'GET' });
+        const firstPageWorkers = normalizeListedWorkers(readCloudflareListResult(firstPayload));
+        if (maxWorkers && firstPageWorkers.length > maxWorkers) {
+          throw invalidCloudflareListResponse('first page above maxWorkers');
+        }
+        appendUniqueWorkers(workers, workerNames, firstPageWorkers);
+        const firstPage = readCloudflarePagination(firstPayload);
+        if (firstPage.mode === 'none') return workers;
+        if (firstPage.mode === 'cursor' && !firstPage.cursor) return workers;
+        if (firstPage.mode === 'page' && firstPage.page !== 1) {
+          throw invalidCloudflareListResponse('first response reports a later page');
+        }
+        if (firstPage.mode === 'page' && firstPage.totalPages <= 1) return workers;
+        if (firstPageWorkers.length === 0) throw invalidCloudflareListResponse('empty first page claims more pages');
+
+        const inferredMaxPages = maxWorkers
+          ? Math.max(1, Math.ceil(maxWorkers / firstPageWorkers.length))
+          : null;
+        const pageBounds = [explicitMaxPages, inferredMaxPages].filter(Boolean);
+        const maxPages = pageBounds.length > 0 ? Math.min(...pageBounds) : null;
+
+        if (firstPage.mode === 'cursor') {
+          let cursor = firstPage.cursor;
+          const seenCursors = new Set();
+          const cursorPageCap = maxPages || WFP_UNBOUNDED_CURSOR_PAGE_CAP;
+          let fetchedPages = 1;
+          while (cursor) {
+            if (seenCursors.has(cursor)) throw invalidCloudflareListResponse('repeated pagination cursor');
+            seenCursors.add(cursor);
+            fetchedPages += 1;
+            if (fetchedPages > cursorPageCap) {
+              throw invalidCloudflareListResponse('cursor page count above configured bound');
+            }
+            const url = new URL(firstUrl);
+            url.searchParams.set('cursor', cursor);
+            const payload = await requestCloudflarePayload(fetch, apiToken, url.toString(), { method: 'GET' });
+            const pagination = readCloudflarePagination(payload);
+            if (pagination.mode === 'page') throw invalidCloudflareListResponse('pagination mode changed mid-scan');
+            const pageWorkers = normalizeListedWorkers(readCloudflareListResult(payload));
+            appendUniqueWorkers(workers, workerNames, pageWorkers);
+            if (maxWorkers && workers.length > maxWorkers) {
+              throw invalidCloudflareListResponse('worker count above maxWorkers');
+            }
+            const nextCursor = pagination.mode === 'cursor' ? pagination.cursor : '';
+            if (nextCursor && pageWorkers.length === 0) {
+              throw invalidCloudflareListResponse('empty page claims more data');
+            }
+            cursor = nextCursor;
+          }
+          return workers;
+        }
+
+        if (maxPages && firstPage.totalPages > maxPages) {
+          throw invalidCloudflareListResponse('total pages above configured bound');
+        }
+
+        for (let page = 2; page <= firstPage.totalPages; page += 1) {
+          const url = new URL(firstUrl);
+          url.searchParams.set('page', String(page));
+          const payload = await requestCloudflarePayload(fetch, apiToken, url.toString(), { method: 'GET' });
+          const pagination = readCloudflarePagination(payload);
+          if (pagination.mode !== 'page' || pagination.page !== page || pagination.totalPages !== firstPage.totalPages) {
+            throw invalidCloudflareListResponse('page sequence mismatch');
+          }
+          const pageWorkers = normalizeListedWorkers(readCloudflareListResult(payload));
+          appendUniqueWorkers(workers, workerNames, pageWorkers);
+          if (maxWorkers && workers.length > maxWorkers) throw invalidCloudflareListResponse('worker count above maxWorkers');
+        }
+        return workers;
+      };
+
+      let workers = await readList();
+      const namespaceScriptCount = await readNamespaceScriptCount({
+        fetch,
+        apiToken,
+        baseUrl,
+        account,
+        namespace,
+      });
+      if (workers.length !== namespaceScriptCount) workers = await readList();
+      return {
+        workers,
+        completeness: workers.length === namespaceScriptCount ? 'complete' : 'incomplete',
+        scannedCount: workers.length,
+        namespaceScriptCount,
+      };
     },
 
     async deleteUserWorker(scriptName) {
@@ -359,6 +457,11 @@ function cloneJsonObject(value) {
 }
 
 async function requestCloudflare(fetch, apiToken, url, init) {
+  const payload = await requestCloudflarePayload(fetch, apiToken, url, init);
+  return payload?.result ?? payload;
+}
+
+async function requestCloudflarePayload(fetch, apiToken, url, init) {
   const headers = new Headers(init.headers);
   headers.set('Authorization', `Bearer ${apiToken}`);
   const response = await fetch(
@@ -374,7 +477,127 @@ async function requestCloudflare(fetch, apiToken, url, init) {
       message: redactCloudflareError(payload, apiToken),
     });
   }
-  return payload?.result ?? payload;
+  return payload;
+}
+
+function readCloudflareListResult(payload) {
+  if (Array.isArray(payload?.result)) return payload.result;
+  throw invalidCloudflareListResponse(describeShape('payload', payload));
+}
+
+function readCloudflarePagination(payload) {
+  if (!Object.prototype.hasOwnProperty.call(payload || {}, 'result_info')) return { mode: 'none' };
+  const resultInfo = payload.result_info;
+  if (!isPlainObject(resultInfo)) throw invalidCloudflareListResponse(describeShape('result_info', resultInfo));
+  if (Object.prototype.hasOwnProperty.call(resultInfo, 'page')) {
+    const responsePage = resultInfo.page;
+    if (!Number.isInteger(responsePage) || responsePage < 1) {
+      throw invalidCloudflareListResponse(describeShape('result_info', resultInfo));
+    }
+    const totalPages = readCloudflareTotalPages(resultInfo);
+    if (totalPages < 1 || totalPages < responsePage) {
+      throw invalidCloudflareListResponse(describeShape('result_info', resultInfo));
+    }
+    return { mode: 'page', page: responsePage, totalPages };
+  }
+  // Observed live contract: the dispatch scripts list paginates like KV, with
+  // result_info carrying only count/cursor and an empty cursor marking the last page.
+  if (
+    Object.prototype.hasOwnProperty.call(resultInfo, 'cursor') ||
+    Object.prototype.hasOwnProperty.call(resultInfo, 'count')
+  ) {
+    if (Object.prototype.hasOwnProperty.call(resultInfo, 'count') && !Number.isInteger(resultInfo.count)) {
+      throw invalidCloudflareListResponse(describeShape('result_info', resultInfo));
+    }
+    return { mode: 'cursor', cursor: readCloudflareCursor(resultInfo) };
+  }
+  throw invalidCloudflareListResponse(describeShape('result_info', resultInfo));
+}
+
+function readCloudflareCursor(resultInfo) {
+  const cursor = resultInfo.cursor;
+  if (cursor === undefined || cursor === null || cursor === '') return '';
+  if (typeof cursor !== 'string' || !cursor.trim()) {
+    throw invalidCloudflareListResponse(describeShape('result_info', resultInfo));
+  }
+  return cursor;
+}
+
+function readCloudflareTotalPages(resultInfo) {
+  if (Object.prototype.hasOwnProperty.call(resultInfo, 'total_pages')) {
+    if (!Number.isInteger(resultInfo.total_pages)) throw invalidCloudflareListResponse(describeShape('result_info', resultInfo));
+    return resultInfo.total_pages;
+  }
+  // The dispatch scripts list endpoint has no published contract; some Cloudflare list
+  // responses only carry per_page/total_count, so total pages must be derived from them.
+  const perPage = resultInfo.per_page;
+  const totalCount = resultInfo.total_count;
+  if (!Number.isInteger(perPage) || perPage < 1 || !Number.isInteger(totalCount) || totalCount < 0) {
+    throw invalidCloudflareListResponse(describeShape('result_info', resultInfo));
+  }
+  return Math.max(1, Math.ceil(totalCount / perPage));
+}
+
+function normalizeListedWorkers(workers) {
+  return workers.map((worker) => {
+    const name = worker?.script?.id || worker?.id || worker?.name;
+    if (typeof name !== 'string' || !name.trim()) throw invalidCloudflareListResponse(describeShape('worker item', worker));
+    return {
+      name: name.trim(),
+      created_on: worker?.created_on || null,
+      modified_on: worker?.modified_on || null,
+    };
+  });
+}
+
+function appendUniqueWorkers(target, names, workers) {
+  for (const worker of workers) {
+    if (names.has(worker.name)) throw invalidCloudflareListResponse('duplicate worker name');
+    names.add(worker.name);
+    target.push(worker);
+  }
+}
+
+async function readNamespaceScriptCount({ fetch, apiToken, baseUrl, account, namespace }) {
+  const payload = await requestCloudflarePayload(fetch, apiToken, namespaceUrl(baseUrl, account, namespace), {
+    method: 'GET',
+  });
+  const scriptCount = payload?.result?.script_count;
+  if (!Number.isInteger(scriptCount) || scriptCount < 0) {
+    throw invalidCloudflareListResponse(describeShape('namespace result', payload?.result));
+  }
+  return scriptCount;
+}
+
+function invalidCloudflareListResponse(detail) {
+  return new WfpApiError({
+    status: 502,
+    code: 'WFP_API_RESPONSE_INVALID',
+    message: 'Cloudflare WFP list response was invalid.',
+    detail,
+  });
+}
+
+// Shape descriptions surface only field names and types, never values, so they stay log-safe.
+function describeShape(label, value) {
+  if (Array.isArray(value)) return `${label} is array`;
+  if (!value || typeof value !== 'object') {
+    return `${label} is ${value === null ? 'null' : typeof value}`;
+  }
+  const keys = Object.keys(value)
+    .filter((key) => /^[a-zA-Z0-9_]{1,32}$/.test(key))
+    .sort()
+    .slice(0, 8);
+  return keys.length > 0 ? `${label} keys ${keys.join(',')}` : `${label} has no readable keys`;
+}
+
+function normalizePositiveBound(value) {
+  if (value === undefined || value === null || value === '') return null;
+  return Number.isInteger(value) && value > 0 ? value : null;
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 async function requestCloudflareOk(fetch, apiToken, url, init) {
@@ -434,7 +657,15 @@ function redactCloudflareError(payload, apiToken) {
 }
 
 function scriptUrl(baseUrl, accountId, namespace, scriptName) {
-  return `${baseUrl}/accounts/${accountId}/workers/dispatch/namespaces/${namespace}/scripts/${encodeURIComponent(scriptName)}`;
+  return `${scriptsUrl(baseUrl, accountId, namespace)}/${encodeURIComponent(scriptName)}`;
+}
+
+function scriptsUrl(baseUrl, accountId, namespace) {
+  return `${baseUrl}/accounts/${accountId}/workers/dispatch/namespaces/${namespace}/scripts`;
+}
+
+function namespaceUrl(baseUrl, accountId, namespace) {
+  return `${baseUrl}/accounts/${accountId}/workers/dispatch/namespaces/${namespace}`;
 }
 
 function normalizeApiBase(value) {

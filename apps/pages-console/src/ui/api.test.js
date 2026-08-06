@@ -6,6 +6,9 @@ import {
   createAccessKey,
   createTeam,
   createWorkspaceSite,
+  backfillAdminWorkerOrphans,
+  bulkRetireAdminV1Sites,
+  deleteAdminV1Site,
   createTeamAccessKey,
   deleteAdminSite,
   deleteAdminSiteRuntimeSecret,
@@ -19,6 +22,7 @@ import {
   fetchJson,
   getAdminDashboard,
   getAdminOps,
+  listAdminV1Sites,
   getAdminSiteAccess,
   getAdminSiteConfig,
   listAdminTeamMembers,
@@ -42,6 +46,8 @@ import {
   revokePlatformAdmin,
   revokeTeamAccessKey,
   runAdminDeploymentCleanup,
+  runAdminDeploymentCleanupsDue,
+  scanAdminWorkerOrphans,
   putSiteRuntimeSecret,
   putSiteRuntimeVar,
   putAdminSiteRuntimeSecret,
@@ -170,6 +176,8 @@ test('admin governance API helpers use console admin endpoints', async () => {
   await getAdminDashboard({ fetchImpl });
   await getAdminOps({ fetchImpl });
   await listAdminDeploymentCleanups({ status: 'failed', fetchImpl });
+  await scanAdminWorkerOrphans({ fetchImpl });
+  await listAdminV1Sites({ fetchImpl });
   await runAdminDeploymentCleanup('cln_1', { reason: 'manual' }, { fetchImpl, csrfToken: 'csrf-cleanup' });
   await listAdminUsers({ query: '目标用户', fetchImpl });
   await listAdminUsers({ query: '目标用户', limit: 10, offset: 20, admin: 'admin', status: 'active', fetchImpl });
@@ -186,6 +194,8 @@ test('admin governance API helpers use console admin endpoints', async () => {
       ['/api/console/admin/dashboard', 'GET'],
       ['/api/console/admin/ops', 'GET'],
       ['/api/console/admin/deployment-cleanups?status=failed', 'GET'],
+      ['/api/console/admin/worker-orphan-scan', 'GET'],
+      ['/api/console/admin/v1-sites', 'GET'],
       ['/api/console/admin/deployment-cleanups/cln_1/run', 'POST'],
       ['/api/console/admin/users?query=%E7%9B%AE%E6%A0%87%E7%94%A8%E6%88%B7', 'GET'],
       ['/api/console/admin/users?query=%E7%9B%AE%E6%A0%87%E7%94%A8%E6%88%B7&limit=10&offset=20&admin=admin&status=active', 'GET'],
@@ -197,13 +207,39 @@ test('admin governance API helpers use console admin endpoints', async () => {
       ['/api/console/admin/platform-admins/usr_admin', 'DELETE'],
     ]
   );
-  assert.equal(calls[3].init.headers['X-CSRF-Token'], 'csrf-cleanup');
-  assert.equal(calls[9].init.headers['X-CSRF-Token'], 'csrf-1');
-  assert.equal(calls[10].init.headers['X-CSRF-Token'], 'csrf-2');
-  assert.equal(calls[11].init.headers['X-CSRF-Token'], 'csrf-3');
-  assert.deepEqual(JSON.parse(calls[3].init.body), { reason: 'manual' });
-  assert.deepEqual(JSON.parse(calls[10].init.body), { userId: 'usr_admin', reason: 'ops owner' });
-  assert.deepEqual(JSON.parse(calls[11].init.body), { reason: 'rotation' });
+  assert.equal(calls[5].init.headers['X-CSRF-Token'], 'csrf-cleanup');
+  assert.equal(calls[11].init.headers['X-CSRF-Token'], 'csrf-1');
+  assert.equal(calls[12].init.headers['X-CSRF-Token'], 'csrf-2');
+  assert.equal(calls[13].init.headers['X-CSRF-Token'], 'csrf-3');
+  assert.deepEqual(JSON.parse(calls[5].init.body), { reason: 'manual' });
+  assert.deepEqual(JSON.parse(calls[12].init.body), { userId: 'usr_admin', reason: 'ops owner' });
+  assert.deepEqual(JSON.parse(calls[13].init.body), { reason: 'rotation' });
+});
+
+test('resource governance write helpers use bounded admin endpoints and csrf', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    return Response.json({ summary: {}, results: [] });
+  };
+
+  await backfillAdminWorkerOrphans(['pages-v2-demo'], { reason: 'backfill' }, { fetchImpl, csrfToken: 'csrf-1' });
+  await runAdminDeploymentCleanupsDue(50, { reason: 'retry' }, { fetchImpl, csrfToken: 'csrf-2' });
+  await deleteAdminV1Site('legacy demo', { reason: 'retire' }, { fetchImpl, csrfToken: 'csrf-3' });
+  await bulkRetireAdminV1Sites(['legacy demo'], { reason: 'bulk retire' }, { fetchImpl, csrfToken: 'csrf-4' });
+
+  assert.deepEqual(
+    calls.map((call) => [call.url, call.init.method, call.init.headers['X-CSRF-Token']]),
+    [
+      ['/api/console/admin/worker-orphan-scan/backfill', 'POST', 'csrf-1'],
+      ['/api/console/admin/deployment-cleanups/run-due', 'POST', 'csrf-2'],
+      ['/api/console/admin/v1-sites/legacy%20demo', 'DELETE', 'csrf-3'],
+      ['/api/console/admin/v1-sites/bulk-retire', 'POST', 'csrf-4'],
+    ]
+  );
+  assert.deepEqual(JSON.parse(calls[0].init.body), { reason: 'backfill', workerNames: ['pages-v2-demo'] });
+  assert.deepEqual(JSON.parse(calls[1].init.body), { reason: 'retry', limit: 50 });
+  assert.deepEqual(JSON.parse(calls[3].init.body), { reason: 'bulk retire', names: ['legacy demo'] });
 });
 
 test('admin site and team edit helpers stay under admin endpoints', async () => {

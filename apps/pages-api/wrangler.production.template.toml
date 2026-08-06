@@ -38,6 +38,10 @@ IP_ALLOWLIST = "__IP_ALLOWLIST__"
 # - WEBHOOK_URL_ENCRYPTION_KEY: encryption key for platform webhook target URLs.
 # - XDS_OPENAI_TOKEN: XDS / OA org directory token for department hydration.
 
+# Optional Worker secret:
+# - PAGES_V1_SITES_KV_NAMESPACE_ID: v1 SITES KV namespace id for read-only inventory.
+# - v1 retirement route unbinding reuses the required CF_ZONE_ID_NEW runtime secret.
+
 [[d1_databases]]
 binding = "PAGES_METADATA"
 database_name = "pages-v2-metadata"

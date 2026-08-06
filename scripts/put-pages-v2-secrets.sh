@@ -40,6 +40,51 @@ put_secret() {
   printf '%s' "$secret_value" | pnpm --dir "$APP_DIR" exec wrangler secret put "$secret_name"
 }
 
+delete_optional_secret_if_unset() {
+  local secret_name="$1"
+
+  if [ "${DRY_RUN:-}" = "1" ]; then
+    printf 'would delete %s if present\n' "$secret_name"
+    return 0
+  fi
+
+  local listed_secrets
+  if ! listed_secrets="$(pnpm --dir "$APP_DIR" exec wrangler secret list --format json 2>/dev/null)"; then
+    echo "::error::optional secret list failed" >&2
+    return 1
+  fi
+
+  local secret_present
+  if ! secret_present="$(printf '%s' "$listed_secrets" | node -e '
+    let input = "";
+    process.stdin.on("data", (chunk) => { input += chunk; });
+    process.stdin.on("end", () => {
+      try {
+        const secrets = JSON.parse(input);
+        const name = process.argv[1];
+        const valid = Array.isArray(secrets) && secrets.every(
+          (item) => item && typeof item === "object" && !Array.isArray(item) && typeof item.name === "string"
+        );
+        if (!valid) {
+          process.exitCode = 1;
+          return;
+        }
+        const present = secrets.some((item) => item.name === name);
+        process.stdout.write(present ? "1" : "0");
+      } catch {
+        process.exitCode = 1;
+      }
+    });
+  ' "$secret_name")"; then
+    echo "::error::optional secret list returned invalid JSON" >&2
+    return 1
+  fi
+
+  if [ "$secret_present" = "1" ]; then
+    pnpm --dir "$APP_DIR" exec wrangler secret delete "$secret_name"
+  fi
+}
+
 has_seen() {
   local haystack="$1"
   local needle="$2"
@@ -210,10 +255,18 @@ collect_access_key_pepper_secrets() {
 }
 
 SECRET_NAMES=()
+OPTIONAL_SECRET_NAMES=()
 
 case "$APP_DIR" in
   apps/pages-api)
     SECRET_NAMES+=(CF_ACCOUNT_ID CF_API_TOKEN CF_ZONE_ID_NEW SLACK_PAGES_ALERT_WEBHOOK_URL SITE_SECRET_ENCRYPTION_KEY WEBHOOK_URL_ENCRYPTION_KEY XDS_OPENAI_TOKEN)
+    if [ -n "${PAGES_V1_SITES_KV_NAMESPACE_ID:-}" ]; then
+      SECRET_NAMES+=(PAGES_V1_SITES_KV_NAMESPACE_ID)
+    else
+      OPTIONAL_SECRET_NAMES+=(PAGES_V1_SITES_KV_NAMESPACE_ID)
+    fi
+    # PAGES_V1_ZONE_ID is retired in favor of CF_ZONE_ID_NEW; keep deleting stale copies.
+    OPTIONAL_SECRET_NAMES+=(PAGES_V1_ZONE_ID)
     collect_access_key_pepper_secrets
     ;;
   apps/pages-auth)
@@ -244,3 +297,9 @@ fi
 for secret_name in "${SECRET_NAMES[@]}"; do
   put_secret "$secret_name"
 done
+
+if [ "${#OPTIONAL_SECRET_NAMES[@]}" -gt 0 ]; then
+  for optional_secret_name in "${OPTIONAL_SECRET_NAMES[@]}"; do
+    delete_optional_secret_if_unset "$optional_secret_name"
+  done
+fi

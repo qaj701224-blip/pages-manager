@@ -1,5 +1,6 @@
 import { validateSiteSlug } from '@xd/pages-runtime-protocol';
 
+import { isWfpWorkerResource } from './admin-resource-governance.js';
 import { authenticateApiRequest } from './auth.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
 import { newHexId, newId } from './id.js';
@@ -722,7 +723,68 @@ async function deleteSite(env, config, store, actor, siteId) {
       return snapshotError;
     }
   }
+  await enqueueDeletedSiteWfpCleanup(store, env, config, site, previousRoute, reuseHoldUntil);
   return jsonOk({ site: formatSite({ ...deleted, route }) });
+}
+
+export async function enqueueDeletedSiteWfpCleanup(store, env, config, site, previousRoute, cleanupAfter) {
+  if (typeof store.createDeploymentResourceCleanupTask !== 'function') return;
+  const resourcesByWorker = new Map();
+  if (isWfpWorkerResource(previousRoute, config.environment)) {
+    resourcesByWorker.set(previousRoute.workerName, {
+      workerName: previousRoute.workerName,
+      siteId: site.id,
+      versionId: previousRoute.activeVersionId || null,
+    });
+  }
+
+  if (typeof store.listSiteWfpCleanupReferences === 'function') {
+    try {
+      const references = await store.listSiteWfpCleanupReferences({
+        siteId: site.id,
+        environment: config.environment,
+      });
+      for (const route of references?.activeRoutes || []) {
+        if (!isWfpWorkerResource(route, config.environment)) continue;
+        resourcesByWorker.set(route.workerName, {
+          workerName: route.workerName,
+          siteId: route.siteId || site.id,
+          versionId: route.versionId || null,
+        });
+      }
+      for (const version of references?.versions || []) {
+        if (!isWfpWorkerResource(version, config.environment)) continue;
+        resourcesByWorker.set(version.workerName, {
+          workerName: version.workerName,
+          siteId: version.siteId || site.id,
+          versionId: version.id || null,
+        });
+      }
+    } catch {
+      // The site deletion is already committed; cleanup remains best-effort post-commit maintenance.
+    }
+  }
+
+  for (const resource of resourcesByWorker.values()) {
+    try {
+      await store.createDeploymentResourceCleanupTask({
+        id: nextId(env, 'cln'),
+        environment: config.environment,
+        resourceType: 'wfp_user_worker',
+        resourceRef: resource.workerName,
+        siteId: resource.siteId,
+        versionId: resource.versionId,
+        deploymentId: null,
+        cleanupReason: 'site_deleted',
+        status: 'pending',
+        cleanupAfter,
+        createdAt: readNow(env),
+        updatedAt: readNow(env),
+      });
+    } catch {
+      // Cleanup is post-commit maintenance. A successful site delete must stay successful.
+    }
+  }
 }
 
 async function transferSiteOwner(request, env, config, store, actor, siteId) {

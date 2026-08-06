@@ -1,7 +1,8 @@
-import { Activity, AlertTriangle, Boxes, Rocket, UsersRound } from 'lucide-react';
+import { Activity, AlertTriangle, Archive, Boxes, Clock3, Recycle, Rocket, UsersRound } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 import { getAdminDashboard } from '../api.js';
+import { formatCleanupBacklogAge } from '../admin-resource-governance-model.js';
 import { adminSiteOwnerView } from '../site-display-model.js';
 
 const METRICS = [
@@ -34,6 +35,7 @@ export function AdminDashboard() {
 
   const counts = state.dashboard?.counts || {};
   const failedDeployments = state.dashboard?.failedDeployments || [];
+  const resourceCleanup = state.dashboard?.resourceCleanup || {};
 
   return (
     <div className="admin-stack">
@@ -49,6 +51,35 @@ export function AdminDashboard() {
           );
         })}
       </div>
+
+      <section className="table-section">
+        <div className="panel-head flat">
+          <div>
+            <p>资源回收概览</p>
+            <h2>Cleanup backlog</h2>
+          </div>
+        </div>
+        <div className="stats-strip">
+          <DashboardResourceStat icon={Recycle} label="Pending tasks" value={resourceCleanup.pendingTasks ?? 0} />
+          <DashboardResourceStat icon={AlertTriangle} label="Failed tasks" value={resourceCleanup.failedTasks ?? 0} />
+          <DashboardResourceStat
+            icon={Clock3}
+            label="最老 Pending"
+            title={resourceCleanup.oldestPendingAt || ''}
+            value={formatCleanupBacklogAge(resourceCleanup.oldestPendingAgeSeconds)}
+          />
+          <DashboardResourceStat
+            icon={Boxes}
+            label="Orphan 候选 · 按需扫描"
+            value={resourceCleanup.orphanCandidates === null ? '—' : (resourceCleanup.orphanCandidates ?? '—')}
+          />
+          <DashboardResourceStat
+            icon={Archive}
+            label="v1 站点 · 按需扫描"
+            value={resourceCleanup.v1Sites === null ? '—' : (resourceCleanup.v1Sites ?? '—')}
+          />
+        </div>
+      </section>
 
       <section className="table-section">
         <div className="panel-head flat">
@@ -86,6 +117,16 @@ export function AdminDashboard() {
   );
 }
 
+function DashboardResourceStat({ icon: Icon, label, value, title = '' }) {
+  return (
+    <div className="stat-cell">
+      <Icon size={17} />
+      <span>{label}</span>
+      <strong title={title}>{value}</strong>
+    </div>
+  );
+}
+
 function FailedDeploymentRow({ deployment }) {
   const owner = adminSiteOwnerView(deployment.owner);
 
@@ -119,12 +160,19 @@ function FailedDeploymentRow({ deployment }) {
   );
 }
 
-export function AdminError({ title, error }) {
+export function AdminError({ title, error, onRetry }) {
   return (
     <div className="empty-panel warning">
       <AlertTriangle size={18} />
       <strong>{title}</strong>
       <span>{error?.code || 'API_REQUEST_FAILED'}</span>
+      {error?.message ? <span>{error.message}</span> : null}
+      {error?.action ? <span>{error.action}</span> : null}
+      {onRetry ? (
+        <button className="secondary-button" type="button" onClick={onRetry}>
+          重试
+        </button>
+      ) : null}
     </div>
   );
 }

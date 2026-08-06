@@ -92,6 +92,7 @@ jobs:
         env:
           CF_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          PAGES_V1_SITES_KV_NAMESPACE_ID: ${{ secrets.SITES_KV_NAMESPACE_ID }}
           CF_ZONE_ID_NEW: ${{ secrets.CF_ZONE_ID_NEW }}
           SLACK_PAGES_ALERT_WEBHOOK_URL: ${{ secrets.SLACK_PAGES_ALERT_WEBHOOK_URL }}
           SITE_SECRET_ENCRYPTION_KEY: ${{ secrets.SITE_SECRET_ENCRYPTION_KEY }}
@@ -163,6 +164,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CF_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          PAGES_V1_SITES_KV_NAMESPACE_ID: ${{ secrets.SITES_KV_NAMESPACE_ID }}
           CF_ZONE_ID_NEW: ${{ secrets.CF_ZONE_ID_NEW }}
           SLACK_PAGES_ALERT_WEBHOOK_URL: ${{ secrets.SLACK_PAGES_ALERT_WEBHOOK_URL }}
           SITE_SECRET_ENCRYPTION_KEY: ${{ secrets.SITE_SECRET_ENCRYPTION_KEY }}

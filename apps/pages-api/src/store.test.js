@@ -3659,6 +3659,296 @@ test('cleanup task lifecycle tracks WFP resource deletion attempts', async () =>
   assert.equal((await store.getSiteVersion('ver_old')).artifactAvailability, 'retired');
 });
 
+test('D1 admin dashboard returns lightweight cleanup backlog aggregates', async () => {
+  const statements = [];
+  const db = {
+    prepare(sql) {
+      const statement = {
+        bind() {
+          statements.push(sql);
+          return statement;
+        },
+        async first() {
+          if (sql.includes("status = 'pending'") && sql.includes('COUNT(*)')) return { count: 2 };
+          if (sql.includes("status = 'failed'") && sql.includes('deployment_resource_cleanup_tasks')) {
+            return { count: 1 };
+          }
+          if (sql.includes('MIN(cleanup_after)')) return { oldest_pending_at: '2026-06-15T00:00:00.000Z' };
+          return { count: 0 };
+        },
+        async all() {
+          return { results: [] };
+        },
+      };
+      return statement;
+    },
+  };
+  const store = new D1PagesStore(db);
+
+  const dashboard = await store.getAdminDashboard({ environment: 'production' });
+
+  assert.deepEqual(dashboard.resourceCleanup, {
+    pendingTasks: 2,
+    failedTasks: 1,
+    oldestPendingAt: '2026-06-15T00:00:00.000Z',
+  });
+  assert.equal(statements.filter((sql) => sql.includes('deployment_resource_cleanup_tasks')).length, 3);
+});
+
+test('D1 store exposes environment-scoped resource governance references and active slugs', async () => {
+  const calls = [];
+  const db = {
+    prepare(sql) {
+      return {
+        bind(...args) {
+          calls.push({ sql, args });
+          return {
+            async all() {
+              if (sql.includes('FROM site_routes')) {
+                return {
+                  results: [
+                    {
+                      worker_name: 'pages-v2-active',
+                      site_id: 'site_active',
+                      active_version_id: 'ver_active',
+                      execution_provider: 'wfp',
+                      dispatch_type: 'dispatch-namespace',
+                    },
+                  ],
+                };
+              }
+              if (sql.includes('FROM site_versions')) {
+                return {
+                  results: [
+                    {
+                      id: 'ver_old',
+                      worker_name: 'pages-v2-old',
+                      site_id: 'site_docs',
+                      site_slug: 'docs',
+                      site_deleted_at: null,
+                      artifact_availability: 'retired',
+                      execution_provider: 'wfp',
+                      dispatch_type: 'dispatch-namespace',
+                      created_at: '2026-07-01T00:00:00.000Z',
+                    },
+                  ],
+                };
+              }
+              if (sql.includes('FROM deployment_resource_cleanup_tasks')) {
+                return {
+                  results: [
+                    {
+                      id: 'cln_old',
+                      resource_ref: 'pages-v2-old',
+                      status: 'failed',
+                    },
+                  ],
+                };
+              }
+              if (sql.includes('SELECT id, slug FROM sites')) {
+                return { results: [{ id: 'site_docs', slug: 'docs' }] };
+              }
+              throw new Error(`unexpected SQL: ${sql}`);
+            },
+          };
+        },
+      };
+    },
+  };
+  const store = new D1PagesStore(db);
+
+  assert.deepEqual(await store.listWorkerOrphanScanReferences({ environment: 'production' }), {
+    activeRoutes: [
+      {
+        workerName: 'pages-v2-active',
+        siteId: 'site_active',
+        versionId: 'ver_active',
+        executionProvider: 'wfp',
+        dispatchType: 'dispatch-namespace',
+      },
+    ],
+    versions: [
+      {
+        id: 'ver_old',
+        workerName: 'pages-v2-old',
+        siteId: 'site_docs',
+        siteSlug: 'docs',
+        siteDeletedAt: null,
+        artifactAvailability: 'retired',
+        executionProvider: 'wfp',
+        dispatchType: 'dispatch-namespace',
+        createdAt: '2026-07-01T00:00:00.000Z',
+      },
+    ],
+    cleanupTasks: [{ id: 'cln_old', resourceRef: 'pages-v2-old', status: 'failed' }],
+  });
+  assert.deepEqual(await store.listActiveSiteSlugs({ environment: 'production' }), [{ id: 'site_docs', slug: 'docs' }]);
+  assert.equal(calls.length, 4);
+  assert.equal(
+    calls.every((call) => call.args[0] === 'production'),
+    true
+  );
+  assert.match(calls[0].sql, /route_status = 'active'/);
+  assert.match(calls[1].sql, /LEFT JOIN sites/);
+  assert.match(calls[2].sql, /status IN \('pending', 'failed', 'running'\)/);
+  assert.match(calls[3].sql, /deleted_at IS NULL/);
+});
+
+test('D1 store lists cleanup references with site_id-indexed route and version queries', async () => {
+  const calls = [];
+  const db = {
+    prepare(sql) {
+      return {
+        bind(...args) {
+          calls.push({ sql, args });
+          return {
+            async all() {
+              if (sql.includes('FROM site_routes')) {
+                return {
+                  results: [
+                    {
+                      worker_name: 'pages-v2-active',
+                      site_id: 'site_docs',
+                      active_version_id: 'ver_active',
+                      execution_provider: 'wfp',
+                      dispatch_type: 'dispatch-namespace',
+                    },
+                  ],
+                };
+              }
+              return {
+                results: [
+                  {
+                    id: 'ver_old',
+                    worker_name: 'pages-v2-old',
+                    site_id: 'site_docs',
+                    artifact_availability: 'active',
+                    execution_provider: 'wfp',
+                    dispatch_type: 'dispatch-namespace',
+                  },
+                ],
+              };
+            },
+          };
+        },
+      };
+    },
+  };
+  const store = new D1PagesStore(db);
+
+  assert.deepEqual(
+    await store.listSiteWfpCleanupReferences({ siteId: 'site_docs', environment: 'production' }),
+    {
+      activeRoutes: [
+        {
+          workerName: 'pages-v2-active',
+          siteId: 'site_docs',
+          versionId: 'ver_active',
+          executionProvider: 'wfp',
+          dispatchType: 'dispatch-namespace',
+        },
+      ],
+      versions: [
+        {
+          id: 'ver_old',
+          workerName: 'pages-v2-old',
+          siteId: 'site_docs',
+          artifactAvailability: 'active',
+          executionProvider: 'wfp',
+          dispatchType: 'dispatch-namespace',
+        },
+      ],
+    }
+  );
+  assert.deepEqual(calls.map((call) => call.args), [
+    ['site_docs', 'production'],
+    ['site_docs', 'production'],
+  ]);
+  assert.match(calls[0].sql, /WHERE site_id = \? AND environment = \?/);
+  assert.match(calls[1].sql, /WHERE site_versions\.site_id = \? AND sites\.environment = \?/);
+  assert.match(calls[1].sql, /artifact_availability = 'active'/);
+});
+
+test('D1 store lists Worker ownership references with Worker-indexed queries', async () => {
+  const calls = [];
+  const db = {
+    prepare(sql) {
+      return {
+        bind(...args) {
+          calls.push({ sql, args });
+          return {
+            async all() {
+              if (sql.includes('FROM site_routes')) {
+                return {
+                  results: [
+                    {
+                      worker_name: 'pages-v2-owned',
+                      site_id: 'site_owned',
+                      environment: 'production',
+                      active_version_id: 'ver_owned',
+                      execution_provider: 'wfp',
+                      dispatch_type: 'dispatch-namespace',
+                    },
+                  ],
+                };
+              }
+              return {
+                results: [
+                  {
+                    id: 'ver_owned',
+                    worker_name: 'pages-v2-owned',
+                    site_id: 'site_owned',
+                    ownership_environment: 'production',
+                    execution_provider: 'wfp',
+                    dispatch_type: 'dispatch-namespace',
+                  },
+                ],
+              };
+            },
+          };
+        },
+      };
+    },
+  };
+  const store = new D1PagesStore(db);
+
+  assert.deepEqual(
+    await store.listWorkerCleanupOwnershipReferences({
+      workerName: 'pages-v2-owned',
+      environment: 'production',
+    }),
+    {
+      routes: [
+        {
+          workerName: 'pages-v2-owned',
+          siteId: 'site_owned',
+          versionId: 'ver_owned',
+          ownershipEnvironment: 'production',
+          executionProvider: 'wfp',
+          dispatchType: 'dispatch-namespace',
+        },
+      ],
+      versions: [
+        {
+          id: 'ver_owned',
+          workerName: 'pages-v2-owned',
+          siteId: 'site_owned',
+          ownershipEnvironment: 'production',
+          executionProvider: 'wfp',
+          dispatchType: 'dispatch-namespace',
+        },
+      ],
+    }
+  );
+  assert.deepEqual(calls.map((call) => call.args), [
+    ['pages-v2-owned'],
+    ['pages-v2-owned'],
+  ]);
+  assert.match(calls[0].sql, /WHERE worker_name = \?/);
+  assert.match(calls[1].sql, /LEFT JOIN sites ON sites\.id = site_versions\.site_id/);
+  assert.match(calls[1].sql, /WHERE site_versions\.worker_name = \?/);
+});
+
 test('D1 store cleanup running lock returns null when CAS loses a race', async () => {
   const calls = [];
   const db = {

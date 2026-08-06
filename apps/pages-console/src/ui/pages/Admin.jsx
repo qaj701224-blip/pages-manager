@@ -1,4 +1,15 @@
-import { Activity, FileClock, LayoutDashboard, Recycle, Send, ServerCog, ShieldCheck, UsersRound, Wrench } from 'lucide-react';
+import {
+  Activity,
+  Archive,
+  FileClock,
+  LayoutDashboard,
+  Recycle,
+  Send,
+  ServerCog,
+  ShieldCheck,
+  UsersRound,
+  Wrench,
+} from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 import { AdminAudit } from './AdminAudit.jsx';
@@ -9,6 +20,7 @@ import { AdminOps } from './AdminOps.jsx';
 import { AdminSites } from './AdminSites.jsx';
 import { AdminTeams } from './AdminTeams.jsx';
 import { AdminUsers } from './AdminUsers.jsx';
+import { AdminV1Sites } from './AdminV1Sites.jsx';
 import { AdminWebhooks } from './AdminWebhooks.jsx';
 
 const ADMIN_NAV = [
@@ -19,6 +31,7 @@ const ADMIN_NAV = [
       { id: 'ops', label: 'Ops 运维', href: '/admin/ops', icon: Wrench },
       { id: 'deployment-cleanups', label: 'Deployment Cleanups', href: '/admin/deployment-cleanups', icon: Recycle },
       { id: 'normal-workers', label: 'Legacy Normal Workers', href: '/admin/normal-workers', icon: ServerCog },
+      { id: 'v1-sites', label: 'Legacy v1 Sites', href: '/admin/v1-sites', icon: Archive },
     ],
   },
   {
@@ -58,6 +71,11 @@ const ADMIN_PAGES = {
     title: 'Deployment Cleanups',
     meta: '运营',
     empty: '暂无 cleanup task',
+  },
+  'v1-sites': {
+    title: 'Legacy v1 Sites',
+    meta: '运营',
+    empty: '暂无 v1 站点',
   },
   users: {
     title: '用户',
@@ -126,6 +144,7 @@ function AdminPageContent({ page, empty, resourceId, subpage }) {
   if (page === 'ops') return <AdminOps />;
   if (page === 'deployment-cleanups') return <AdminDeploymentCleanups />;
   if (page === 'normal-workers') return <AdminNormalWorkers />;
+  if (page === 'v1-sites') return <AdminV1Sites />;
   if (page === 'users') return <AdminUsers />;
   if (page === 'sites') return <AdminSites siteId={resourceId} subpage={subpage} />;
   if (page === 'teams') return <AdminTeams teamId={resourceId} subpage={subpage} />;

@@ -61,11 +61,60 @@ export function listAdminDeploymentCleanups({ status, ...options } = {}) {
   return fetchJson(`/api/console/admin/deployment-cleanups${query ? `?${query}` : ''}`, options);
 }
 
+export function scanAdminWorkerOrphans(options = {}) {
+  return fetchJson('/api/console/admin/worker-orphan-scan', options);
+}
+
+export function backfillAdminWorkerOrphans(workerNames, body = {}, options = {}) {
+  return fetchJson('/api/console/admin/worker-orphan-scan/backfill', {
+    ...options,
+    method: 'POST',
+    body: {
+      ...body,
+      workerNames,
+    },
+  });
+}
+
+export function listAdminV1Sites(options = {}) {
+  return fetchJson('/api/console/admin/v1-sites', options);
+}
+
+export function deleteAdminV1Site(name, body = {}, options = {}) {
+  return fetchJson(`/api/console/admin/v1-sites/${encodeURIComponent(name)}`, {
+    ...options,
+    method: 'DELETE',
+    body,
+  });
+}
+
+export function bulkRetireAdminV1Sites(names, body = {}, options = {}) {
+  return fetchJson('/api/console/admin/v1-sites/bulk-retire', {
+    ...options,
+    method: 'POST',
+    body: {
+      ...body,
+      names,
+    },
+  });
+}
+
 export function runAdminDeploymentCleanup(id, body = {}, options = {}) {
   return fetchJson(`/api/console/admin/deployment-cleanups/${encodeURIComponent(id)}/run`, {
     ...options,
     method: 'POST',
     body,
+  });
+}
+
+export function runAdminDeploymentCleanupsDue(limit = 50, body = {}, options = {}) {
+  return fetchJson('/api/console/admin/deployment-cleanups/run-due', {
+    ...options,
+    method: 'POST',
+    body: {
+      ...body,
+      limit,
+    },
   });
 }
 

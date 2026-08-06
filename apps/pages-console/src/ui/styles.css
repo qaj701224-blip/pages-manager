@@ -1118,6 +1118,7 @@ button {
   font-size: 13px;
   font-weight: 400;
   line-height: 1.5;
+  white-space: nowrap;
   margin-bottom: 1px;
 }
 
@@ -2316,7 +2317,9 @@ button {
 :root[data-theme='dark'] .delivery-panel,
 :root[data-theme='dark'] .empty-panel {
   background: rgba(37, 33, 28, 0.96);
-  box-shadow: 0 1px 0 rgba(239, 231, 220, 0.03), 0 12px 28px rgba(0, 0, 0, 0.18);
+  box-shadow:
+    0 1px 0 rgba(239, 231, 220, 0.03),
+    0 12px 28px rgba(0, 0, 0, 0.18);
 }
 
 .settings-card h2 {
@@ -2577,6 +2580,80 @@ button {
 .admin-stack {
   display: grid;
   gap: 14px;
+}
+
+.admin-governance-tabs {
+  display: grid;
+  gap: 14px;
+}
+
+.admin-governance-tabs .tabs-list {
+  margin-bottom: 0;
+}
+
+/* forceMount keeps inactive tab content mounted; Radix leaves it visible without this. */
+.admin-governance-tabs .tabs-content[data-state='inactive'] {
+  display: none;
+}
+
+.legacy-token {
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.governance-intro {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 70px;
+  padding: 14px 16px;
+  border: 1px solid var(--xd-border);
+  border-radius: 8px;
+  background: rgba(255, 253, 248, 0.92);
+}
+
+.governance-intro > div {
+  display: grid;
+  flex: 1 1 280px;
+  gap: 4px;
+}
+
+.governance-intro strong {
+  color: var(--xd-text);
+}
+
+.governance-intro span,
+.governance-scan-meta {
+  color: var(--xd-muted);
+  font-size: 13px;
+}
+
+.governance-incomplete-warning {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid #d97706;
+  border-radius: 8px;
+  background: #fff7ed;
+  color: #9a3412;
+}
+
+.governance-incomplete-warning span {
+  font-size: 13px;
+}
+
+.governance-filter-toolbar {
+  justify-content: flex-start;
+}
+
+.governance-filter-toolbar .segmented {
+  flex-wrap: wrap;
+}
+
+.governance-filter-toolbar .toolbar-count {
+  margin-left: auto;
 }
 
 .admin-detail-head {

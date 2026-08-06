@@ -69,10 +69,7 @@ class TestPagesStore {
     if ([...this.users.values()].some((user) => normalizeUserEmail(user.email) === normalizeUserEmail(record.email))) {
       throw new Error('USER_EMAIL_CONFLICT');
     }
-    if (
-      record.feishuOpenId !== null &&
-      [...this.users.values()].some((user) => user.feishuOpenId === record.feishuOpenId)
-    ) {
+    if (record.feishuOpenId !== null && [...this.users.values()].some((user) => user.feishuOpenId === record.feishuOpenId)) {
       throw new Error('USER_FEISHU_OPEN_ID_CONFLICT');
     }
     if (
@@ -434,6 +431,10 @@ class TestPagesStore {
     const sites = [...this.sites.values()].filter((site) => site.environment === environment && !site.deletedAt);
     const teams = [...this.teams.values()].filter((team) => team.environment === environment && !team.deletedAt);
     const deployments = [...this.deployments.values()].filter((deployment) => deployment.environment === environment);
+    const cleanupTasks = [...this.deploymentResourceCleanupTasks.values()].filter((task) => task.environment === environment);
+    const pendingTasks = cleanupTasks
+      .filter((task) => task.status === 'pending')
+      .sort((left, right) => left.cleanupAfter.localeCompare(right.cleanupAfter));
     const failedDeployments = deployments
       .filter((deployment) => deployment.status === 'failed')
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
@@ -449,8 +450,121 @@ class TestPagesStore {
         deployments: deployments.length,
         failedDeployments: failedDeployments.length,
       },
+      resourceCleanup: {
+        pendingTasks: pendingTasks.length,
+        failedTasks: cleanupTasks.filter((task) => task.status === 'failed').length,
+        oldestPendingAt: pendingTasks[0]?.cleanupAfter || null,
+      },
       failedDeployments,
     });
+  }
+
+  async listWorkerOrphanScanReferences({ environment, limit } = {}) {
+    const activeRoutes = [...this.routes.values()]
+      .filter((route) => route.environment === environment && route.routeStatus === 'active' && route.workerName)
+      .map((route) => ({
+        workerName: route.workerName,
+        siteId: route.siteId,
+        versionId: route.activeVersionId || null,
+        executionProvider: route.executionProvider || null,
+        dispatchType: route.dispatchType || null,
+      }));
+    const versions = [...this.siteVersions.values()]
+      .map((version) => ({ version, site: this.sites.get(version.siteId) || null }))
+      .filter(({ site }) => site?.environment === environment)
+      .map(({ version, site }) => ({
+        id: version.id,
+        workerName: version.workerName,
+        siteId: version.siteId,
+        siteSlug: site.slug,
+        siteDeletedAt: site.deletedAt || null,
+        artifactAvailability: version.artifactAvailability || 'active',
+        executionProvider: version.executionProvider || null,
+        dispatchType: version.dispatchType || null,
+        createdAt: version.createdAt || null,
+      }));
+    const cleanupTasks = [...this.deploymentResourceCleanupTasks.values()]
+      .filter(
+        (task) =>
+          task.environment === environment &&
+          task.resourceType === 'wfp_user_worker' &&
+          ['pending', 'failed', 'running'].includes(task.status)
+      )
+      .map((task) => ({ id: task.id, resourceRef: task.resourceRef, status: task.status }));
+    if (!Number.isInteger(limit) || limit < 1) return cloneRecord({ activeRoutes, versions, cleanupTasks });
+    return cloneRecord({
+      activeRoutes: activeRoutes.slice(0, limit),
+      versions: versions.slice(0, limit),
+      cleanupTasks: cleanupTasks.slice(0, limit),
+      scanLimitExceeded: activeRoutes.length > limit || versions.length > limit || cleanupTasks.length > limit,
+    });
+  }
+
+  async listSiteWfpCleanupReferences({ siteId, environment }) {
+    const route = this.routes.get(this.routeBySiteId.get(siteId)) || null;
+    const activeRoutes =
+      route?.environment === environment && route.routeStatus === 'active' && route.workerName
+        ? [
+            {
+              workerName: route.workerName,
+              siteId: route.siteId,
+              versionId: route.activeVersionId || null,
+              executionProvider: route.executionProvider || null,
+              dispatchType: route.dispatchType || null,
+            },
+          ]
+        : [];
+    const site = this.sites.get(siteId) || null;
+    const versions = [...this.siteVersions.values()]
+      .filter(
+        (version) =>
+          version.siteId === siteId &&
+          site?.environment === environment &&
+          version.workerName &&
+          (version.artifactAvailability || 'active') === 'active'
+      )
+      .map((version) => ({
+        id: version.id,
+        workerName: version.workerName,
+        siteId: version.siteId,
+        artifactAvailability: version.artifactAvailability || 'active',
+        executionProvider: version.executionProvider || null,
+        dispatchType: version.dispatchType || null,
+      }));
+    return cloneRecord({ activeRoutes, versions });
+  }
+
+  async listWorkerCleanupOwnershipReferences({ workerName }) {
+    const routes = [...this.routes.values()]
+      .filter((route) => route.workerName === workerName)
+      .map((route) => ({
+        workerName: route.workerName,
+        siteId: route.siteId,
+        versionId: route.activeVersionId || null,
+        ownershipEnvironment: route.environment,
+        executionProvider: route.executionProvider || null,
+        dispatchType: route.dispatchType || null,
+      }));
+    const versions = [...this.siteVersions.values()]
+      .filter((version) => version.workerName === workerName)
+      .map((version) => ({
+        id: version.id,
+        workerName: version.workerName,
+        siteId: version.siteId,
+        ownershipEnvironment: this.sites.get(version.siteId)?.environment || null,
+        executionProvider: version.executionProvider || null,
+        dispatchType: version.dispatchType || null,
+      }));
+    return cloneRecord({ routes, versions });
+  }
+
+  async listActiveSiteSlugs({ environment }) {
+    return cloneRecord(
+      [...this.sites.values()]
+        .filter((site) => site.environment === environment && !site.deletedAt)
+        .map((site) => ({ id: site.id, slug: site.slug }))
+        .sort((left, right) => left.slug.localeCompare(right.slug))
+    );
   }
 
   async listAdminUsers({ environment, query, limit = 50, offset = 0, admin, status }) {
@@ -2390,8 +2504,7 @@ class TestPagesStore {
   async markDeploymentResourceCleanupRunning({ id, environment, lockedUntil, updatedAt }) {
     const task = this.deploymentResourceCleanupTasks.get(id);
     const now = updatedAt || this.now();
-    const expiredRunning =
-      task?.status === 'running' && task.lockedUntil && Date.parse(task.lockedUntil) <= Date.parse(now);
+    const expiredRunning = task?.status === 'running' && task.lockedUntil && Date.parse(task.lockedUntil) <= Date.parse(now);
     if (!task || task.environment !== environment || (!['pending', 'failed'].includes(task.status) && !expiredRunning)) {
       return null;
     }
@@ -2440,7 +2553,7 @@ class TestPagesStore {
     const version = route?.activeVersionId ? this.siteVersions.get(route.activeVersionId) : null;
     return {
       ...site,
-      deploymentShape: version?.siteId === site.id ? version.deploymentShape ?? null : null,
+      deploymentShape: version?.siteId === site.id ? (version.deploymentShape ?? null) : null,
       route,
     };
   }
