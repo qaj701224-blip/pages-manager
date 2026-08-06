@@ -111,7 +111,8 @@ test('admin resource governance exposes a manual read-only orphan scan', () => {
   assert.match(adminDeploymentCleanupsSource, /async function runOrphanScan/);
   assert.match(adminDeploymentCleanupsSource, /scanAdminWorkerOrphans\(\)/);
   assert.match(adminDeploymentCleanupsSource, /onClick=\{runOrphanScan\}/);
-  assert.match(adminDeploymentCleanupsSource, /<AppTabs\.Content forceMount value="orphan-scan">/);
+  assert.match(adminDeploymentCleanupsSource, /<AppTabs\.Content className="tabs-content" forceMount value="orphan-scan">/);
+  assert.match(stylesSource, /\.admin-governance-tabs \.tabs-content\[data-state='inactive'\]\s*\{\s*display:\s*none;/);
   assert.match(adminDeploymentCleanupsSource, /filterWorkerOrphanScanWorkers/);
   assert.match(adminDeploymentCleanupsSource, /orphanReason/);
   assert.match(adminDeploymentCleanupsSource, /state\.scan\.completeness === 'incomplete'/);

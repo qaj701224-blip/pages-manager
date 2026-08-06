@@ -2590,6 +2590,11 @@ button {
   margin-bottom: 0;
 }
 
+/* forceMount keeps inactive tab content mounted; Radix leaves it visible without this. */
+.admin-governance-tabs .tabs-content[data-state='inactive'] {
+  display: none;
+}
+
 .governance-intro {
   display: flex;
   flex-wrap: wrap;

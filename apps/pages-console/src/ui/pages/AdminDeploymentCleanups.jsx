@@ -44,10 +44,10 @@ export function AdminDeploymentCleanups() {
           Orphan Scan
         </AppTabs.Trigger>
       </AppTabs.List>
-      <AppTabs.Content value="cleanup-tasks">
+      <AppTabs.Content className="tabs-content" value="cleanup-tasks">
         <CleanupTasksPanel />
       </AppTabs.Content>
-      <AppTabs.Content forceMount value="orphan-scan">
+      <AppTabs.Content className="tabs-content" forceMount value="orphan-scan">
         <OrphanScanPanel />
       </AppTabs.Content>
     </AppTabs.Root>

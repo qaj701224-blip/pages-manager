@@ -338,9 +338,22 @@ async function scanAdminWorkerOrphans(env, config, store) {
         namespaceScriptCount,
       }),
     });
-  } catch {
-    return jsonError('WORKER_ORPHAN_SCAN_FAILED', 'Worker orphan scan failed.', 502, 'Check Cloudflare credentials and retry.');
+  } catch (error) {
+    return jsonError(
+      'WORKER_ORPHAN_SCAN_FAILED',
+      'Worker orphan scan failed.',
+      502,
+      `Cause: ${cloudflareFailureCause(error)}. Check Cloudflare credentials and retry.`
+    );
   }
+}
+
+function cloudflareFailureCause(error) {
+  // Only surface fixed internal error codes; upstream messages may embed resource details.
+  const candidates = [error?.code, error?.message];
+  const code = candidates.find((value) => typeof value === 'string' && /^[A-Z][A-Z0-9_]{2,63}$/.test(value));
+  const status = Number.isInteger(error?.status) ? ` (HTTP ${error.status})` : '';
+  return `${code || 'UNEXPECTED'}${status}`;
 }
 
 function readWorkerOrphanScanLimit(env) {
@@ -376,12 +389,12 @@ async function listAdminV1Sites(env, config, store) {
         reservedWorkerNames,
       }),
     });
-  } catch {
+  } catch (error) {
     return jsonError(
       'V1_SITES_READ_FAILED',
       'Legacy v1 site inventory could not be read.',
       502,
-      'Check Cloudflare credentials and retry.'
+      `Cause: ${cloudflareFailureCause(error)}. Check Cloudflare credentials and retry.`
     );
   }
 }

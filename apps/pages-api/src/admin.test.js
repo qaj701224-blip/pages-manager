@@ -3141,6 +3141,48 @@ test('admin audit events include readable actor profile', async () => {
   });
 });
 
+test('worker orphan scan failure surfaces a sanitized cause code without upstream details', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/worker-orphan-scan', { userId: 'usr_root', admin: true }),
+    env(store, {
+      WFP_RESOURCE_ADMIN_CLIENT: {
+        listWorkers: async () => {
+          throw Object.assign(new Error('WFP_API_RESPONSE_INVALID'), {
+            code: 'WFP_API_RESPONSE_INVALID',
+            status: 403,
+            secretDetail: 'cf_secret_token',
+          });
+        },
+      },
+    })
+  );
+
+  assert.equal(response.status, 502);
+  const body = await response.json();
+  assert.equal(body.error.code, 'WORKER_ORPHAN_SCAN_FAILED');
+  assert.equal(body.error.action, 'Cause: WFP_API_RESPONSE_INVALID (HTTP 403). Check Cloudflare credentials and retry.');
+  assert.doesNotMatch(JSON.stringify(body), /cf_secret_token/);
+
+  const unexpected = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/worker-orphan-scan', { userId: 'usr_root', admin: true }),
+    env(store, {
+      WFP_RESOURCE_ADMIN_CLIENT: {
+        listWorkers: async () => {
+          throw new Error('connect ETIMEDOUT 203.0.113.9:443');
+        },
+      },
+    })
+  );
+
+  assert.equal(unexpected.status, 502);
+  const unexpectedBody = await unexpected.json();
+  assert.equal(unexpectedBody.error.action, 'Cause: UNEXPECTED. Check Cloudflare credentials and retry.');
+  assert.doesNotMatch(JSON.stringify(unexpectedBody), /203\.0\.113\.9/);
+});
+
 function env(store, overrides = {}) {
   return {
     PAGES_ENV: 'production',

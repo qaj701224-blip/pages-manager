@@ -276,6 +276,82 @@ test('listUserWorkers follows usable result_info pagination before checking scri
   assert.deepEqual(requests.map((url) => new URL(url).search), ['', '?page=2', '']);
 });
 
+test('listUserWorkers derives total pages from per_page/total_count metadata without total_pages', async () => {
+  const requests = [];
+  const client = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'cf_secret_token',
+    dispatchNamespace: 'xd-cell-workers-production',
+    fetch: async (request) => {
+      requests.push(request.url);
+      const url = new URL(request.url);
+      if (!url.pathname.endsWith('/scripts')) return Response.json({ success: true, result: { script_count: 3 } });
+      if (url.searchParams.get('page') === '2') {
+        return Response.json({
+          success: true,
+          result: [{ id: 'pages-v2-blog-ver-3' }],
+          result_info: { page: 2, per_page: 2, count: 1, total_count: 3 },
+        });
+      }
+      return Response.json({
+        success: true,
+        result: [{ id: 'pages-v2-docs-ver-1' }, { id: 'pages-v2-docs-ver-2' }],
+        result_info: { page: 1, per_page: 2, count: 2, total_count: 3 },
+      });
+    },
+  });
+
+  const inventory = await client.listUserWorkers();
+  assert.deepEqual(
+    inventory.workers.map((worker) => worker.name),
+    ['pages-v2-docs-ver-1', 'pages-v2-docs-ver-2', 'pages-v2-blog-ver-3']
+  );
+  assert.equal(inventory.completeness, 'complete');
+  assert.deepEqual(requests.map((url) => new URL(url).search), ['', '?page=2', '']);
+});
+
+test('listUserWorkers accepts count-only single-page metadata and rejects malformed count fields', async () => {
+  const singlePage = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'cf_secret_token',
+    dispatchNamespace: 'xd-cell-workers-production',
+    fetch: async (request) =>
+      request.url.endsWith('/scripts')
+        ? Response.json({
+            success: true,
+            result: [{ id: 'pages-v2-docs-ver-1' }],
+            result_info: { page: 1, per_page: 100, count: 1, total_count: 1 },
+          })
+        : Response.json({ success: true, result: { script_count: 1 } }),
+  });
+  const inventory = await singlePage.listUserWorkers();
+  assert.deepEqual(inventory.workers.map((worker) => worker.name), ['pages-v2-docs-ver-1']);
+  assert.equal(inventory.completeness, 'complete');
+
+  const malformedCountMetadata = [
+    { page: 1, per_page: 0, total_count: 1 },
+    { page: 1, per_page: '100', total_count: 1 },
+    { page: 1, per_page: 100, total_count: -1 },
+    { page: 1, per_page: 100, total_count: '1' },
+  ];
+  for (const resultInfo of malformedCountMetadata) {
+    const client = createWfpClient({
+      accountId: 'account_1',
+      apiToken: 'cf_secret_token',
+      dispatchNamespace: 'xd-cell-workers-production',
+      fetch: async (request) =>
+        request.url.endsWith('/scripts')
+          ? Response.json({ success: true, result: [{ id: 'pages-v2-docs-ver-1' }], result_info: resultInfo })
+          : Response.json({ success: true, result: { script_count: 1 } }),
+    });
+
+    await assert.rejects(
+      () => client.listUserWorkers(),
+      (error) => error instanceof WfpApiError && error.code === 'WFP_API_RESPONSE_INVALID'
+    );
+  }
+});
+
 test('listUserWorkers rejects repeated Worker names that could fake a complete paginated count', async () => {
   const client = createWfpClient({
     accountId: 'account_1',

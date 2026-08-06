@@ -448,17 +448,25 @@ function readCloudflarePagination(payload) {
   const resultInfo = payload.result_info;
   if (!isPlainObject(resultInfo)) throw invalidCloudflareListResponse();
   const responsePage = resultInfo.page;
-  const totalPages = resultInfo.total_pages;
-  if (
-    !Number.isInteger(responsePage) ||
-    responsePage < 1 ||
-    !Number.isInteger(totalPages) ||
-    totalPages < 1 ||
-    totalPages < responsePage
-  ) {
+  if (!Number.isInteger(responsePage) || responsePage < 1) throw invalidCloudflareListResponse();
+  const totalPages = readCloudflareTotalPages(resultInfo);
+  if (totalPages < 1 || totalPages < responsePage) throw invalidCloudflareListResponse();
+  return { page: responsePage, totalPages };
+}
+
+function readCloudflareTotalPages(resultInfo) {
+  if (Object.prototype.hasOwnProperty.call(resultInfo, 'total_pages')) {
+    if (!Number.isInteger(resultInfo.total_pages)) throw invalidCloudflareListResponse();
+    return resultInfo.total_pages;
+  }
+  // The dispatch scripts list endpoint has no published contract; some Cloudflare list
+  // responses only carry per_page/total_count, so total pages must be derived from them.
+  const perPage = resultInfo.per_page;
+  const totalCount = resultInfo.total_count;
+  if (!Number.isInteger(perPage) || perPage < 1 || !Number.isInteger(totalCount) || totalCount < 0) {
     throw invalidCloudflareListResponse();
   }
-  return { page: responsePage, totalPages };
+  return Math.max(1, Math.ceil(totalCount / perPage));
 }
 
 function normalizeListedWorkers(workers) {
