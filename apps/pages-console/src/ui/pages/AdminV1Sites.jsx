@@ -82,8 +82,17 @@ export function AdminV1Sites() {
   }
 
   async function retireSite(site) {
+    if (site.canRetire !== true || busyName || bulkBusy) return;
     const confirmation = globalThis.prompt?.(`输入站点名 ${site.name} 确认退役该 v1 站点`);
-    if (confirmation !== site.name || site.canRetire !== true) return;
+    if (confirmation === null || confirmation === undefined) return;
+    if (confirmation.trim() !== site.name) {
+      setState((current) => ({
+        ...current,
+        error: new Error(`确认输入与站点名不一致，已取消退役。请输入 ${site.name} 后重试。`),
+        notice: null,
+      }));
+      return;
+    }
     setBusyName(site.name);
     setState((current) => ({ ...current, error: null, notice: null }));
     try {
@@ -109,7 +118,15 @@ export function AdminV1Sites() {
     const names = selectedDeletableSites.map((site) => site.name);
     if (names.length === 0 || bulkBusy || busyName) return;
     const confirmation = globalThis.prompt?.(`输入 BULK RETIRE ${names.length} 确认批量退役 v1 站点：${names.join(', ')}`);
-    if (confirmation !== `BULK RETIRE ${names.length}`) return;
+    if (confirmation === null || confirmation === undefined) return;
+    if (confirmation.trim() !== `BULK RETIRE ${names.length}`) {
+      setState((current) => ({
+        ...current,
+        error: new Error(`确认输入不正确，已取消批量退役。请输入 BULK RETIRE ${names.length} 后重试。`),
+        notice: null,
+      }));
+      return;
+    }
     setBulkBusy(true);
     setState((current) => ({ ...current, error: null, notice: null }));
     try {
