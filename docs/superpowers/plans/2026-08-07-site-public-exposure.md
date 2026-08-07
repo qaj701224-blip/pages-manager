@@ -30,6 +30,7 @@
 - 不修改 `apps/server` v1 链路。
 - 不新增 CLI `--public`/`--exposure` flag；普通用户 handler 对显式 `exposure` 字段统一返回 `SITE_EXPOSURE_ADMIN_REQUIRED`，合法旧请求保持原样。
 - 不新增版本级 `XD_OFFICE_NET` capability 记录；Admin/deploy/rollback 通过受控 WFP settings 读取、移除和现场验证。
+- 实际依赖顺序为 Task 1 -> 2 -> 3 -> 5 -> 6 -> 7 -> 8 -> 4 -> 9 -> 10 -> 11；Admin endpoint 必须在 OfficeNet helper 和 runtime binding 锁协议完成后接入。
 
 ### Task 1: 建立共享 Access Policy 合约
 
@@ -206,9 +207,7 @@ END;
 
 ```js
 function readCompatibilityAccessMode(route) {
-  const fromVisibility = accessModeFromVisibility(route.visibility);
-  if (fromVisibility) return fromVisibility;
-  return isValidAccessMode(route.accessMode) ? route.accessMode : null;
+  return accessModeFromVisibility(route.visibility);
 }
 ```
 
@@ -265,7 +264,7 @@ renewSiteCommitLock(environment, siteId, lockId, options = {})
 releaseSiteCommitLock(environment, siteId, lockId)
 ```
 
-lease 只覆盖最终 revalidation、D1 activation、snapshot/pointer 和补偿；上传在锁外完成。固定锁顺序为 `site commit lease -> runtime-config lock -> route pointer serializer`。
+lease 只覆盖最终 revalidation、D1 activation、snapshot/pointer 和补偿；上传在锁外完成。首次 acquire 或过期 takeover 时递增 fencing token，renew 保持 token 不变，release 只将 `expires_at` 置为当前时间而不删除锁行，避免 token 重置。固定锁顺序为 `site commit lease -> runtime-config lock -> route pointer serializer`。
 
 - [ ] **Step 3: 实现 `updateSiteAccessPolicy` 和 `repairRouteSnapshot`**
 
@@ -412,9 +411,9 @@ assert.equal(lookupCount, 1); // new router reads trusted snapshot before decidi
 assert.equal(dispatchCount, 0); // fail-closed policy never dispatches
 ```
 
-- [ ] **Step 2: 将 IP 判断移动到可信 snapshot 读取之后**
+- [ ] **Step 2: 将 snapshot policy 预读与 route 可用性校验拆开**
 
-保持 environment/hostname validation 在前；然后调用现有 `readUsableRoute`，只在 `schemaVersion === 3 && exposure === 'public'` 时跳过 `enforceIPAllowlist`。缺失/非法 exposure 归一化为 internal；v2 固定 internal；非法 accessMode 或 projection mismatch 不 dispatch。
+保持 environment/hostname validation 在前；新增只读取 pointer/snapshot 并验证 schema/policy 的预读 helper，但在 IP 判断前不返回 `ROUTE_NOT_FOUND`、inactive、worker 或 metadata 细节。只有可信 `schemaVersion === 3 && exposure === 'public'` 跳过 `enforceIPAllowlist`；其余外网请求统一 `IP_DENIED`。通过 IP 或确认 public 后，再执行现有 routeStatus/activeVersion/dispatch target 可用性校验。缺失/非法 exposure 归一化为 internal；v2 固定 internal；非法 accessMode 或 projection mismatch 不 dispatch。
 
 - [ ] **Step 3: 更新 access-policy 为 accessMode 语义**
 
@@ -596,6 +595,7 @@ git commit -m "feat(pages-console): 增加站点公网 exposure 管理界面"
 - Modify: `pages-deploy.skill.md`
 - Modify: `.github/workflows/deploy-pages-v2.yml`
 - Modify: `.github/workflows/deploy-pages-v2-staging.yml`
+- Modify: `.github/workflows/sync-master-pr-to-staging.yml`
 - Test: `scripts/pages-v2-docs.test.js`
 - Test: `scripts/public-docs.test.js`
 - Test: `scripts/workflows.test.js`
@@ -608,15 +608,15 @@ git commit -m "feat(pages-console): 增加站点公网 exposure 管理界面"
 
 保留 `--visibility internal|org|acl|owner|disabled`、配置字段和请求/响应；把 `internal` 的说明改成匿名 access mode，不加入 `--public` 或 `--exposure`。公开文档不得把 exposure 当作普通用户 API 字段。
 
-- [ ] **Step 3: 调整 staging/production 发布顺序测试**
+- [ ] **Step 3: 调整 workflow 路径匹配、feature gate 和发布顺序测试**
 
-先部署 Router v2/v3 双读，再 migration/API，再开放 Admin mutation；若 workflow 当前 pages-api 早于 Router，拆成两个受控阶段。保持 production 仍只能手动触发，不新增 push/PR 自动部署。
+将 `packages/pages-access-policy/**` 纳入 v2 component/path matcher 和 sync-to-staging 判定。先部署 Router v2/v3 双读，再 migration/API；Admin public mutation 受默认关闭的显式 feature gate 控制，只有 Router、migration、OfficeNet helper 和 staging 验证完成后才开启。若 workflow 当前 pages-api 早于 Router，拆成两个受控阶段。保持 production 仍只能手动触发，不新增 push/PR 自动部署。
 
 - [ ] **Step 4: 运行文档/workflow tests 并提交**
 
 ```bash
 node --test scripts/pages-v2-docs.test.js scripts/public-docs.test.js scripts/workflows.test.js
-git add docs/security/routing-and-access.md docs/architecture/publishing-and-runtime.md docs/architecture/data-model.md docs/operations/resources-and-deployment.md docs/operations/observability-and-rollout.md docs/architecture/xd-cell-console.md docs/api-boundary.md apps/pages-cli/src/commands/shared.js apps/pages-cli/README.md apps/pages-api/src/public-docs.js pages-deploy.skill.md .github/workflows/deploy-pages-v2.yml .github/workflows/deploy-pages-v2-staging.yml scripts/pages-v2-docs.test.js scripts/public-docs.test.js scripts/workflows.test.js
+git add docs/security/routing-and-access.md docs/architecture/publishing-and-runtime.md docs/architecture/data-model.md docs/operations/resources-and-deployment.md docs/operations/observability-and-rollout.md docs/architecture/xd-cell-console.md docs/api-boundary.md apps/pages-cli/src/commands/shared.js apps/pages-cli/README.md apps/pages-api/src/public-docs.js pages-deploy.skill.md .github/workflows/deploy-pages-v2.yml .github/workflows/deploy-pages-v2-staging.yml .github/workflows/sync-master-pr-to-staging.yml scripts/pages-v2-docs.test.js scripts/public-docs.test.js scripts/workflows.test.js
 git commit -m "docs: 同步公网 exposure 行为与发布顺序"
 ```
 
