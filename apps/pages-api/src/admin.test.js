@@ -75,12 +75,20 @@ test('admin dashboard requires platform admin and returns governance counts', as
           siteId: 'site_console',
           siteSlug: 'console',
           owner: {
+            state: 'persisted',
             type: 'team',
             id: 'team_console',
             email: null,
             displayName: 'Console Team',
             departmentPath: null,
             teamType: 'custom',
+          },
+          actor: {
+            type: 'user',
+            id: 'usr_owner',
+            userId: 'usr_owner',
+            email: 'owner@example.com',
+            displayName: null,
           },
           status: 'failed',
           source: 'cli',
@@ -89,6 +97,56 @@ test('admin dashboard requires platform admin and returns governance counts', as
         },
       ],
     },
+  });
+});
+
+test('admin dashboard distinguishes an uncreated site from its deployment actor', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await seedConsoleUser(store, 'usr_cindy', {
+    email: 'actor@example.com',
+    realname: 'Actor',
+    createdSource: 'cindy',
+  });
+  await store.createDeploymentForIdempotency({
+    id: 'dep_site_create_failed',
+    environment: 'production',
+    siteId: 'site_pending',
+    actorId: 'usr_cindy',
+    actorUserId: 'usr_cindy',
+    actorType: 'access_key',
+    source: 'cli',
+    operation: 'deploy',
+    status: 'failed',
+    idempotencyKey: 'site-create-failed-1',
+    requestHash: 'hash-site-create-failed-1',
+    errorCode: 'SITE_CREATE_FAILED',
+    errorMessage: 'Site creation failed.',
+    failureStage: 'deployment_operation',
+  });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/dashboard', { userId: 'usr_root', admin: true }),
+    env(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const deployment = (await response.json()).dashboard.failedDeployments[0];
+  assert.deepEqual(deployment.owner, {
+    state: 'not_created',
+    type: null,
+    id: null,
+    email: null,
+    displayName: null,
+    departmentPath: null,
+    teamType: null,
+  });
+  assert.deepEqual(deployment.actor, {
+    type: 'access_key',
+    id: 'usr_cindy',
+    userId: 'usr_cindy',
+    email: 'actor@example.com',
+    displayName: 'Actor',
   });
 });
 
@@ -1266,12 +1324,20 @@ test('admin site deployment list exposes redacted failure diagnostics for review
         siteId: 'site_console',
         siteSlug: 'console',
         owner: {
+          state: 'persisted',
           type: 'team',
           id: 'team_console',
           email: null,
           displayName: 'Console Team',
           departmentPath: null,
           teamType: 'custom',
+        },
+        actor: {
+          type: 'user',
+          id: 'usr_root',
+          userId: 'usr_root',
+          email: 'root@example.com',
+          displayName: null,
         },
         status: 'failed',
         source: 'cli',
