@@ -3338,6 +3338,7 @@ test('platform admin can enable public exposure while preserving visibility and 
 
   assert.equal(response.status, 200, await response.clone().text());
   const body = await response.json();
+  assert.equal(body.auditStatus, 'confirmed');
   assert.equal(body.access.exposure, 'public');
   assert.equal(body.access.visibility, 'internal');
   assert.deepEqual(actions, [
@@ -3543,33 +3544,43 @@ test('public exposure reports a final audit failure without misreporting the eff
     return originalRecordAuditEvent(input);
   };
   const snapshotStore = createSnapshotStore();
+  const warnings = [];
+  const originalWarn = globalThis.console.warn;
+  globalThis.console.warn = (...values) => warnings.push(values.join(' '));
 
-  const response = await worker.fetch(
-    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_public/exposure', {
-      userId: 'usr_root',
-      admin: true,
-      method: 'PATCH',
-      body: { exposure: 'public', reason: 'audit failure test' },
-    }),
-    env(store, {
-      ROUTE_SNAPSHOTS: snapshotStore,
-      WFP_PROVIDER: {
-        removeOfficeNetBinding: async () => {},
-        verifyOfficeNetAbsent: async () => true,
-      },
-    })
-  );
+  let response;
+  try {
+    response = await worker.fetch(
+      internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_public/exposure', {
+        userId: 'usr_root',
+        admin: true,
+        method: 'PATCH',
+        body: { exposure: 'public', reason: 'audit failure test' },
+      }),
+      env(store, {
+        ROUTE_SNAPSHOTS: snapshotStore,
+        WFP_PROVIDER: {
+          removeOfficeNetBinding: async () => {},
+          verifyOfficeNetAbsent: async () => true,
+        },
+      })
+    );
+  } finally {
+    globalThis.console.warn = originalWarn;
+  }
 
-  assert.equal(response.status, 503, await response.clone().text());
-  assert.equal((await response.json()).error.code, 'SITE_EXPOSURE_AUDIT_FAILED');
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.access.exposure, 'public');
+  assert.equal(body.auditStatus, 'unconfirmed');
   assert.equal((await store.getRouteBySiteId('site_public', 'production')).exposure, 'public');
   const pointer = snapshotStore.read('production:route_pointer:public.workers.xd.team');
   assert.equal(snapshotStore.read(pointer.snapshotKey).exposure, 'public');
   const audits = await store.listAuditEvents({ environment: 'production', siteId: 'site_public' });
-  const failed = audits.find((event) => event.metadata?.stage === 'partial_failed');
-  assert.equal(failed?.metadata?.authorityExposure, 'public');
-  assert.equal(failed?.metadata?.effectiveExposure, 'public');
-  assert.equal(failed?.metadata?.pointerConfirmed, true);
+  assert.equal(audits.some((event) => event.decision === 'deny'), false);
+  assert.equal(audits.some((event) => event.metadata?.stage === 'partial_failed'), false);
+  assert.equal(warnings.some((entry) => entry.includes('SITE_EXPOSURE_AUDIT_UNCONFIRMED')), true);
+  assert.equal(warnings.some((entry) => entry.includes('final audit unavailable')), false);
 });
 
 test('public exposure OfficeNet failure records a sanitized failed audit stage', async () => {
@@ -3614,25 +3625,36 @@ test('effective public exposure reports an audit failure without rolling back th
     if (input.metadata?.stage === 'effective_success') throw new Error('audit unavailable');
     return recordAuditEvent(input);
   };
+  const warnings = [];
+  const originalWarn = globalThis.console.warn;
+  globalThis.console.warn = (...values) => warnings.push(values.join(' '));
 
-  const response = await worker.fetch(
-    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_public/exposure', {
-      userId: 'usr_root',
-      admin: true,
-      method: 'PATCH',
-      body: { exposure: 'public', reason: 'audit failure test' },
-    }),
-    env(store, {
-      ROUTE_SNAPSHOTS: createSnapshotStore(),
-      WFP_PROVIDER: {
-        removeOfficeNetBinding: async () => {},
-        verifyOfficeNetAbsent: async () => true,
-      },
-    })
-  );
+  let response;
+  try {
+    response = await worker.fetch(
+      internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_public/exposure', {
+        userId: 'usr_root',
+        admin: true,
+        method: 'PATCH',
+        body: { exposure: 'public', reason: 'audit failure test' },
+      }),
+      env(store, {
+        ROUTE_SNAPSHOTS: createSnapshotStore(),
+        WFP_PROVIDER: {
+          removeOfficeNetBinding: async () => {},
+          verifyOfficeNetAbsent: async () => true,
+        },
+      })
+    );
+  } finally {
+    globalThis.console.warn = originalWarn;
+  }
 
-  assert.equal(response.status, 503, await response.clone().text());
-  assert.equal((await response.json()).error.code, 'SITE_EXPOSURE_AUDIT_FAILED');
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.auditStatus, 'unconfirmed');
+  assert.equal(body.access.exposure, 'public');
+  assert.equal(warnings.some((entry) => entry.includes('SITE_EXPOSURE_AUDIT_UNCONFIRMED')), true);
   assert.equal((await store.getRouteBySiteId('site_public', 'production')).exposure, 'public');
 });
 

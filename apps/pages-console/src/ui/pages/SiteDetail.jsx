@@ -672,7 +672,11 @@ function AdminExposurePanel({ site, access, updateExposure, onResourceUpdate, on
       setExposure(nextExposure);
       setDialog(null);
       setReason('');
-      setAuditWarning(null);
+      setAuditWarning(
+        data.auditStatus === 'unconfirmed'
+          ? '公网访问已经生效，但最终审计记录未确认，请刷新站点状态并核对审计日志。'
+          : null
+      );
       onResourceUpdate?.({ access: nextAccess });
       onSitePatch?.({ access: { ...(site.access || {}), ...nextAccess } });
     } catch (nextError) {

@@ -2472,6 +2472,7 @@ async function updateAdminSiteExposure(request, env, config, store, session, sit
         throw error;
       }
 
+      let auditStatus = 'confirmed';
       try {
         await store.recordAuditEvent({
           id: `${operationId}:effective_success`,
@@ -2496,12 +2497,16 @@ async function updateAdminSiteExposure(request, env, config, store, session, sit
           createdAt: now,
         });
       } catch (cause) {
-        const error = new Error('SITE_EXPOSURE_AUDIT_FAILED');
-        error.code = 'SITE_EXPOSURE_AUDIT_FAILED';
-        error.cause = cause;
-        error.effectiveExposure = exposure;
-        error.pointerConfirmed = true;
-        throw error;
+        auditStatus = 'unconfirmed';
+        globalThis.console?.warn?.(
+          'SITE_EXPOSURE_AUDIT_UNCONFIRMED',
+          JSON.stringify({
+            operationId,
+            siteId: committedSite.id,
+            environment: config.environment,
+            errorCode: safeAdminExposureAuditWarningCode(cause),
+          })
+        );
       }
       return {
         access: {
@@ -2510,6 +2515,7 @@ async function updateAdminSiteExposure(request, env, config, store, session, sit
           visibility: committedRoute.visibility,
           aclEntries: (mutation.aclEntries || []).map(formatAclEntry),
         },
+        auditStatus,
       };
     });
     if (result instanceof Response) return result;
@@ -2611,6 +2617,10 @@ function safeAdminExposureFailureCode(error) {
     'ROUTE_SNAPSHOT_WRITE_FAILED',
   ]);
   return allowed.has(code) ? code : 'SITE_EXPOSURE_UPDATE_FAILED';
+}
+
+function safeAdminExposureAuditWarningCode(error) {
+  return error?.code === 'AUDIT_WRITE_FAILED' ? 'AUDIT_WRITE_FAILED' : 'UNKNOWN';
 }
 
 function adminExposureErrorResponse(error) {

@@ -440,17 +440,19 @@ export function buildOpenApi(config) {
             'SITE_POLICY_CONFLICT',
             'SITE_PUBLIC_OFFICE_NET_REMOVE_FAILED',
             'SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED',
-            'SITE_EXPOSURE_AUDIT_FAILED',
             'ROUTE_POLICY_REPAIR_REQUIRED',
             'SITE_EXPOSURE_UPDATE_FAILED',
           ],
           responses: {
-            200: { description: 'Site exposure updated and effective in the route snapshot' },
+            200: {
+              description:
+                'Site exposure updated and effective in the route snapshot. auditStatus is confirmed or unconfirmed.',
+            },
             400: { description: 'Invalid exposure or missing reason' },
             403: { description: 'Platform admin required' },
             404: { description: 'Site not found' },
             409: { description: 'Site policy changed while the operation was being applied' },
-            503: { description: 'Worker binding, route snapshot, policy, or audit confirmation failed' },
+            503: { description: 'Worker binding, route snapshot, or policy update failed' },
           },
         },
       },
