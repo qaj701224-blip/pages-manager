@@ -240,9 +240,9 @@ git commit -m "feat(pages-api): 增加站点 exposure policy 字段"
 - Test: `apps/pages-api/src/store.test.js`
 - Test: `apps/pages-api/src/route-snapshot.test.js`
 
-- [ ] **Step 1: 写 lease/CAS/policy mutation 的失败测试**
+- [x] **Step 1: 写 lease/CAS/policy mutation 的失败测试**
 
-测试必须覆盖：同一 `(environment, siteId)` 不能同时拿到两个 lease；租约续期后 fencing token 单调增加；丢锁后 CAS 失败；Admin 只改 exposure 保留 accessMode/ACL；user 只改 accessMode/ACL 保留 exposure；同值但 pointer 落后时执行 repair 而不 bump policyVersion。
+测试必须覆盖：同一 `(environment, siteId)` 不能同时拿到两个 lease；首次 acquire/过期 takeover 时 fencing token 单调增加、renew 保持 token 不变；丢锁后 CAS 失败；Admin 只改 exposure 保留 accessMode/ACL；user 只改 accessMode/ACL 保留 exposure；同值但 pointer 落后时执行 repair 而不 bump policyVersion。
 
 ```js
 await assert.rejects(
@@ -253,7 +253,7 @@ assert.equal(repaired.policyVersion, oldVersion);
 assert.equal(repaired.pointerConfirmed, true);
 ```
 
-- [ ] **Step 2: 增加 `site_policy_locks` 表和 Store/TestStore 对称 lease API**
+- [x] **Step 2: 增加 `site_policy_locks` 表和 Store/TestStore 对称 lease API**
 
 实现以下接口并保持参数一致；migration 和 schema 已在 Task 2 一次性定义，后续任务不再修改已提交的 `0019` 文件：
 
@@ -266,7 +266,7 @@ releaseSiteCommitLock(environment, siteId, lockId)
 
 lease 只覆盖最终 revalidation、D1 activation、snapshot/pointer 和补偿；上传在锁外完成。首次 acquire 或过期 takeover 时递增 fencing token，renew 保持 token 不变，release 只将 `expires_at` 置为当前时间而不删除锁行，避免 token 重置。固定锁顺序为 `site commit lease -> runtime-config lock -> route pointer serializer`。
 
-- [ ] **Step 3: 实现 `updateSiteAccessPolicy` 和 `repairRouteSnapshot`**
+- [x] **Step 3: 实现 `updateSiteAccessPolicy` 和 `repairRouteSnapshot`**
 
 `updateSiteAccessPolicy` 接受：
 
@@ -288,7 +288,7 @@ lease 只覆盖最终 revalidation、D1 activation、snapshot/pointer 和补偿�
 
 `repairRouteSnapshot` 在 D1/pointer 值相同但 pointer 缺失或落后时重写同一 policyVersion；若 pointer tuple 更高，先用更高 policyVersion 提交安全 internal repair，禁止低版本覆盖。
 
-- [ ] **Step 4: 扩展 route snapshot builder 为 v3**
+- [x] **Step 4: 扩展 route snapshot builder 为 v3**
 
 `route-snapshot.js` 输出：
 
@@ -306,7 +306,7 @@ lease 只覆盖最终 revalidation、D1 activation、snapshot/pointer 和补偿�
 
 若 accessMode 无法从合法 visibility/access_mode 得到，返回策略错误，不生成可绕过 IP 的 snapshot。
 
-- [ ] **Step 5: 运行 Store/Snapshot focused tests并提交**
+- [x] **Step 5: 运行 Store/Snapshot focused tests并提交**
 
 ```bash
 node --test apps/pages-api/src/store.test.js apps/pages-api/src/route-snapshot.test.js apps/pages-api/src/store-contract.test.js
