@@ -1035,8 +1035,9 @@ export class D1PagesStore {
     return (result.results || []).map(mapUser);
   }
 
-  async listAdminSites({ environment, limit = 200 }) {
+  async listAdminSites({ environment, limit = 200, exposure } = {}) {
     const normalizedLimit = Math.max(1, Math.min(Number(limit) || 200, 500));
+    const exposureFilter = exposure === 'public' || exposure === 'internal' ? exposure : null;
     const result = await this.db
       .prepare(
         `SELECT sites.*, site_routes.id AS route_id, site_routes.hostname AS route_hostname,
@@ -1069,10 +1070,11 @@ export class D1PagesStore {
           AND owner_teams.id = sites.owner_id
           AND owner_teams.deleted_at IS NULL
         WHERE sites.environment = ? AND sites.deleted_at IS NULL
+          ${exposureFilter ? 'AND COALESCE(site_routes.exposure, \'internal\') = ?' : ''}
         ORDER BY sites.updated_at DESC
         LIMIT ?`
       )
-      .bind(environment, normalizedLimit)
+      .bind(...(exposureFilter ? [environment, exposureFilter, normalizedLimit] : [environment, normalizedLimit]))
       .all();
     return (result.results || []).map(mapAdminSiteWithOwner);
   }
@@ -3361,13 +3363,14 @@ export class D1PagesStore {
     }
     await this.db
       .prepare(
-        `UPDATE sites SET default_visibility = ?, default_access_mode = ?, updated_at = ?
-        WHERE id = ?${environment ? ' AND environment = ?' : ''}`
+        `UPDATE sites SET default_visibility = ?, default_exposure = ?, default_access_mode = ?, updated_at = ?
+          WHERE id = ?${environment ? ' AND environment = ?' : ''}`
       )
       .bind(
         ...(environment
           ? [
               previousSite.defaultVisibility,
+              normalizeExposure(previousSite.defaultExposure),
               accessModeFromVisibility(previousSite.defaultVisibility),
               previousSite.updatedAt,
               siteId,
@@ -3375,13 +3378,14 @@ export class D1PagesStore {
             ]
           : [
               previousSite.defaultVisibility,
+              normalizeExposure(previousSite.defaultExposure),
               accessModeFromVisibility(previousSite.defaultVisibility),
               previousSite.updatedAt,
               siteId,
             ])
       )
       .run();
-    return this.restoreSiteRoute(siteId, routeWithLatestRuntimeConfig(previousRoute, currentRoute), environment);
+    return this.restoreSiteRoute(siteId, routeRestoredAsNewPolicyCommit(previousRoute, currentRoute), environment);
   }
 
   async replaceSiteAclEntries(siteId, entries, { createdBy, updatedAt }, environment) {
@@ -5601,6 +5605,22 @@ function routeRestoredAsNewCommit(previousRoute, currentRoute) {
     cacheTier: currentRoute.cacheTier,
     routeGeneration: Math.max(previousRoute.routeGeneration || 0, currentRoute.routeGeneration || 0) + 1,
     runtimeConfigGeneration: currentRoute.runtimeConfigGeneration || 0,
+    updatedAt: currentRoute.updatedAt,
+  };
+}
+
+function routeRestoredAsNewPolicyCommit(previousRoute, currentRoute) {
+  const previousPolicyVersion = previousRoute.policyVersion || 0;
+  const currentPolicyVersion = currentRoute.policyVersion || 0;
+  return {
+    ...previousRoute,
+    exposure: normalizeExposure(previousRoute.exposure),
+    accessMode: accessModeFromVisibility(previousRoute.visibility),
+    policyVersion:
+      Math.max(previousPolicyVersion, currentPolicyVersion) + (currentPolicyVersion > previousPolicyVersion ? 1 : 0),
+    routeGeneration: currentRoute.routeGeneration,
+    runtimeConfigGeneration: currentRoute.runtimeConfigGeneration || 0,
+    cacheTier: cacheTierForVisibility(previousRoute.visibility),
     updatedAt: currentRoute.updatedAt,
   };
 }

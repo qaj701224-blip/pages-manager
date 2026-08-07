@@ -14,13 +14,17 @@ export function siteCardOwnerLabel(owner) {
 export function siteVisibilityLabel(visibility) {
   const value = String(visibility || '').trim();
   const labels = {
-    internal: '内网可见',
+    internal: '免登录访问',
     org: '企业成员可见',
     acl: '指定成员可见',
     owner: '仅归属方可见',
     disabled: '已停用',
   };
   return labels[value] || value;
+}
+
+export function siteExposureLabel(exposure) {
+  return exposure === 'public' ? '公网' : '公司网络';
 }
 
 export function siteDeploymentShapeLabel(deploymentShape) {
@@ -36,7 +40,7 @@ export function siteDeploymentShapeLabel(deploymentShape) {
 
 export function filterAdminSites(
   sites,
-  { query = '', ownerType = 'all', status = 'all', deploymentShape = 'all' } = {}
+  { query = '', ownerType = 'all', status = 'all', deploymentShape = 'all', exposure = 'all' } = {}
 ) {
   const normalizedQuery = query.trim().toLowerCase();
   const knownDeploymentShapes = new Set(['assets-only', 'worker-only', 'worker-with-assets']);
@@ -44,6 +48,7 @@ export function filterAdminSites(
     const owner = adminSiteOwnerView(site.owner);
     if (ownerType !== 'all' && owner.type !== ownerType) return false;
     if (status !== 'all' && site.status !== status) return false;
+    if (exposure !== 'all' && (site.exposure || 'internal') !== exposure) return false;
     if (deploymentShape === 'un-deployed') {
       if (site.deploymentShape) return false;
     } else if (deploymentShape !== 'all') {
@@ -55,6 +60,7 @@ export function filterAdminSites(
       site.hostname,
       sitePublicUrl(site.hostname),
       site.visibility,
+      siteExposureLabel(site.exposure),
       site.status,
       owner.primary,
       owner.secondary,

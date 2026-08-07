@@ -625,7 +625,7 @@ class TestPagesStore {
     );
   }
 
-  async listAdminSites({ environment, limit = 200 }) {
+  async listAdminSites({ environment, limit = 200, exposure } = {}) {
     const normalizedLimit = Math.max(1, Math.min(Number(limit) || 200, 500));
     return cloneRecord(
       [...this.sites.values()]
@@ -633,6 +633,7 @@ class TestPagesStore {
         .filter((site) => !environment || site.environment === environment)
         .map((site) => this.decorateAdminSite(this.siteWithRoute(site.id)))
         .filter(Boolean)
+        .filter((site) => !exposure || (site.route?.exposure || site.defaultExposure || 'internal') === exposure)
         .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
         .slice(0, normalizedLimit)
     );
@@ -1896,11 +1897,10 @@ class TestPagesStore {
     if (expectedRoute && !routesMatchIgnoringRuntimeConfigGeneration(route, expectedRoute)) return cloneRecord(route);
 
     site.defaultVisibility = previousSite.defaultVisibility;
+    site.defaultExposure = normalizeExposure(previousSite.defaultExposure);
     site.defaultAccessMode = accessModeFromVisibility(previousSite.defaultVisibility);
     site.updatedAt = previousSite.updatedAt;
-    Object.assign(route, routeWithLatestRuntimeConfig(cloneRecord(previousRoute), route));
-    route.exposure = normalizeExposure(route.exposure);
-    route.accessMode = accessModeFromVisibility(route.visibility);
+    Object.assign(route, routeRestoredAsNewPolicyCommit(cloneRecord(previousRoute), route));
     return cloneRecord(route);
   }
 
@@ -3352,6 +3352,22 @@ function routeRestoredAsNewCommit(previousRoute, currentRoute) {
     cacheTier: currentRoute.cacheTier,
     routeGeneration: Math.max(previousRoute.routeGeneration || 0, currentRoute.routeGeneration || 0) + 1,
     runtimeConfigGeneration: currentRoute.runtimeConfigGeneration || 0,
+    updatedAt: currentRoute.updatedAt,
+  };
+}
+
+function routeRestoredAsNewPolicyCommit(previousRoute, currentRoute) {
+  const previousPolicyVersion = previousRoute.policyVersion || 0;
+  const currentPolicyVersion = currentRoute.policyVersion || 0;
+  return {
+    ...previousRoute,
+    exposure: normalizeExposure(previousRoute.exposure),
+    accessMode: accessModeFromVisibility(previousRoute.visibility),
+    policyVersion:
+      Math.max(previousPolicyVersion, currentPolicyVersion) + (currentPolicyVersion > previousPolicyVersion ? 1 : 0),
+    routeGeneration: currentRoute.routeGeneration,
+    runtimeConfigGeneration: currentRoute.runtimeConfigGeneration || 0,
+    cacheTier: cacheTierForVisibility(previousRoute.visibility),
     updatedAt: currentRoute.updatedAt,
   };
 }

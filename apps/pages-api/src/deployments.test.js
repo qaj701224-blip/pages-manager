@@ -6498,6 +6498,40 @@ test('requires idempotency key for deploy and rollback', async () => {
   assert.equal((await rollback.json()).error.code, 'IDEMPOTENCY_KEY_REQUIRED');
 });
 
+test('regular deployment rejects explicit exposure changes before creating a deployment', async () => {
+  const store = await createSeededStore();
+  const response = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ exposure: 'public' }),
+      { 'Idempotency-Key': 'deploy_explicit_exposure' }
+    ),
+    testEnv(store, createSnapshotStore())
+  );
+
+  assert.equal(response.status, 403, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'SITE_EXPOSURE_ADMIN_REQUIRED');
+  assert.equal(await store.getDeployment('dep_1', 'production'), null);
+  assert.equal((await store.getRouteBySiteId('site_1', 'production')).activeVersionId, null);
+});
+
+test('regular rollback rejects explicit exposure changes before creating a deployment', async () => {
+  const store = await createSeededStore();
+  const response = await worker.fetch(
+    jsonRequest(
+      'https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback',
+      { exposure: 'public' },
+      { 'Idempotency-Key': 'rollback_explicit_exposure' }
+    ),
+    testEnv(store, createSnapshotStore())
+  );
+
+  assert.equal(response.status, 403, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'SITE_EXPOSURE_ADMIN_REQUIRED');
+  assert.equal(await store.getDeployment('dep_1', 'production'), null);
+  assert.equal((await store.getRouteBySiteId('site_1', 'production')).activeVersionId, null);
+});
+
 async function createSeededStore(options = {}) {
   const store = createTestPagesStore({
     now: () => '2026-06-15T00:00:00.000Z',
@@ -6691,6 +6725,7 @@ function publishPlanMultipartRequest(url, fields, headers = {}) {
     siteSlug: normalized.siteSlug,
     teamId: normalized.teamId,
     visibility: normalized.visibility,
+    exposure: normalized.exposure,
     requestedFallback: normalized.requestedFallback,
     source: normalized.source || 'cli',
     contentHash: normalized.contentHash,

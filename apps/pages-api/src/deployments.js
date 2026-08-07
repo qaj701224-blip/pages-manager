@@ -29,7 +29,13 @@ import {
 import { createDeploymentProvider, normalizeWorkerBundle } from './execution-provider.js';
 import { runtimeConfigSnapshot, validateRuntimeBindingQuotas } from './runtime-config.js';
 import { notifyDeploymentCapacityExhausted } from './slack-alerts.js';
-import { actorCanManageSite, buildSiteOwnerTransferAuditEvent, hostnameForSlug, siteCreateErrorResponse } from './sites.js';
+import {
+  actorCanManageSite,
+  buildSiteOwnerTransferAuditEvent,
+  hostnameForSlug,
+  rejectUserExposureMutation,
+  siteCreateErrorResponse,
+} from './sites.js';
 import { deliverWebhookEventToSubscriptions } from './webhooks.js';
 import { createSiteWithLegacyV1Takeover } from './legacy-v1/takeover.js';
 
@@ -142,6 +148,9 @@ async function createDeployment(request, env, config, store, actor, ctx) {
     if (error?.code === 'CLI_UPLOAD_PROTOCOL_REQUIRED') return cliUploadProtocolRequired();
     return jsonError('INVALID_MULTIPART', 'Invalid multipart body.', 400, 'Run xd-cell deploy --dry-run and retry.');
   }
+
+  const exposureError = rejectUserExposureMutation(body);
+  if (exposureError) return exposureError;
 
   const requestedSiteId = normalizeOptionalString(body.siteId);
   const requestedSiteSlug = normalizeOptionalSlug(body.siteSlug ?? body.slug);
@@ -1189,6 +1198,9 @@ async function rollbackVersion(request, env, config, store, actor, versionId) {
   } catch {
     return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
   }
+
+  const exposureError = rejectUserExposureMutation(body);
+  if (exposureError) return exposureError;
 
   const version = await store.getSiteVersion(versionId, config.environment);
   if (!version) return jsonError('VERSION_NOT_FOUND', 'Version not found.', 404, 'Check the version id.');
@@ -2485,7 +2497,7 @@ async function assertRouteSnapshotConverged(env, store, site, route, environment
   }
 }
 
-async function ensurePublicWorkerOfficeNetAbsent(
+export async function ensurePublicWorkerOfficeNetAbsent(
   provider,
   { store, environment, siteId, workerName, executionProvider, deploymentShape, exposure, signal }
 ) {

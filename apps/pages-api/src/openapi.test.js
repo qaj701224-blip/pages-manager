@@ -27,6 +27,20 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
   assert.ok(body.paths['/.xd-pages/api/sites/{id}/acl'].put);
   assert.ok(body.paths['/.xd-pages/api/sites/{id}/acl/entries'].post);
   assert.ok(body.paths['/.xd-pages/api/sites/{id}/acl/entries'].delete);
+  assert.match(body.components.schemas.SiteVisibility.description, /internal.*anonymous/);
+  assert.match(body.components.schemas.SiteVisibility.description, /exposure/);
+  assert.ok(body.components.schemas.AdminSiteExposureRequest);
+  assert.deepEqual(body.paths['/.xd-pages/api/sites/{id}'].patch['x-error-codes'], [
+    'SITE_VISIBILITY_INVALID',
+    'SITE_EXPOSURE_ADMIN_REQUIRED',
+    'SITE_POLICY_FORBIDDEN',
+    'SITE_POLICY_CONFLICT',
+    'ROUTE_POLICY_REPAIR_REQUIRED',
+  ]);
+  assert.ok(body.paths['/.xd-pages/api/console/admin/sites/{id}/exposure'].patch);
+  assert.ok(
+    body.paths['/.xd-pages/api/console/admin/sites/{id}/exposure'].patch['x-error-codes'].includes('SITE_EXPOSURE_AUDIT_FAILED')
+  );
   assert.ok(body.paths['/.xd-pages/api/sites/{site}/secrets'].put);
   assert.ok(body.paths['/.xd-pages/api/sites/{site}/secrets'].delete);
   assert.ok(body.paths['/.xd-pages/api/sites/{site}/vars'].put);

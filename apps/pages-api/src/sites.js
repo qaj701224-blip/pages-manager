@@ -1,4 +1,5 @@
 import { validateSiteSlug } from '@xd/pages-runtime-protocol';
+import { accessModeFromVisibility } from '@xd/pages-access-policy';
 
 import { isWfpWorkerResource } from './admin-resource-governance.js';
 import { authenticateApiRequest } from './auth.js';
@@ -732,7 +733,6 @@ async function getSite(store, actor, siteId, environment) {
 async function updateSite(request, env, config, store, actor, siteId) {
   const site = await getOwnerSite(store, actor, siteId, config.environment);
   if (site instanceof Response) return site;
-  const previousRoute = site.route || (await store.getRouteBySiteId(site.id, config.environment));
 
   let body;
   try {
@@ -741,28 +741,26 @@ async function updateSite(request, env, config, store, actor, siteId) {
     return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
   }
 
+  const exposureError = rejectUserExposureMutation(body);
+  if (exposureError) return exposureError;
+
   const visibility = typeof body.visibility === 'string' ? body.visibility : '';
   if (!VISIBILITIES.has(visibility)) {
     return jsonError('SITE_VISIBILITY_INVALID', 'Site visibility is invalid.', 400, VISIBILITY_ACTION);
   }
   if (site.ownerType === 'team' && visibility === 'owner') return teamOwnerVisibilityUnsupported();
 
-  const route = await store.updateSiteVisibility(
-    site.id,
-    {
-      visibility,
-      updatedAt: readNow(env),
-    },
-    config.environment
-  );
-  const updatedSite = await store.getSiteForUser(site.id, actor.userId, actor, config.environment);
-  const snapshotError = await refreshActiveRouteSnapshot(env, store, updatedSite, route, config.environment);
-  if (snapshotError) {
-    await restoreSiteVisibilityAfterSnapshotFailure(store, site.id, site, previousRoute, route, config.environment);
-    return snapshotError;
-  }
+  const mutation = await mutateUserSiteAccessPolicy({
+    env,
+    config,
+    store,
+    siteId: site.id,
+    actorUserId: actor.userId,
+    visibility,
+  });
+  if (mutation instanceof Response) return mutation;
 
-  return jsonOk({ site: formatSite({ ...updatedSite, route }) });
+  return jsonOk({ site: formatSite({ ...mutation.site, route: mutation.route }) });
 }
 
 async function deleteSite(env, config, store, actor, siteId) {
@@ -877,6 +875,9 @@ async function transferSiteOwner(request, env, config, store, actor, siteId) {
   } catch {
     return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
   }
+
+  const exposureError = rejectUserExposureMutation(body);
+  if (exposureError) return exposureError;
 
   const target = await resolveSiteTransferTarget(store, actor, site, body, config.environment);
   if (target instanceof Response) return target;
@@ -1012,6 +1013,147 @@ export function buildSiteOwnerTransferAuditEvent(env, config, actor, site, targe
   };
 }
 
+export function rejectUserExposureMutation(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body) || !Object.hasOwn(body, 'exposure')) return null;
+  return jsonError(
+    'SITE_EXPOSURE_ADMIN_REQUIRED',
+    'Site exposure can only be changed by a platform admin.',
+    403,
+    'Use the Admin Console exposure control.'
+  );
+}
+
+export async function mutateUserSiteAccessPolicy({
+  env,
+  config,
+  store,
+  siteId,
+  actorUserId,
+  visibility,
+  resolveAclEntries,
+}) {
+  try {
+    return await store.withSiteCommitLock(
+      config.environment,
+      siteId,
+      async (lease) => {
+        const currentSite = await store.getSite(siteId, config.environment);
+        const currentRoute = await store.getRouteBySiteId(siteId, config.environment);
+        if (!currentSite || !currentRoute) {
+          return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
+        }
+
+        const previousAclEntries = await store.listSiteAclEntries(siteId);
+        const nextAclEntries = resolveAclEntries ? resolveAclEntries(previousAclEntries) : undefined;
+        if (nextAclEntries instanceof Response) return nextAclEntries;
+        const updatedAt = readNow(env);
+        const mutation = await store.updateSiteAccessPolicy({
+          environment: config.environment,
+          siteId,
+          actorUserId,
+          ...(visibility === undefined ? {} : { accessMode: accessModeFromVisibility(visibility) }),
+          ...(resolveAclEntries ? { aclEntries: nextAclEntries } : {}),
+          expected: sitePolicyExpected(currentRoute),
+          lease,
+          updatedAt,
+        });
+
+        const snapshotError = await refreshActiveRouteSnapshot(
+          env,
+          store,
+          mutation.site,
+          mutation.route,
+          config.environment,
+          mutation.aclEntries
+        );
+        if (!snapshotError) return mutation;
+
+        let compensation;
+        try {
+          const latestRoute = await store.getRouteBySiteId(siteId, config.environment);
+          if (!sitePolicyRouteCanBeCompensated(latestRoute, mutation.route)) return routePolicyRepairRequired();
+          compensation = await store.updateSiteAccessPolicy({
+            environment: config.environment,
+            siteId,
+            actorUserId,
+            exposure: previousRouteExposure(currentRoute),
+            accessMode: accessModeFromVisibility(currentRoute.visibility),
+            aclEntries: previousAclEntries,
+            expected: sitePolicyExpected(latestRoute),
+            lease,
+            updatedAt,
+          });
+        } catch {
+          return routePolicyRepairRequired();
+        }
+
+        const compensationSnapshotError = await refreshActiveRouteSnapshot(
+          env,
+          store,
+          compensation.site,
+          compensation.route,
+          config.environment,
+          compensation.aclEntries
+        );
+        return compensationSnapshotError ? routePolicyRepairRequired() : snapshotError;
+      },
+      { bestEffortRelease: true }
+    );
+  } catch (error) {
+    if (isSitePolicyMutationConflict(error)) {
+      return jsonError(
+        'SITE_POLICY_CONFLICT',
+        'Site policy changed while the access update was being applied.',
+        409,
+        'Refresh the site and retry.'
+      );
+    }
+    return jsonError('SITE_POLICY_UPDATE_FAILED', 'Site access policy could not be updated.', 503, 'Retry after refreshing the site.');
+  }
+}
+
+function sitePolicyExpected(route) {
+  return {
+    policyVersion: route.policyVersion,
+    routeGeneration: route.routeGeneration,
+    activeVersionId: route.activeVersionId,
+    runtimeConfigGeneration: route.runtimeConfigGeneration,
+  };
+}
+
+function previousRouteExposure(route) {
+  return route.exposure === 'public' ? 'public' : 'internal';
+}
+
+function sitePolicyRouteCanBeCompensated(current, committed) {
+  if (!current || !committed) return false;
+  return (
+    current.id === committed.id &&
+    current.environment === committed.environment &&
+    current.siteId === committed.siteId &&
+    current.exposure === committed.exposure &&
+    current.accessMode === committed.accessMode &&
+    current.visibility === committed.visibility &&
+    current.policyVersion === committed.policyVersion &&
+    current.routeGeneration === committed.routeGeneration &&
+    current.activeVersionId === committed.activeVersionId &&
+    current.routeStatus === committed.routeStatus
+  );
+}
+
+function isSitePolicyMutationConflict(error) {
+  return ['SITE_POLICY_LOCKED', 'SITE_POLICY_CONFLICT', 'SITE_COMMIT_TIMEOUT'].includes(error?.code || error?.message);
+}
+
+function routePolicyRepairRequired() {
+  return jsonError(
+    'ROUTE_POLICY_REPAIR_REQUIRED',
+    'Route policy could not be confirmed effective.',
+    503,
+    'Repair the route snapshot before retrying.'
+  );
+}
+
 async function listSiteAcl(store, actor, siteId, environment) {
   const site = await store.getSiteForUser(siteId, actor.userId, actor, environment);
   if (!site) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
@@ -1031,8 +1173,6 @@ async function listSiteAcl(store, actor, siteId, environment) {
 async function replaceSiteAcl(request, env, config, store, actor, siteId) {
   const site = await getOwnerSite(store, actor, siteId, config.environment);
   if (site instanceof Response) return site;
-  const previousRoute = site.route || (await store.getRouteBySiteId(site.id, config.environment));
-  const previousAclEntries = await store.listSiteAclEntries(site.id);
 
   let body;
   try {
@@ -1041,99 +1181,63 @@ async function replaceSiteAcl(request, env, config, store, actor, siteId) {
     return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
   }
 
+  const exposureError = rejectUserExposureMutation(body);
+  if (exposureError) return exposureError;
+
   const normalized = normalizeAclEntries(body.entries, env);
   if (normalized instanceof Response) return normalized;
 
-  const aclEntries = await store.replaceSiteAclEntries(
-    site.id,
-    normalized,
-    {
-      createdBy: actor.userId,
-      updatedAt: readNow(env),
-    },
-    config.environment
-  );
-  const route = await store.getRouteBySiteId(site.id, config.environment);
-  const snapshotError = await refreshActiveRouteSnapshot(env, store, site, route, config.environment);
-  if (snapshotError) {
-    await restoreSiteAclAfterSnapshotFailure(store, site.id, previousAclEntries, previousRoute, site, route, config.environment);
-    return snapshotError;
-  }
+  const mutation = await mutateUserSiteAccessPolicy({
+    env,
+    config,
+    store,
+    siteId: site.id,
+    actorUserId: actor.userId,
+    resolveAclEntries: () => normalized,
+  });
+  if (mutation instanceof Response) return mutation;
 
-  return jsonOk({ aclEntries: aclEntries.map(formatAclEntry) });
+  return jsonOk({ aclEntries: mutation.aclEntries.map(formatAclEntry) });
 }
 
 async function grantSiteAclEntries(request, env, config, store, actor, siteId) {
   const site = await getOwnerSite(store, actor, siteId, config.environment);
   if (site instanceof Response) return site;
-  const previousRoute = site.route || (await store.getRouteBySiteId(site.id, config.environment));
-  const previousAclEntries = await store.listSiteAclEntries(site.id);
 
   const normalized = await readAndNormalizeAclEntries(request, env);
   if (normalized instanceof Response) return normalized;
 
-  const mergedCount = countMergedAclEntries(previousAclEntries, normalized);
-  if (mergedCount > MAX_ACL_ENTRIES) {
-    return jsonError('ACL_ENTRIES_INVALID', 'ACL entries are invalid.', 400, 'A site can have at most 200 ACL entries.');
-  }
+  const mutation = await mutateUserSiteAccessPolicy({
+    env,
+    config,
+    store,
+    siteId: site.id,
+    actorUserId: actor.userId,
+    resolveAclEntries: (current) => mergeSiteAclEntries(current, normalized),
+  });
+  if (mutation instanceof Response) return mutation;
 
-  const aclEntries = await store.addSiteAclEntries(
-    site.id,
-    normalized,
-    {
-      createdBy: actor.userId,
-      updatedAt: readNow(env),
-    },
-    config.environment
-  );
-  const route = await store.getRouteBySiteId(site.id, config.environment);
-  if (!aclEntrySetsEqual(previousAclEntries, aclEntries)) {
-    const snapshotError = await refreshActiveRouteSnapshot(env, store, site, route, config.environment);
-    if (snapshotError) {
-      await restoreSiteAclAfterSnapshotFailure(
-        store,
-        site.id,
-        previousAclEntries,
-        previousRoute,
-        site,
-        route,
-        config.environment
-      );
-      return snapshotError;
-    }
-  }
-
-  return jsonOk({ aclEntries: aclEntries.map(formatAclEntry) });
+  return jsonOk({ aclEntries: mutation.aclEntries.map(formatAclEntry) });
 }
 
 async function revokeSiteAclEntries(request, env, config, store, actor, siteId) {
   const site = await getOwnerSite(store, actor, siteId, config.environment);
   if (site instanceof Response) return site;
-  const previousRoute = site.route || (await store.getRouteBySiteId(site.id, config.environment));
-  const previousAclEntries = await store.listSiteAclEntries(site.id);
 
   const normalized = await readAndNormalizeAclEntries(request, env);
   if (normalized instanceof Response) return normalized;
 
-  const aclEntries = await store.removeSiteAclEntries(site.id, normalized, { updatedAt: readNow(env) }, config.environment);
-  const route = await store.getRouteBySiteId(site.id, config.environment);
-  if (!aclEntrySetsEqual(previousAclEntries, aclEntries)) {
-    const snapshotError = await refreshActiveRouteSnapshot(env, store, site, route, config.environment);
-    if (snapshotError) {
-      await restoreSiteAclAfterSnapshotFailure(
-        store,
-        site.id,
-        previousAclEntries,
-        previousRoute,
-        site,
-        route,
-        config.environment
-      );
-      return snapshotError;
-    }
-  }
+  const mutation = await mutateUserSiteAccessPolicy({
+    env,
+    config,
+    store,
+    siteId: site.id,
+    actorUserId: actor.userId,
+    resolveAclEntries: (current) => removeSiteAclEntries(current, normalized),
+  });
+  if (mutation instanceof Response) return mutation;
 
-  return jsonOk({ aclEntries: aclEntries.map(formatAclEntry) });
+  return jsonOk({ aclEntries: mutation.aclEntries.map(formatAclEntry) });
 }
 
 async function createSite(request, env, config, store, actor) {
@@ -1147,6 +1251,9 @@ async function createSite(request, env, config, store, actor) {
   } catch {
     return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
   }
+
+  const exposureError = rejectUserExposureMutation(body);
+  if (exposureError) return exposureError;
 
   const slug = normalizeSlug(body.slug);
   const visibility = body.visibility || 'org';
@@ -1514,6 +1621,8 @@ async function readAndNormalizeAclEntries(request, env) {
   } catch {
     return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
   }
+  const exposureError = rejectUserExposureMutation(body);
+  if (exposureError) return exposureError;
   return normalizeAclEntries(body.entries, env);
 }
 
@@ -1550,30 +1659,35 @@ function hasControlCharacter(value) {
   });
 }
 
-function countMergedAclEntries(existing, incoming) {
-  const keys = new Set(existing.map(aclEntryKey));
-  for (const entry of incoming) keys.add(aclEntryKey(entry));
-  return keys.size;
+function mergeSiteAclEntries(existing, incoming) {
+  const entries = new Map(existing.map((entry) => [aclEntryKey(entry), entry]));
+  for (const entry of incoming) {
+    const key = aclEntryKey(entry);
+    if (!entries.has(key)) entries.set(key, entry);
+  }
+  if (entries.size > MAX_ACL_ENTRIES) {
+    return jsonError('ACL_ENTRIES_INVALID', 'ACL entries are invalid.', 400, 'A site can have at most 200 ACL entries.');
+  }
+  return [...entries.values()];
 }
 
-function aclEntrySetsEqual(left, right) {
-  if (left.length !== right.length) return false;
-  const keys = new Set(left.map(aclEntryKey));
-  return right.every((entry) => keys.has(aclEntryKey(entry)));
+function removeSiteAclEntries(existing, removed) {
+  const removedKeys = new Set(removed.map(aclEntryKey));
+  return existing.filter((entry) => !removedKeys.has(aclEntryKey(entry)));
 }
 
 function aclEntryKey(entry) {
   return `${entry.effect || 'allow'}:${entry.subjectType}:${entry.subjectValue}:${entry.accessRole || 'viewer'}`;
 }
 
-export async function refreshActiveRouteSnapshot(env, store, site, route, environment) {
+export async function refreshActiveRouteSnapshot(env, store, site, route, environment, knownAclEntries) {
   if (!route || route.routeStatus !== 'active' || !route.activeVersionId) return null;
 
   const version = await store.getSiteVersion(route.activeVersionId, environment);
   if (!version) {
     return jsonError('ROUTE_VERSION_NOT_FOUND', 'Active route version was not found.', 500, 'Check route consistency.');
   }
-  const aclEntries = await store.listSiteAclEntries(site.id);
+  const aclEntries = knownAclEntries || (await store.listSiteAclEntries(site.id));
   try {
     await writeRouteSnapshot(env, buildRouteSnapshot({ site, route, version, aclEntries }));
   } catch {

@@ -65,6 +65,14 @@ test('site access shows ACL editor only for acl visibility and opens add entry d
   assert.doesNotMatch(siteDetailSource, /<InfoList title="访问策略"/);
 });
 
+test('admin exposure audit failures refresh effective access state and remain visible', () => {
+  const panelSource = siteDetailSource.slice(siteDetailSource.indexOf('function AdminExposurePanel'));
+
+  assert.match(panelSource, /onResourceReload/);
+  assert.match(panelSource, /SITE_EXPOSURE_AUDIT_FAILED/);
+  assert.match(panelSource, /公网访问已经生效/);
+});
+
 test('runtime config uses add dialogs instead of inline creation forms', () => {
   assert.match(siteDetailSource, /<RuntimeVarDialog/);
   assert.match(siteDetailSource, /<RuntimeSecretDialog/);
