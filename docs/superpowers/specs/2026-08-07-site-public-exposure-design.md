@@ -270,10 +270,11 @@ Admin 承担“移除 OfficeNet 可能使站点业务功能返回 `OFFICE_NET_UN
 - exposure 为 internal 且 D1/pointer 已确认收敛时保持默认注入逻辑；状态分叉时阻断 activation，不得引入 OfficeNet。
 - route activation CAS 必须匹配上述完整 tuple 和 lease fencing token；丢锁或冲突后重新读取，不能继续写 snapshot。
 - Public 回滚同样在 lease 内移除并验证目标 Worker binding，失败则拒绝切换 route。
-- Public 站点的 runtime var/secret 更新不得重新引入 OfficeNet。
+- 所有会先 GET 完整 settings、再 PATCH bindings 的 runtime var/secret 同步路径，必须先获取 site commit lease，再获取现有 runtime-config lock；不得只持有 runtime-config lock。Provider 调用前后重新校验 active Worker、exposure 和 route tuple，目标漂移或 lease 丢失时返回冲突并进入 reconcile。
+- 仅调用 WFP secret PUT/DELETE 且不重写完整 bindings 的路径也使用同样的 site lease，避免与 active Worker 切换交错；不得把旧 Worker 更新成功当作当前 Worker 已同步。
 - 关闭 public 后不会立即恢复 binding，只有后续完整 internal 部署才重新注入。
 
-Lease 必须续租并使用 fencing token。锁顺序固定为 site commit lease，再进入 route pointer 串行器；任何平台路径都不得反向获取。外部系统仍可绕过平台改 Worker settings，因此运维权限和漂移检测继续作为防线，但不在 D1 记录版本级 binding 状态。
+Lease 必须续租并使用 fencing token。锁顺序固定为 site commit lease -> runtime-config lock -> route pointer 串行器；任何平台路径都不得反向获取。外部系统仍可绕过平台改 Worker settings，因此运维权限和漂移检测继续作为防线，但不在 D1 记录版本级 binding 状态。
 
 ### 跨系统失败
 
@@ -576,6 +577,7 @@ Staging 和 production 的 D1、KV、route、Worker 前缀、domain 和 OfficeNe
 - Public rollback 先移除目标 Worker binding。
 - Public var/secret 更新不重新引入 binding。
 - Admin enable 与 deploy/rollback 交错时由 lease、完整 tuple CAS 和现场重验阻止带 OfficeNet Worker 生效。
+- Runtime settings 的 stale GET/PATCH 与 Admin OfficeNet 移除交错时不会恢复 binding。
 - D1 internal / pointer public 时阻断 activation，并可重入修复到 confirmed internal。
 
 ### UI
