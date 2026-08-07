@@ -203,7 +203,7 @@ Expected: FAIL，当前缺少 `office_net_removed_verified` 和 `activationState
 
 - [ ] **Step 3: 最小实现阶段证明**
 
-- `ensurePublicWorkerOfficeNetAbsent()` 成功后，best-effort 写 `${operationId}:office_net_removed_verified`，metadata 包含 `stage`、`officeNetBindingRemoved: true`、`officeNetBindingVerified: true`。
+- `ensurePublicWorkerOfficeNetAbsent()` 成功后返回 `verified` 或 `not_applicable` evidence；best-effort 写对应的 `${operationId}:office_net_removed_verified` / `${operationId}:office_net_not_applicable`，不得把 assets-only 或 normal-worker-slot 伪报为已移除并验证。verified metadata 包含 `stage`、`officeNetBindingRemoved: true`、`officeNetBindingVerified: true`。
 - `policy_committed` 事件继续与 policy mutation 同 batch，并在 metadata 增加 `activationState: 'pending_activation'`；不另开非原子的 pending event。
 - OfficeNet 阶段审计写失败只输出固定安全 warning，不阻止仍受 `policy_committed` 保护的策略流程。
 

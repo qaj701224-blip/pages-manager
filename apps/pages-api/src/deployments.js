@@ -2501,15 +2501,15 @@ export async function ensurePublicWorkerOfficeNetAbsent(
   provider,
   { store, environment, siteId, workerName, executionProvider, deploymentShape, exposure, signal }
 ) {
-  if (exposure !== 'public') return;
-  if (deploymentShape === 'assets-only') return;
+  if (exposure !== 'public') return { status: 'not_applicable', reason: 'exposure-not-public' };
+  if (deploymentShape === 'assets-only') return { status: 'not_applicable', reason: 'assets-only' };
   if (deploymentShape !== 'worker-only' && deploymentShape !== 'worker-with-assets') {
     throw deploymentOperationError('SITE_PUBLIC_OFFICE_NET_REMOVE_FAILED', {
       message: 'The public Worker deployment shape is not recognized.',
       action: 'Deploy a known Worker shape and retry the public activation.',
     });
   }
-  if (executionProvider === 'normal-worker-slot') return;
+  if (executionProvider === 'normal-worker-slot') return { status: 'not_applicable', reason: 'normal-worker-slot' };
   if (executionProvider !== 'wfp') {
     throw deploymentOperationError('SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED', {
       message: 'The public Worker execution provider cannot verify OfficeNet bindings.',
@@ -2535,17 +2535,17 @@ export async function ensurePublicWorkerOfficeNetAbsent(
     } catch (error) {
       throw deploymentOperationError('SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED', { cause: error });
     }
+    return { status: 'verified' };
   };
   if (typeof store?.withRuntimeConfigLock === 'function') {
     try {
-      await store.withRuntimeConfigLock(environment, siteId, removeAndVerify);
-      return;
+      return await store.withRuntimeConfigLock(environment, siteId, removeAndVerify);
     } catch (error) {
       if (isPublicOfficeNetFailure(error)) throw error;
       throw deploymentOperationError('SITE_PUBLIC_OFFICE_NET_REMOVE_FAILED', { cause: error });
     }
   }
-  await removeAndVerify({ signal });
+  return await removeAndVerify({ signal });
 }
 
 function combineAbortSignals(...signals) {

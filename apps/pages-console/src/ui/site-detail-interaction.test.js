@@ -69,7 +69,7 @@ test('admin exposure audit warnings remain visible after a successful update', (
   const panelSource = siteDetailSource.slice(siteDetailSource.indexOf('function AdminExposurePanel'));
 
   assert.match(panelSource, /data\.auditStatus === 'unconfirmed'/);
-  assert.match(panelSource, /公网访问已经生效/);
+  assert.match(panelSource, /siteExposureAuditWarning\(nextExposure\)/);
 });
 
 test('runtime config uses add dialogs instead of inline creation forms', () => {

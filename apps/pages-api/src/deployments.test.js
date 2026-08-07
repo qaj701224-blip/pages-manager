@@ -5,6 +5,7 @@ import test from 'node:test';
 
 import worker from './index.js';
 import { createAccessKeyPlaintext, hashAccessKey } from './crypto.js';
+import { ensurePublicWorkerOfficeNetAbsent } from './deployments.js';
 import { buildRouteSnapshot, writeRouteSnapshot } from './route-snapshot.js';
 import { createTestPagesStore } from './test-store.js';
 
@@ -3285,6 +3286,27 @@ test('WFP public activation fails closed when OfficeNet cannot be verified absen
   assert.deepEqual(events.map(([kind]) => kind), ['remove', 'verify']);
   assert.equal((await store.getRouteBySiteId('site_1', 'production')).activeVersionId, null);
   assert.equal(snapshots.read('production:route_pointer:guide.pages.xd.team') ?? null, null);
+});
+
+test('public OfficeNet guard reports non-WFP deployment shapes as not applicable', async () => {
+  const actions = [];
+  const result = await ensurePublicWorkerOfficeNetAbsent(
+    {
+      removeOfficeNetBinding: async () => actions.push('remove'),
+      verifyOfficeNetAbsent: async () => actions.push('verify'),
+    },
+    {
+      environment: 'production',
+      siteId: 'site_assets',
+      workerName: 'pages-v2-assets',
+      executionProvider: 'wfp',
+      deploymentShape: 'assets-only',
+      exposure: 'public',
+    }
+  );
+
+  assert.deepEqual(result, { status: 'not_applicable', reason: 'assets-only' });
+  assert.deepEqual(actions, []);
 });
 
 test('WFP public activation serializes OfficeNet settings changes with runtime binding sync', async () => {

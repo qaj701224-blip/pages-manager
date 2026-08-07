@@ -437,6 +437,8 @@ export function buildOpenApi(config) {
             'SITE_EXPOSURE_INVALID',
             'SITE_EXPOSURE_REASON_REQUIRED',
             'SITE_EXPOSURE_REASON_INVALID',
+            'SITE_EXPOSURE_AUDIT_REQUIRED',
+            'SITE_PUBLIC_ROUTE_INACTIVE',
             'SITE_POLICY_CONFLICT',
             'SITE_PUBLIC_OFFICE_NET_REMOVE_FAILED',
             'SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED',

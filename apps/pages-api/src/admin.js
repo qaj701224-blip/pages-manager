@@ -2295,6 +2295,7 @@ async function updateAdminSiteExposure(request, env, config, store, session, sit
     await store.recordAuditEvent({
       id: `${operationId}:attempted`,
       environment: config.environment,
+      traceId: operationId,
       eventType: 'admin.site.exposure',
       actorUserId: session.userId,
       actorType: 'platform_admin',
@@ -2306,7 +2307,12 @@ async function updateAdminSiteExposure(request, env, config, store, session, sit
       createdAt: now,
     });
   } catch {
-    return jsonError('SITE_EXPOSURE_AUDIT_FAILED', 'Exposure operation could not be recorded.', 503, 'Retry after checking the audit store.');
+    return jsonError(
+      'SITE_EXPOSURE_AUDIT_REQUIRED',
+      'Exposure operation was not started because its required audit record could not be written.',
+      503,
+      'Retry after checking the audit store.'
+    );
   }
 
   try {
@@ -2331,7 +2337,7 @@ async function updateAdminSiteExposure(request, env, config, store, session, sit
 
       if (exposure === 'public') {
         const provider = createDeploymentProvider(env, config, store, currentSite);
-        await ensurePublicWorkerOfficeNetAbsent(provider, {
+        const officeNetEvidence = await ensurePublicWorkerOfficeNetAbsent(provider, {
           store,
           environment: config.environment,
           siteId: currentSite.id,
@@ -2341,9 +2347,11 @@ async function updateAdminSiteExposure(request, env, config, store, session, sit
           exposure,
           signal: lease.signal,
         });
+        const officeNetVerified = officeNetEvidence?.status === 'verified';
+        const officeNetStage = officeNetVerified ? 'office_net_removed_verified' : 'office_net_not_applicable';
         try {
           await store.recordAuditEvent({
-            id: `${operationId}:office_net_removed_verified`,
+            id: `${operationId}:${officeNetStage}`,
             environment: config.environment,
             traceId: operationId,
             eventType: 'admin.site.exposure',
@@ -2359,9 +2367,11 @@ async function updateAdminSiteExposure(request, env, config, store, session, sit
               previousExposure: currentExposure,
               authorityExposure: currentExposure,
               effectiveExposure: null,
-              officeNetBindingRemoved: true,
-              officeNetBindingVerified: true,
-              stage: 'office_net_removed_verified',
+              officeNetBindingRemoved: officeNetVerified,
+              officeNetBindingVerified: officeNetVerified,
+              officeNetBindingNotApplicable: !officeNetVerified,
+              officeNetCheckReason: officeNetEvidence?.reason || null,
+              stage: officeNetStage,
             },
             createdAt: now,
           });
@@ -2372,7 +2382,7 @@ async function updateAdminSiteExposure(request, env, config, store, session, sit
               operationId,
               siteId: currentSite.id,
               environment: config.environment,
-              stage: 'office_net_removed_verified',
+              stage: officeNetStage,
               errorCode: safeAdminExposureAuditWarningCode(cause),
             })
           );
@@ -2476,9 +2486,10 @@ async function updateAdminSiteExposure(request, env, config, store, session, sit
           }
         }
 
+        const compensationStage = compensationError ? 'compensation_failed' : 'compensated_failure';
         try {
           await store.recordAuditEvent({
-            id: `${operationId}:partial_failed`,
+            id: `${operationId}:${compensationStage}`,
             environment: config.environment,
             traceId: operationId,
             eventType: 'admin.site.exposure',
@@ -2493,7 +2504,7 @@ async function updateAdminSiteExposure(request, env, config, store, session, sit
               previousExposure: currentExposure,
               authorityExposure: (await store.getRouteBySiteId(currentSite.id, config.environment))?.exposure || null,
               effectiveExposure: null,
-              stage: 'partial_failed',
+              stage: compensationStage,
               compensation: compensationError ? 'failed' : 'restored_internal',
             },
             createdAt: now,
@@ -2954,7 +2965,37 @@ async function mergeDepartmentTeam(request, config, store, session, sourceTeamId
 
 async function listAuditEvents(config, store) {
   const events = await store.listAuditEvents({ environment: config.environment });
+  events.sort(compareAdminAuditEvents);
   return jsonOk({ events: events.map(formatAuditEvent) });
+}
+
+function compareAdminAuditEvents(left, right) {
+  const leftTime = Date.parse(left.createdAt || '');
+  const rightTime = Date.parse(right.createdAt || '');
+  if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) return rightTime - leftTime;
+
+  const leftOperationId = left.metadata?.operationId || '';
+  const rightOperationId = right.metadata?.operationId || '';
+  if (leftOperationId && leftOperationId === rightOperationId) {
+    const leftStage = adminExposureAuditStageOrder(left.metadata?.stage);
+    const rightStage = adminExposureAuditStageOrder(right.metadata?.stage);
+    if (leftStage !== rightStage) return rightStage - leftStage;
+  }
+  return String(right.id || '').localeCompare(String(left.id || ''));
+}
+
+function adminExposureAuditStageOrder(stage) {
+  return {
+    attempted: 10,
+    office_net_removed_verified: 20,
+    office_net_not_applicable: 20,
+    policy_committed: 30,
+    effective_success: 40,
+    compensated_failure: 80,
+    partial_failed: 85,
+    compensation_failed: 90,
+    failed: 100,
+  }[stage] || 0;
 }
 
 async function listPlatformAdmins(config, store) {
@@ -3158,6 +3199,7 @@ function formatAuditEvent(event) {
   return {
     id: event.id,
     eventType: event.eventType,
+    traceId: event.traceId || null,
     actorUserId: event.actorUserId || null,
     actorType: event.actorType,
     actor: {

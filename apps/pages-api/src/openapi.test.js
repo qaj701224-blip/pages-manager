@@ -42,6 +42,12 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
     body.paths['/.xd-pages/api/console/admin/sites/{id}/exposure'].patch['x-error-codes'].includes('SITE_EXPOSURE_AUDIT_FAILED'),
     false
   );
+  assert.ok(
+    body.paths['/.xd-pages/api/console/admin/sites/{id}/exposure'].patch['x-error-codes'].includes('SITE_EXPOSURE_AUDIT_REQUIRED')
+  );
+  assert.ok(
+    body.paths['/.xd-pages/api/console/admin/sites/{id}/exposure'].patch['x-error-codes'].includes('SITE_PUBLIC_ROUTE_INACTIVE')
+  );
   assert.ok(body.paths['/.xd-pages/api/sites/{site}/secrets'].put);
   assert.ok(body.paths['/.xd-pages/api/sites/{site}/secrets'].delete);
   assert.ok(body.paths['/.xd-pages/api/sites/{site}/vars'].put);

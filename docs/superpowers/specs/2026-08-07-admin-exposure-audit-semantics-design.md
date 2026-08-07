@@ -39,14 +39,14 @@ Admin 开启站点公网访问时，当前链路会先移除并确认当前 Work
 
 ### 失败审计
 
-`office_net_removed_verified`、`reconciled`、`failed`、`partial_failed`、`compensated_failure` 和 `compensation_failed` 记录继续 best-effort。`pending_activation` 必须与 policy mutation 和 `policy_committed` 一起写入同一个 D1 transaction；它表示 authority 已提交、Router snapshot 尚未确认，不是 snapshot 阶段临时追加的事件。它们不能覆盖原始 `policy_committed` 事件，也不能掩盖真正的安全结果。每个请求的事件 ID 固定为 `${operationId}:${stage}`，同一 operationId/stage 重试必须幂等。
+`office_net_removed_verified`、`office_net_not_applicable`、`reconciled`、`failed`、`partial_failed`、`compensated_failure` 和 `compensation_failed` 记录继续 best-effort。`office_net_not_applicable` 只用于 assets-only 或 normal-worker-slot 等本来没有 WFP OfficeNet 绑定的部署形态，不得伪报为已移除并验证。`pending_activation` 必须与 policy mutation 和 `policy_committed` 一起写入同一个 D1 transaction；它表示 authority 已提交、Router snapshot 尚未确认，不是 snapshot 阶段临时追加的事件。它们不能覆盖原始 `policy_committed` 事件，也不能掩盖真正的安全结果。每个请求的事件 ID 固定为 `${operationId}:${stage}`，同一 operationId/stage 重试必须幂等。
 
 ## 执行链路
 
 ```text
 attempted audit
   -> read active route/version
-  -> remove + verify XD_OFFICE_NET
+  -> remove + verify XD_OFFICE_NET (or record not_applicable when no WFP binding exists)
   -> D1 policy mutation + policy_committed audit (atomic: route/site/ACL/cache/legacy projection,
      policyVersion CAS and lease fencing)
   -> pending_activation (already committed in the same D1 batch)

@@ -11,6 +11,7 @@ import {
   parseAclEntriesInput,
   removeAclEntryAt,
   siteAccessEffectLabel,
+  siteExposureAuditWarning,
   toAclUpdatePayload,
 } from './site-detail-model.js';
 
@@ -83,6 +84,21 @@ test('site action errors explain effective exposure with an audit failure', () =
   });
 
   assert.equal(message, '公网访问已经生效，但最终审计记录未确认，请刷新站点状态并核对审计日志。');
+});
+
+test('site action errors explain that required exposure audit failure prevents the operation', () => {
+  const message = formatSiteActionError({
+    code: 'SITE_EXPOSURE_AUDIT_REQUIRED',
+    message: 'Exposure operation was not started because its required audit record could not be written.',
+    action: 'Retry after checking the audit store.',
+  });
+
+  assert.equal(message, '审计记录当前不可用，公网访问操作尚未开始，请稍后重试。');
+});
+
+test('site exposure audit warnings describe the requested transition', () => {
+  assert.equal(siteExposureAuditWarning('public'), '公网访问已经生效，但最终审计记录未确认，请刷新站点状态并核对审计日志。');
+  assert.equal(siteExposureAuditWarning('internal'), '公网访问已关闭，但最终审计记录未确认，请刷新站点状态并核对审计日志。');
 });
 
 test('site access effect labels keep network exposure separate from identity mode', () => {

@@ -15,9 +15,16 @@ export function formatSiteActionError(error) {
   if (code === 'SITE_PUBLISHER_REQUIRED') return '当前账号没有发布权限，需要站点归属用户或团队 publisher/admin 操作。';
   if (code === 'SITE_ADMIN_REQUIRED') return '当前账号没有管理员权限，需要站点归属用户或团队 admin 操作。';
   if (code === 'SITE_NOT_FOUND') return '当前账号无权访问该站点，或站点已经不存在。';
+  if (code === 'SITE_EXPOSURE_AUDIT_REQUIRED') return '审计记录当前不可用，公网访问操作尚未开始，请稍后重试。';
   if (code === 'SITE_EXPOSURE_AUDIT_FAILED') return '公网访问已经生效，但最终审计记录未确认，请刷新站点状态并核对审计日志。';
   if (error?.message && error?.action) return `${error.message} ${error.action}`;
   return error?.message || code || '操作失败，请稍后重试。';
+}
+
+export function siteExposureAuditWarning(exposure) {
+  return exposure === 'public'
+    ? '公网访问已经生效，但最终审计记录未确认，请刷新站点状态并核对审计日志。'
+    : '公网访问已关闭，但最终审计记录未确认，请刷新站点状态并核对审计日志。';
 }
 
 export function siteAccessEffectLabel({ exposure, accessMode, visibility } = {}) {

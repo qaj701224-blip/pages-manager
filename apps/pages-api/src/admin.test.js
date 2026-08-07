@@ -3356,6 +3356,7 @@ test('platform admin can enable public exposure while preserving visibility and 
   const audits = await store.listAuditEvents({ environment: 'production', siteId: 'site_public' });
   assert.ok(audits.some((event) => event.eventType === 'admin.site.exposure' && event.metadata?.reason === 'staging 公网验收'));
   const operationId = audits.find((event) => event.metadata?.stage === 'attempted')?.metadata?.operationId;
+  assert.equal(audits.find((event) => event.metadata?.stage === 'attempted')?.traceId, operationId);
   const operationAudits = audits.filter((event) => event.metadata?.operationId === operationId);
   assert.ok(operationAudits.some((event) => event.metadata?.stage === 'office_net_removed_verified'));
   const policyCommitted = operationAudits.find((event) => event.metadata?.stage === 'policy_committed');
@@ -3435,7 +3436,7 @@ test('public exposure snapshot failure compensates the authority policy to inter
   const route = await store.getRouteBySiteId('site_public', 'production');
   assert.equal(route.exposure, 'internal');
   const audits = await store.listAuditEvents({ environment: 'production', siteId: 'site_public' });
-  assert.ok(audits.some((event) => event.metadata?.stage === 'partial_failed'));
+  assert.ok(audits.some((event) => event.metadata?.stage === 'compensation_failed'));
 });
 
 test('public exposure read-back drift compensates the authority policy and never records success', async () => {
@@ -3464,7 +3465,7 @@ test('public exposure read-back drift compensates the authority policy and never
   assert.equal((await response.json()).error.code, 'ROUTE_POLICY_REPAIR_REQUIRED');
   assert.equal((await store.getRouteBySiteId('site_public', 'production')).exposure, 'internal');
   const audits = await store.listAuditEvents({ environment: 'production', siteId: 'site_public' });
-  assert.ok(audits.some((event) => event.metadata?.stage === 'partial_failed'));
+  assert.ok(audits.some((event) => event.metadata?.stage === 'compensation_failed'));
   assert.equal(audits.some((event) => event.metadata?.stage === 'effective_success'), false);
 });
 
@@ -3500,7 +3501,7 @@ test('public exposure read-back rejects a snapshot whose ACL payload does not ma
   assert.equal((await response.json()).error.code, 'ROUTE_POLICY_REPAIR_REQUIRED');
   assert.equal((await store.getRouteBySiteId('site_public', 'production')).exposure, 'internal');
   const audits = await store.listAuditEvents({ environment: 'production', siteId: 'site_public' });
-  assert.ok(audits.some((event) => event.metadata?.stage === 'partial_failed'));
+  assert.ok(audits.some((event) => event.metadata?.stage === 'compensated_failure'));
   assert.equal(audits.some((event) => event.metadata?.stage === 'effective_success'), false);
 });
 
@@ -3538,9 +3539,44 @@ test('public exposure compensation advances policy version after a public pointe
   const audits = await store.listAuditEvents({ environment: 'production', siteId: 'site_public' });
   assert.ok(
     audits.some(
-      (event) => event.metadata?.stage === 'partial_failed' && event.metadata?.compensation === 'restored_internal'
+      (event) => event.metadata?.stage === 'compensated_failure' && event.metadata?.compensation === 'restored_internal'
     )
   );
+});
+
+test('public exposure does not start when the required attempted audit cannot be written', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await seedTeamSite(store, { id: 'site_public', slug: 'public', teamId: 'team_console', visibility: 'internal' });
+  await activateSite(store, 'site_public', { workerName: 'pages-v2-public', visibility: 'internal' });
+  store.recordAuditEvent = async () => {
+    throw new Error('audit unavailable');
+  };
+  const actions = [];
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_public/exposure', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'PATCH',
+      body: { exposure: 'public', reason: 'required audit failure test' },
+    }),
+    env(store, {
+      ROUTE_SNAPSHOTS: createSnapshotStore(),
+      WFP_PROVIDER: {
+        removeOfficeNetBinding: async () => actions.push('remove'),
+        verifyOfficeNetAbsent: async () => {
+          actions.push('verify');
+          return true;
+        },
+      },
+    })
+  );
+
+  assert.equal(response.status, 503, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'SITE_EXPOSURE_AUDIT_REQUIRED');
+  assert.deepEqual(actions, []);
+  assert.equal((await store.getRouteBySiteId('site_public', 'production')).exposure, 'internal');
 });
 
 test('public exposure reports a final audit failure without misreporting the effective route state', async () => {
@@ -3696,6 +3732,18 @@ test('admin exposure enable requires a reason and platform admin', async () => {
   );
   assert.equal(missingReason.status, 400);
   assert.equal((await missingReason.json()).error.code, 'SITE_EXPOSURE_REASON_REQUIRED');
+
+  const inactiveRoute = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_public/exposure', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'PATCH',
+      body: { exposure: 'public', reason: 'inactive route test' },
+    }),
+    env(store)
+  );
+  assert.equal(inactiveRoute.status, 409);
+  assert.equal((await inactiveRoute.json()).error.code, 'SITE_PUBLIC_ROUTE_INACTIVE');
 });
 
 test('platform admin can edit admin-scope site settings without asset membership', async () => {
@@ -4131,6 +4179,43 @@ test('admin audit events include readable actor profile', async () => {
     displayName: '徐天麒',
     email: 'actor@example.com',
   });
+});
+
+test('admin audit events order exposure stages deterministically when timestamps tie', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  const stages = ['attempted', 'policy_committed', 'effective_success'];
+  for (const stage of stages) {
+    await store.recordAuditEvent({
+      id: `op_order:${stage}`,
+      environment: 'production',
+      traceId: 'op_order',
+      eventType: 'admin.site.exposure',
+      actorUserId: 'usr_root',
+      actorType: 'platform_admin',
+      decision: 'allow',
+      statusCode: 200,
+      metadata: { operationId: 'op_order', stage },
+      createdAt: '2026-07-02T00:00:00.000Z',
+    });
+  }
+  const listAuditEvents = store.listAuditEvents.bind(store);
+  store.listAuditEvents = async (input) => listAuditEvents(input);
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/audit', { userId: 'usr_root', admin: true }),
+    env(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.events.find((event) => event.metadata?.operationId === 'op_order')?.traceId, 'op_order');
+  assert.deepEqual(
+    body.events
+      .filter((event) => event.metadata?.operationId === 'op_order')
+      .map((event) => event.metadata.stage),
+    ['effective_success', 'policy_committed', 'attempted']
+  );
 });
 
 test('worker orphan scan failure surfaces a sanitized cause code without upstream details', async () => {

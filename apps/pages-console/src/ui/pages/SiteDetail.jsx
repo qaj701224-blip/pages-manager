@@ -52,6 +52,7 @@ import {
   normalizeAclEntriesForForm,
   removeAclEntryAt,
   siteAccessEffectLabel,
+  siteExposureAuditWarning,
   toAclUpdatePayload,
 } from '../site-detail-model.js';
 import {
@@ -674,7 +675,7 @@ function AdminExposurePanel({ site, access, updateExposure, onResourceUpdate, on
       setReason('');
       setAuditWarning(
         data.auditStatus === 'unconfirmed'
-          ? '公网访问已经生效，但最终审计记录未确认，请刷新站点状态并核对审计日志。'
+          ? siteExposureAuditWarning(nextExposure)
           : null
       );
       onResourceUpdate?.({ access: nextAccess });
@@ -682,7 +683,7 @@ function AdminExposurePanel({ site, access, updateExposure, onResourceUpdate, on
     } catch (nextError) {
       if (nextError?.code === 'SITE_EXPOSURE_AUDIT_FAILED') {
         setExposure(nextExposure);
-        setAuditWarning('公网访问已经生效，但最终审计记录未确认，请刷新站点状态并核对审计日志。');
+        setAuditWarning(siteExposureAuditWarning(nextExposure));
         try {
           await onResourceReload?.();
         } catch {
