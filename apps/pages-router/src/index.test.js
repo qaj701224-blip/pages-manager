@@ -880,7 +880,7 @@ test('renders a negotiated HTML page for denied client IPs', async () => {
   assert.match(response.headers.get('Content-Type'), /text\/html/);
   const text = await response.text();
   assert.match(text, /当前网络不在允许范围，请连接公司网络或 VPN 后重试/);
-  assert.match(text, /状态详情：IP_DENIED；当前 IP：192\.0\.2\.10/);
+  assert.match(text, /状态详情：IP_DENIED<br>当前 IP：192\.0\.2\.10/);
 });
 
 test('keeps denied client IP out of negotiated JSON errors', async () => {

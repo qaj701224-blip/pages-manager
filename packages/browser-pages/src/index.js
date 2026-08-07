@@ -18,7 +18,7 @@ export function browserPageResponse({
 }) {
   const safeTitle = escapeHtml(title);
   const safeMessage = escapeHtml(message);
-  const safeDetail = escapeHtml(detail);
+  const safeDetail = escapeHtml(detail).replaceAll(/\r\n|\r|\n/g, '<br>');
   const safeActionHref = safeHttpHref(actionHref);
   const safeActionLabel = escapeHtml(actionLabel);
   const safeStatusLabel = escapeHtml(statusLabel || defaultStatusLabel(tone));

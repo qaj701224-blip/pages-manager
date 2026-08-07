@@ -165,7 +165,7 @@ function enforceIPAllowlist(request, env) {
   const ip = request.headers.get('CF-Connecting-IP');
   if (!isAllowedIP(ip, allowlist)) {
     return siteErrorResponse(request, 'IP_DENIED', {
-      detail: `状态详情：IP_DENIED；当前 IP：${ip || '未知'}`,
+      detail: `状态详情：IP_DENIED\n当前 IP：${ip || '未知'}`,
     });
   }
   return null;

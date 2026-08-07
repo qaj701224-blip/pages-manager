@@ -51,10 +51,10 @@ test('siteErrorResponse renders and escapes an explicit HTML detail', async () =
   const response = siteErrorResponse(
     new Request('https://demo.pages.xd.team/', { headers: { Accept: 'text/html' } }),
     'IP_DENIED',
-    { detail: '状态详情：IP_DENIED；当前 IP：<script>' }
+    { detail: '状态详情：IP_DENIED\n当前 IP：<script>' }
   );
   const text = await response.text();
-  assert.match(text, /状态详情：IP_DENIED；当前 IP：&lt;script&gt;/);
+  assert.match(text, /状态详情：IP_DENIED<br>当前 IP：&lt;script&gt;/);
   assert.doesNotMatch(text, /<script>/);
 });
 
