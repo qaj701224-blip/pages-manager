@@ -1670,7 +1670,15 @@ class TestPagesStore {
   }
 
   async withSiteCommitLock(environment, siteId, callback, options = {}) {
-    const lock = await this.acquireSiteCommitLock(environment, siteId, options);
+    let lock = await this.acquireSiteCommitLock(environment, siteId, options);
+    const waitForLockMs = Number(options.waitForLockMs || 0);
+    if (!lock && waitForLockMs > 0) {
+      const deadline = Date.now() + waitForLockMs;
+      while (!lock && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, Math.min(25, Math.max(1, deadline - Date.now()))));
+        lock = await this.acquireSiteCommitLock(environment, siteId, options);
+      }
+    }
     if (!lock) throw sitePolicyError('SITE_POLICY_LOCKED');
 
     let result;
@@ -1712,9 +1720,9 @@ class TestPagesStore {
     }
     try {
       const released = await this.releaseSiteCommitLock(environment, siteId, currentLock.lockId);
-      if (!released && !failure) failure = sitePolicyError('SITE_POLICY_LOCKED');
+      if (!released && !failure && !options.bestEffortRelease) failure = sitePolicyError('SITE_POLICY_LOCKED');
     } catch (error) {
-      if (!failure) failure = error;
+      if (!failure && !options.bestEffortRelease) failure = error;
     }
     if (failure) throw failure;
     return result;

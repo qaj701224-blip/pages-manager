@@ -405,23 +405,45 @@ export async function syncActiveWfpSecret(store, env, config, site, input) {
     });
   }
   try {
-    await withRuntimeConfigSyncLock(store, config.environment, site.id, async ({ signal } = {}) => {
-      const current = await currentSiteSecretMutation(store, config.environment, site.id, input);
-      if (current.operation === 'put') {
-        if (typeof provider.putSecret !== 'function') return;
-        await provider.putSecret({ workerName, name: current.name, value: current.value, signal });
-      } else {
-        if (typeof provider.deleteSecret !== 'function') return;
-        try {
-          await provider.deleteSecret({ workerName, name: current.name, signal });
-        } catch (error) {
-          if (!isNotFoundError(error)) throw error;
+    const syncUnderSiteLease = async ({ signal: siteSignal } = {}) => {
+      const activeTarget = await resolveActiveWfpWorker(store, config, site);
+      if (!activeTarget) return null;
+      const syncOnce = async ({ signal: runtimeSignal } = {}) => {
+        const latestTarget = await resolveActiveWfpWorker(store, config, site);
+        if (!latestTarget || latestTarget.workerName !== activeTarget.workerName) {
+          throw new Error('RUNTIME_CONFIG_LOCKED');
         }
-      }
-    });
-    return null;
+        const current = await currentSiteSecretMutation(store, config.environment, site.id, input);
+        const signal = combineAbortSignals(siteSignal, runtimeSignal);
+        if (current.operation === 'put') {
+          if (typeof provider.putSecret !== 'function') return;
+          await provider.putSecret({ workerName: latestTarget.workerName, name: current.name, value: current.value, signal });
+        } else {
+          if (typeof provider.deleteSecret !== 'function') return;
+          try {
+            await provider.deleteSecret({ workerName: latestTarget.workerName, name: current.name, signal });
+          } catch (error) {
+            if (!isNotFoundError(error)) throw error;
+          }
+        }
+        const verifiedTarget = await resolveActiveWfpWorker(store, config, site);
+        if (!verifiedTarget || verifiedTarget.workerName !== latestTarget.workerName) {
+          throw new Error('RUNTIME_CONFIG_LOCKED');
+        }
+      };
+      await withRuntimeConfigSyncLock(store, config.environment, site.id, syncOnce);
+      return null;
+    };
+    if (typeof store.withSiteCommitLock === 'function') {
+      return await store.withSiteCommitLock(config.environment, site.id, syncUnderSiteLease, {
+        bestEffortRelease: true,
+        waitForLockMs: typeof store.withRuntimeConfigLock === 'function' ? RUNTIME_CONFIG_PROVIDER_TIMEOUT_MS : 50,
+      });
+    }
+    return await syncUnderSiteLease();
   } catch (error) {
     if (isRuntimeConfigLockError(error)) return runtimeConfigChanged('Runtime config changed while syncing a secret.');
+    if (isSiteCommitLockError(error)) return runtimeConfigChanged('Runtime config changed while syncing a secret.');
     return runtimeSecretSyncFailed(env, config, site);
   }
 }
@@ -463,60 +485,94 @@ export async function syncActiveWfpPlainTextBindings(store, env, config, site, s
   }
   if (typeof provider.replacePlainTextBindings !== 'function') return { appliesTo: 'next_deployment' };
 
-  if (typeof store.withRuntimeConfigLock === 'function') {
+  const syncUnderSiteLease = async ({ signal: siteSignal } = {}) => {
+    let activeTarget;
     try {
-      return await store.withRuntimeConfigLock(config.environment, site.id, async ({ signal } = {}) => {
-        const vars =
-          typeof store.listEnabledSiteVars === 'function'
-            ? runtimeVarsObject(await store.listEnabledSiteVars(config.environment, site.id))
-            : runtimeVarsObject(snapshot?.vars || []);
-        await provider.replacePlainTextBindings({ workerName: target.workerName, vars, signal });
-        return { appliesTo: 'active_worker' };
-      });
-    } catch (error) {
-      if (isRuntimeConfigLockError(error)) return runtimeConfigChanged('Runtime config changed while syncing.');
-      return runtimeVarSyncFailed(env, config, site);
-    }
-  }
-
-  if (!Array.isArray(snapshot?.vars)) {
-    try {
-      await withRuntimeConfigSyncLock(store, config.environment, site.id, async ({ signal } = {}) => {
-        await provider.replacePlainTextBindings({ workerName: target.workerName, vars: snapshot, signal });
-      });
-      return { appliesTo: 'active_worker' };
+      activeTarget = await resolveActiveWfpWorker(store, config, site);
     } catch {
-      return runtimeVarSyncFailed(env, config, site);
+      return runtimeVarSyncFailed(env, config, site, {
+        stage: 'route_state_read',
+        reason: 'store_operation_failed',
+      });
     }
-  }
+    if (!activeTarget) return { appliesTo: 'next_deployment' };
 
-  let current = snapshot;
-  try {
+    const syncOnce = async ({ signal: runtimeSignal } = {}) => {
+      const latestTarget = await resolveActiveWfpWorker(store, config, site);
+      if (!latestTarget || latestTarget.workerName !== activeTarget.workerName) {
+        throw new Error('RUNTIME_CONFIG_LOCKED');
+      }
+      const vars =
+        typeof store.listEnabledSiteVars === 'function'
+          ? runtimeVarsObject(await store.listEnabledSiteVars(config.environment, site.id))
+          : runtimeVarsObject(snapshot?.vars || []);
+      await provider.replacePlainTextBindings({
+        workerName: latestTarget.workerName,
+        vars,
+        signal: combineAbortSignals(siteSignal, runtimeSignal),
+      });
+      const verifiedTarget = await resolveActiveWfpWorker(store, config, site);
+      if (!verifiedTarget || verifiedTarget.workerName !== latestTarget.workerName) {
+        throw new Error('RUNTIME_CONFIG_LOCKED');
+      }
+      return { appliesTo: 'active_worker' };
+    };
+
+    if (typeof store.withRuntimeConfigLock === 'function') {
+      return store.withRuntimeConfigLock(config.environment, site.id, syncOnce);
+    }
+
+    if (!Array.isArray(snapshot?.vars)) {
+      await withRuntimeConfigSyncLock(store, config.environment, site.id, syncOnce);
+      return { appliesTo: 'active_worker' };
+    }
+
+    let current = snapshot;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       await withRuntimeConfigSyncLock(store, config.environment, site.id, async ({ signal } = {}) => {
+        const latestTarget = await resolveActiveWfpWorker(store, config, site);
+        if (!latestTarget || latestTarget.workerName !== activeTarget.workerName) {
+          throw new Error('RUNTIME_CONFIG_LOCKED');
+        }
         await provider.replacePlainTextBindings({
-          workerName: target.workerName,
+          workerName: latestTarget.workerName,
           vars: runtimeVarsObject(current.vars),
-          signal,
+          signal: combineAbortSignals(siteSignal, signal),
         });
       });
       const routeState = await readRuntimeConfigRouteState(store, config.environment, site.id);
       const generation = Number(routeState?.runtimeConfigGeneration || 0);
+      const verifiedTarget = await resolveActiveWfpWorker(store, config, site);
+      if (!verifiedTarget || verifiedTarget.workerName !== activeTarget.workerName) {
+        throw new Error('RUNTIME_CONFIG_LOCKED');
+      }
       if (generation === Number(current.generation || 0)) return { appliesTo: 'active_worker' };
       current = {
         vars: await store.listEnabledSiteVars(config.environment, site.id),
         generation,
       };
     }
-  } catch {
+    return jsonError(
+      'RUNTIME_CONFIG_CHANGED',
+      'Runtime config changed while syncing.',
+      409,
+      'Retry the runtime config change.'
+    );
+  };
+
+  try {
+    if (typeof store.withSiteCommitLock === 'function') {
+      return await store.withSiteCommitLock(config.environment, site.id, syncUnderSiteLease, {
+        bestEffortRelease: true,
+        waitForLockMs: typeof store.withRuntimeConfigLock === 'function' ? RUNTIME_CONFIG_PROVIDER_TIMEOUT_MS : 50,
+      });
+    }
+    return await syncUnderSiteLease();
+  } catch (error) {
+    if (isRuntimeConfigLockError(error)) return runtimeConfigChanged('Runtime config changed while syncing.');
+    if (isSiteCommitLockError(error)) return { appliesTo: 'next_deployment' };
     return runtimeVarSyncFailed(env, config, site);
   }
-  return jsonError(
-    'RUNTIME_CONFIG_CHANGED',
-    'Runtime config changed while syncing.',
-    409,
-    'Retry the runtime config change.'
-  );
 }
 
 async function withRuntimeConfigSyncLock(store, environment, siteId, callback) {
@@ -536,6 +592,22 @@ async function withProviderTimeout(callback) {
   }
 }
 
+function combineAbortSignals(...signals) {
+  const activeSignals = signals.filter(Boolean);
+  if (activeSignals.length === 0) return undefined;
+  if (activeSignals.length === 1) return activeSignals[0];
+  if (typeof globalThis.AbortSignal?.any === 'function') return globalThis.AbortSignal.any(activeSignals);
+  const controller = new globalThis.AbortController();
+  for (const activeSignal of activeSignals) {
+    if (activeSignal.aborted) {
+      controller.abort(activeSignal.reason);
+      break;
+    }
+    activeSignal.addEventListener('abort', () => controller.abort(activeSignal.reason), { once: true });
+  }
+  return controller.signal;
+}
+
 async function currentSiteSecretMutation(store, environment, siteId, input) {
   if (typeof store.listEnabledSiteSecrets !== 'function') return input;
   const secrets = await store.listEnabledSiteSecrets(environment, siteId);
@@ -547,6 +619,10 @@ async function currentSiteSecretMutation(store, environment, siteId, input) {
 
 function isRuntimeConfigLockError(error) {
   return error instanceof Error && error.message === 'RUNTIME_CONFIG_LOCKED';
+}
+
+function isSiteCommitLockError(error) {
+  return error?.code === 'SITE_POLICY_LOCKED' || error?.code === 'SITE_COMMIT_TIMEOUT';
 }
 
 function runtimeConfigChanged(message) {

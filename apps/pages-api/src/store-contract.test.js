@@ -625,6 +625,29 @@ for (const backend of storeBackends) {
     }
   });
 
+  test(`${backend.name} contract: site commit lock can preserve callback results when release fails`, async () => {
+    const fixture = await backend.create();
+    try {
+      await createSite(fixture.store);
+      const originalRelease = fixture.store.releaseSiteCommitLock.bind(fixture.store);
+      fixture.store.releaseSiteCommitLock = async () => {
+        throw new Error('release failed');
+      };
+
+      const result = await fixture.store.withSiteCommitLock(
+        'production',
+        'site_1',
+        async () => 'committed',
+        { lockId: 'policy_lock_best_effort_release', bestEffortRelease: true }
+      );
+
+      assert.equal(result, 'committed');
+      fixture.store.releaseSiteCommitLock = originalRelease;
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   test(`${backend.name} contract: unified policy mutation preserves independent fields and rejects stale writers`, async () => {
     const fixture = await backend.create();
     try {

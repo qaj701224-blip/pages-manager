@@ -19,7 +19,13 @@ import {
 import { isMultipartRequest, readMultipartDeploymentBody, validateAssetFiles } from './deployment-upload.js';
 import { jsonError, jsonOk } from './http.js';
 import { newHexId, newId } from './id.js';
-import { buildRouteSnapshot, readRouteSnapshotState, writeRouteSnapshot } from './route-snapshot.js';
+import {
+  buildRouteSnapshot,
+  clearRoutePointerIfCurrent,
+  readRouteSnapshotState,
+  routeSnapshotKey,
+  writeRouteSnapshot,
+} from './route-snapshot.js';
 import { createDeploymentProvider, normalizeWorkerBundle } from './execution-provider.js';
 import { runtimeConfigSnapshot, validateRuntimeBindingQuotas } from './runtime-config.js';
 import { notifyDeploymentCapacityExhausted } from './slack-alerts.js';
@@ -630,17 +636,7 @@ async function createDeployment(request, env, config, store, actor, ctx) {
   let route;
   let ownerTransferRollbackSite = null;
   let ownerTransferApplied = false;
-  let activationLease = null;
-  const releaseActivationLease = async () => {
-    if (!activationLease || typeof store.releaseSiteCommitLock !== 'function') return;
-    const lease = activationLease;
-    activationLease = null;
-    try {
-      await store.releaseSiteCommitLock(config.environment, siteId, lease.lockId);
-    } catch {
-      // An expired lease is safe to leave for the store's expiry path.
-    }
-  };
+  let activationSnapshotFailureResponse = null;
   try {
     await store.updateDeployment(deployment.id, { status: 'verified' });
     previousRoute = await store.getRouteBySiteId(siteId, config.environment);
@@ -757,53 +753,157 @@ async function createDeployment(request, env, config, store, actor, ctx) {
       status: 'activating',
       versionId: version.id,
     });
-    if (typeof store.acquireSiteCommitLock !== 'function') throw deploymentOperationError('SITE_POLICY_LOCKED');
-    activationLease = await store.acquireSiteCommitLock(config.environment, siteId, {
-      lockId: nextId(env, 'deploy_lock'),
-    });
-    if (!activationLease) throw deploymentOperationError('SITE_POLICY_LOCKED');
-    const routeBeforeActivation = previousRoute;
-    const latestRoute = await store.getRouteBySiteId(siteId, config.environment);
-    if (!latestRoute) throw deploymentOperationError('ROUTE_ACTIVATION_CONFLICT');
-    previousRoute = latestRoute;
-    await assertRouteSnapshotConverged(env, store, site, latestRoute, config.environment);
-    const activationExposure = normalizeExposureForDeployment(latestRoute.exposure);
-    if (activationExposure !== uploadExposure) {
-      throw deploymentOperationError('ROUTE_ACTIVATION_CONFLICT', {
-        message: 'Site exposure changed while deployment was uploading.',
-        action: 'Retry the deployment so Worker bindings match the latest site exposure.',
-      });
-    }
-    const activationVisibility = ownerTransferApplied
-      ? site.defaultVisibility
-      : latestRoute.visibility === routeBeforeActivation?.visibility
-        ? site.defaultVisibility
-        : latestRoute.visibility;
-    await ensurePublicWorkerOfficeNetAbsent(provider, {
-      workerName: version.workerName,
-      executionProvider: version.executionProvider,
-      deploymentShape: decision.deploymentShape,
-      exposure: activationExposure,
-    });
-    route = await store.activateSiteVersion(
-      siteId,
-      {
-        activeVersionId: version.id,
-        workerName: version.workerName,
-        runtime: version.runtime,
-        executionProvider: version.executionProvider,
-        dispatchType: version.dispatchType,
-        dispatchBindingName: version.dispatchBindingName,
-        slotId: version.slotId,
-        visibility: activationVisibility,
-        lease: activationLease,
-        updatedAt: readNow(env),
-      },
+    if (typeof store.withSiteCommitLock !== 'function') throw deploymentOperationError('SITE_POLICY_LOCKED');
+    route = await store.withSiteCommitLock(
       config.environment,
-      { ...latestRoute, exposure: activationExposure }
+      siteId,
+      async (activationLease) => {
+        const routeBeforeActivation = previousRoute;
+        const latestRoute = await store.getRouteBySiteId(siteId, config.environment);
+        if (!latestRoute) throw deploymentOperationError('ROUTE_ACTIVATION_CONFLICT');
+        previousRoute = latestRoute;
+        await assertRouteSnapshotConverged(env, store, site, latestRoute, config.environment);
+        const activationExposure = normalizeExposureForDeployment(latestRoute.exposure);
+        if (activationExposure !== uploadExposure) {
+          throw deploymentOperationError('ROUTE_ACTIVATION_CONFLICT', {
+            message: 'Site exposure changed while deployment was uploading.',
+            action: 'Retry the deployment so Worker bindings match the latest site exposure.',
+          });
+        }
+        const activationVisibility = ownerTransferApplied
+          ? site.defaultVisibility
+          : latestRoute.visibility === routeBeforeActivation?.visibility
+            ? site.defaultVisibility
+            : latestRoute.visibility;
+        assertCommitLeaseHealthy(activationLease);
+        await ensurePublicWorkerOfficeNetAbsent(provider, {
+          store,
+          environment: config.environment,
+          siteId,
+          workerName: version.workerName,
+          executionProvider: version.executionProvider,
+          deploymentShape: decision.deploymentShape,
+          exposure: activationExposure,
+          signal: activationLease.signal,
+        });
+        assertCommitLeaseHealthy(activationLease);
+        const activatedRoute = await store.activateSiteVersion(
+          siteId,
+          {
+            activeVersionId: version.id,
+            workerName: version.workerName,
+            runtime: version.runtime,
+            executionProvider: version.executionProvider,
+            dispatchType: version.dispatchType,
+            dispatchBindingName: version.dispatchBindingName,
+            slotId: version.slotId,
+            visibility: activationVisibility,
+            lease: activationLease,
+            updatedAt: readNow(env),
+          },
+          config.environment,
+          { ...latestRoute, exposure: activationExposure }
+        );
+        if (!activatedRoute) return null;
+        try {
+          assertCommitLeaseHealthy(activationLease);
+          await writeSnapshot(env, store, { site, route: activatedRoute, version });
+          assertCommitLeaseHealthy(activationLease);
+        } catch {
+          let restoredRoute = null;
+          let restorationError = null;
+          try {
+            restoredRoute = await restoreSiteRouteAfterSnapshotFailure(
+              store,
+              siteId,
+              previousRoute,
+              activatedRoute,
+              config.environment
+            );
+          } catch (error) {
+            restorationError = error;
+          }
+          try {
+            await restoreSiteVarsAfterFailedDeployment(store, {
+              environment: config.environment,
+              siteId,
+              restoreVars: originalRuntimeVarRecords,
+              expectedVars: committedRuntimeVarRecords,
+              actorId: actor.userId,
+              updatedAt: readNow(env),
+              createId: () => nextId(env, 'var'),
+              enabled: workerRuntimeVarsProvided,
+            });
+          } catch (error) {
+            restorationError ||= error;
+          }
+          try {
+            site =
+              (await restoreDeployOwnerTransferAfterFailure(store, {
+                siteId,
+                previousSite: ownerTransferRollbackSite,
+                environment: config.environment,
+                enabled: ownerTransferApplied,
+              })) || site;
+          } catch (error) {
+            restorationError ||= error;
+          }
+          const restoredSnapshotWritten = restorationError
+            ? false
+            : await writeRestoredRouteSnapshotAfterFailure(env, store, site, restoredRoute, config.environment);
+          const routePointerCleared = restoredSnapshotWritten
+            ? false
+            : await clearRoutePointerAfterSnapshotFailure(env, restoredRoute || activatedRoute);
+          const repairRequired = Boolean(restorationError || !restoredSnapshotWritten);
+          if (repairRequired) {
+            logDeploymentRepairRequired(env, {
+              environment: config.environment,
+              siteId,
+              deploymentId: deployment.id,
+              reason: 'route_snapshot_repair_failed',
+            });
+          }
+          if (restoredSnapshotWritten) {
+            await cleanupUploadedWorkerIfInactive(store, provider, uploaded, siteId, version.id, config.environment);
+          }
+          await store.updateDeployment(deployment.id, {
+            status: 'failed',
+            versionId: version.id,
+            errorCode: 'ROUTE_SNAPSHOT_WRITE_FAILED',
+            errorMessage: 'Route snapshot write failed.',
+            failureStage: 'write_route_snapshot',
+            failureDiagnostics: buildDeploymentFailureDiagnostics({
+              stage: 'write_route_snapshot',
+              executionProvider: version.executionProvider || uploaded.executionProvider || provider.executionProvider || 'wfp',
+              deploymentShape: decision.deploymentShape,
+              plannedVersionId: version.id,
+              plannedWorkerName: version.workerName,
+              uploadCompleted: true,
+              verifyCompleted: true,
+              routeActivatedInD1: true,
+              routePointerCommitted: false,
+              previousRouteRestored: Boolean(restoredRoute),
+              uploadedWorkerCleanup: restoredSnapshotWritten ? 'attempted' : 'skipped',
+              routePointerCleared,
+              trafficImpact: repairRequired ? (routePointerCleared ? 'site_unavailable' : 'public_route_state_unknown') : undefined,
+              operatorAction: repairRequired ? 'repair_route_snapshot' : undefined,
+              cause: { code: 'ROUTE_SNAPSHOT_WRITE_FAILED', class: 'route_snapshot_store_error' },
+            }),
+            completedAt: readNow(env),
+          });
+          activationSnapshotFailureResponse = jsonError(
+            'ROUTE_SNAPSHOT_WRITE_FAILED',
+            'Route snapshot could not be written.',
+            503,
+            'Retry the deployment with a new Idempotency-Key.'
+          );
+          return null;
+        }
+        return activatedRoute;
+      },
+      { lockId: nextId(env, 'deploy_lock'), bestEffortRelease: true }
     );
   } catch (error) {
-    await releaseActivationLease();
     await cleanupUploadedWorker(provider, uploaded);
     await restoreSiteVarsAfterFailedDeployment(store, {
       environment: config.environment,
@@ -877,8 +977,8 @@ async function createDeployment(request, env, config, store, actor, ctx) {
     await markDeploymentStateWriteFailed(store, deployment.id, { env, versionId: version?.id });
     return deploymentStateWriteFailed();
   }
+  if (activationSnapshotFailureResponse) return activationSnapshotFailureResponse;
   if (!route) {
-    await releaseActivationLease();
     const latestRoute = await store.getRouteBySiteId(siteId, config.environment);
     const runtimeConfigChanged =
       decisionRequiresWorker(decision) &&
@@ -979,70 +1079,6 @@ async function createDeployment(request, env, config, store, actor, ctx) {
       'Check the latest site status and retry the deployment with a new Idempotency-Key.'
     );
   }
-  try {
-    await writeSnapshot(env, store, { site, route, version });
-  } catch {
-    const restoredRoute = await restoreSiteRouteAfterSnapshotFailure(store, siteId, previousRoute, route, config.environment);
-    await restoreSiteVarsAfterFailedDeployment(store, {
-      environment: config.environment,
-      siteId,
-      restoreVars: originalRuntimeVarRecords,
-      expectedVars: committedRuntimeVarRecords,
-      actorId: actor.userId,
-      updatedAt: readNow(env),
-      createId: () => nextId(env, 'var'),
-      enabled: workerRuntimeVarsProvided,
-    });
-    site =
-      (await restoreDeployOwnerTransferAfterFailure(store, {
-        siteId,
-        previousSite: ownerTransferRollbackSite,
-        environment: config.environment,
-        enabled: ownerTransferApplied,
-      })) || site;
-    const restoredSnapshotWritten = await writeRestoredRouteSnapshotAfterFailure(
-      env,
-      store,
-      site,
-      restoredRoute,
-      config.environment
-    );
-    if (restoredSnapshotWritten) {
-      await cleanupUploadedWorkerIfInactive(store, provider, uploaded, siteId, version.id, config.environment);
-    }
-    await store.updateDeployment(deployment.id, {
-      status: 'failed',
-      versionId: version.id,
-      errorCode: 'ROUTE_SNAPSHOT_WRITE_FAILED',
-      errorMessage: 'Route snapshot write failed.',
-      failureStage: 'write_route_snapshot',
-      failureDiagnostics: buildDeploymentFailureDiagnostics({
-        stage: 'write_route_snapshot',
-        executionProvider: version.executionProvider || uploaded.executionProvider || provider.executionProvider || 'wfp',
-        deploymentShape: decision.deploymentShape,
-        plannedVersionId: version.id,
-        plannedWorkerName: version.workerName,
-        uploadCompleted: true,
-        verifyCompleted: true,
-        routeActivatedInD1: true,
-        routePointerCommitted: false,
-        previousRouteRestored: Boolean(restoredRoute),
-        uploadedWorkerCleanup: restoredSnapshotWritten ? 'attempted' : 'skipped',
-        cause: { code: 'ROUTE_SNAPSHOT_WRITE_FAILED', class: 'route_snapshot_store_error' },
-      }),
-      completedAt: readNow(env),
-    });
-    await releaseActivationLease();
-    return jsonError(
-      'ROUTE_SNAPSHOT_WRITE_FAILED',
-      'Route snapshot could not be written.',
-      503,
-      'Retry the deployment with a new Idempotency-Key.'
-    );
-  }
-
-  await releaseActivationLease();
-
   const completedAt = readNow(env);
   let completed;
   try {
@@ -1199,7 +1235,13 @@ async function rollbackVersion(request, env, config, store, actor, versionId) {
   try {
     rollbackLease =
       typeof store.acquireSiteCommitLock === 'function'
-        ? await store.acquireSiteCommitLock(config.environment, site.id, { lockId: nextId(env, 'rollback_lock') })
+        ? await acquireRenewableSiteCommitLease(store, config.environment, site.id, {
+            lockId: nextId(env, 'rollback_lock'),
+            ...(Number.isFinite(env?.SITE_COMMIT_LOCK_RENEW_INTERVAL_MS)
+              ? { renewIntervalMs: env.SITE_COMMIT_LOCK_RENEW_INTERVAL_MS }
+              : {}),
+            ...(Number.isFinite(env?.SITE_COMMIT_LOCK_TIMEOUT_MS) ? { timeoutMs: env.SITE_COMMIT_LOCK_TIMEOUT_MS } : {}),
+          })
         : null;
   } catch {
     await markRollbackActivationFailed(store, deploymentResult.deployment.id, env, version, currentRoute, {
@@ -1243,9 +1285,26 @@ async function rollbackVersion(request, env, config, store, actor, versionId) {
     );
   }
   const rollbackRouteBeforeActivation = currentRoute;
-  const rollbackLatestRoute = await store.getRouteBySiteId(site.id, config.environment);
+  let rollbackLatestRoute;
+  try {
+    rollbackLatestRoute = await store.getRouteBySiteId(site.id, config.environment);
+  } catch {
+    await releaseSiteCommitLeaseBestEffort(rollbackLease);
+    await markRollbackActivationFailed(store, deploymentResult.deployment.id, env, version, currentRoute, {
+      errorCode: 'ROLLBACK_ACTIVATION_FAILED',
+      errorMessage: 'Rollback route state could not be read.',
+      failureStage: 'rollback_activate_route',
+      errorClass: 'rollback_route_state_read_error',
+    });
+    return jsonError(
+      'ROLLBACK_ACTIVATION_FAILED',
+      'Rollback route state could not be read.',
+      503,
+      'Retry the rollback with a new Idempotency-Key.'
+    );
+  }
   if (!rollbackLatestRoute) {
-    await store.releaseSiteCommitLock(config.environment, site.id, rollbackLease.lockId);
+    await releaseSiteCommitLeaseBestEffort(rollbackLease);
     await markRollbackActivationFailed(store, deploymentResult.deployment.id, env, version, currentRoute, {
       errorCode: 'ROUTE_ACTIVATION_CONFLICT',
       errorMessage: 'Route changed while rollback was activating.',
@@ -1261,11 +1320,16 @@ async function rollbackVersion(request, env, config, store, actor, versionId) {
     await assertRouteSnapshotConverged(env, store, site, currentRoute, config.environment);
     rollbackProvider = createDeploymentProvider(env, config, store, site);
     const rollbackExposure = normalizeExposureForDeployment(currentRoute.exposure);
+    assertCommitLeaseHealthy(rollbackLease);
     await ensurePublicWorkerOfficeNetAbsent(rollbackProvider, {
+      store,
+      environment: config.environment,
+      siteId: site.id,
       workerName: version.workerName,
       executionProvider: version.executionProvider,
       deploymentShape: version.deploymentShape,
       exposure: rollbackExposure,
+      signal: rollbackLease.signal,
     });
     if (rollbackExposure === 'public' && currentRoute.activeVersionId && currentRoute.activeVersionId !== version.id) {
       const currentVersion = await store.getSiteVersion(currentRoute.activeVersionId, config.environment);
@@ -1275,12 +1339,17 @@ async function rollbackVersion(request, env, config, store, actor, versionId) {
         });
       }
       await ensurePublicWorkerOfficeNetAbsent(rollbackProvider, {
+        store,
+        environment: config.environment,
+        siteId: site.id,
         workerName: currentVersion.workerName,
         executionProvider: currentVersion.executionProvider,
         deploymentShape: currentVersion.deploymentShape,
         exposure: rollbackExposure,
+        signal: rollbackLease.signal,
       });
     }
+    assertCommitLeaseHealthy(rollbackLease);
     route = await store.activateSiteVersion(
       site.id,
       {
@@ -1300,7 +1369,7 @@ async function rollbackVersion(request, env, config, store, actor, versionId) {
       { ...rollbackLatestRoute, exposure: normalizeExposureForDeployment(rollbackLatestRoute.exposure) }
     );
   } catch (error) {
-    await store.releaseSiteCommitLock(config.environment, site.id, rollbackLease.lockId);
+    await releaseSiteCommitLeaseBestEffort(rollbackLease);
     if (isPublicOfficeNetFailure(error)) {
       await markRollbackActivationFailed(store, deploymentResult.deployment.id, env, version, rollbackRouteBeforeActivation, {
         errorCode: error.code,
@@ -1329,7 +1398,7 @@ async function rollbackVersion(request, env, config, store, actor, versionId) {
     return jsonError(code, message, status, action);
   }
   if (!route) {
-    await store.releaseSiteCommitLock(config.environment, site.id, rollbackLease.lockId);
+    await releaseSiteCommitLeaseBestEffort(rollbackLease);
     const latestVersion = await store.getSiteVersion(version.id, config.environment);
     if (latestVersion?.artifactAvailability !== 'active') {
       await store.updateDeployment(deploymentResult.deployment.id, {
@@ -1385,19 +1454,34 @@ async function rollbackVersion(request, env, config, store, actor, versionId) {
     );
   }
   try {
+    assertCommitLeaseHealthy(rollbackLease);
     await writeSnapshot(env, store, { site, route, version });
+    assertCommitLeaseHealthy(rollbackLease);
   } catch {
-    let restoredRoute = await restoreSiteRouteAfterSnapshotFailure(store, site.id, currentRoute, route, config.environment);
+    let restoredRoute = null;
     let restoredOfficeNetError = null;
+    try {
+      restoredRoute = await restoreSiteRouteAfterSnapshotFailure(store, site.id, currentRoute, route, config.environment);
+    } catch (error) {
+      restoredOfficeNetError = deploymentOperationError('ROUTE_SNAPSHOT_WRITE_FAILED', {
+        message: 'The rollback route could not be restored after the snapshot write failed.',
+        action: 'Repair the route snapshot before retrying the rollback.',
+        cause: error,
+      });
+    }
     try {
       const restoredVersion = restoredRoute?.activeVersionId
         ? await store.getSiteVersion(restoredRoute.activeVersionId, config.environment)
         : null;
       await ensurePublicWorkerOfficeNetAbsent(rollbackProvider, {
+        store,
+        environment: config.environment,
+        siteId: site.id,
         workerName: restoredRoute?.workerName || restoredVersion?.workerName,
         executionProvider: restoredRoute?.executionProvider || restoredVersion?.executionProvider,
         deploymentShape: restoredVersion?.deploymentShape || 'inactive',
         exposure: normalizeExposureForDeployment(restoredRoute?.exposure),
+        signal: rollbackLease.signal,
       });
     } catch (error) {
       restoredOfficeNetError = error;
@@ -1427,12 +1511,37 @@ async function rollbackVersion(request, env, config, store, actor, versionId) {
         });
       }
     }
+    let restoredSnapshotWritten = false;
     if (restoredOfficeNetError && restoredRoute?.exposure === 'public') {
-      await writeSafeDisabledRouteSnapshotAfterFailure(env, store, site, restoredRoute, config.environment);
+      restoredSnapshotWritten = await writeSafeDisabledRouteSnapshotAfterFailure(
+        env,
+        store,
+        site,
+        restoredRoute,
+        config.environment
+      );
     } else {
-      await writeRestoredRouteSnapshotAfterFailure(env, store, site, restoredRoute, config.environment);
+      restoredSnapshotWritten = await writeRestoredRouteSnapshotAfterFailure(
+        env,
+        store,
+        site,
+        restoredRoute,
+        config.environment
+      );
     }
-    await store.releaseSiteCommitLock(config.environment, site.id, rollbackLease.lockId);
+    const routePointerCleared = restoredSnapshotWritten
+      ? false
+      : await clearRoutePointerAfterSnapshotFailure(env, restoredRoute || route);
+    const repairRequired = Boolean(!restoredSnapshotWritten);
+    if (repairRequired) {
+      logDeploymentRepairRequired(env, {
+        environment: config.environment,
+        siteId: site.id,
+        deploymentId: deploymentResult.deployment.id,
+        reason: 'route_snapshot_repair_failed',
+      });
+    }
+    await releaseSiteCommitLeaseBestEffort(rollbackLease);
     const failureError = restoredOfficeNetError;
     const failureCode = failureError?.code || 'ROUTE_SNAPSHOT_WRITE_FAILED';
     const failureStage = failureError ? 'rollback_restore_public_office_net' : 'rollback_write_route_snapshot';
@@ -1451,7 +1560,10 @@ async function rollbackVersion(request, env, config, store, actor, versionId) {
         plannedWorkerName: version.workerName,
         routeActivatedInD1: true,
         routePointerCommitted: false,
+        routePointerCleared,
         previousRouteRestored: Boolean(restoredRoute),
+        trafficImpact: repairRequired ? (routePointerCleared ? 'site_unavailable' : 'public_route_state_unknown') : undefined,
+        operatorAction: repairRequired ? 'repair_route_snapshot' : undefined,
         cause: {
           code: failureCode,
           class: failureError ? 'public_office_net_error' : 'route_snapshot_store_error',
@@ -1467,7 +1579,7 @@ async function rollbackVersion(request, env, config, store, actor, versionId) {
     );
   }
 
-  await store.releaseSiteCommitLock(config.environment, site.id, rollbackLease.lockId);
+  await releaseSiteCommitLeaseBestEffort(rollbackLease);
 
   const completedAt = readNow(env);
   let completed;
@@ -1912,11 +2024,11 @@ async function restoreSiteRouteAfterSnapshotFailure(store, siteId, previousRoute
 
 async function writeRestoredRouteSnapshotAfterFailure(env, store, site, route, environment) {
   if (!route) return false;
-  const version = route.activeVersionId
-    ? await store.getSiteVersion(route.activeVersionId, environment)
-    : inactiveRouteVersion(route);
-  if (!version && route.routeStatus === 'active') return false;
   try {
+    const version = route.activeVersionId
+      ? await store.getSiteVersion(route.activeVersionId, environment)
+      : inactiveRouteVersion(route);
+    if (!version && route.routeStatus === 'active') return false;
     await writeSnapshot(env, store, { site, route, version });
     return true;
   } catch {
@@ -1932,13 +2044,33 @@ async function writeSafeDisabledRouteSnapshotAfterFailure(env, store, site, rout
     visibility: 'disabled',
     accessMode: 'disabled',
   };
-  const version = safeRoute.activeVersionId
-    ? await store.getSiteVersion(safeRoute.activeVersionId, environment)
-    : inactiveRouteVersion(safeRoute);
-  if (!version && safeRoute.routeStatus === 'active') return false;
   try {
+    const version = safeRoute.activeVersionId
+      ? await store.getSiteVersion(safeRoute.activeVersionId, environment)
+      : inactiveRouteVersion(safeRoute);
+    if (!version && safeRoute.routeStatus === 'active') return false;
     await writeSnapshot(env, store, { site, route: safeRoute, version });
     return true;
+  } catch {
+    return false;
+  }
+}
+
+async function clearRoutePointerAfterSnapshotFailure(env, route) {
+  if (!route || !env?.ROUTE_SNAPSHOTS) return false;
+  try {
+    return await clearRoutePointerIfCurrent(env, {
+      hostname: route.hostname,
+      environment: route.environment,
+      routeGeneration: Number(route.routeGeneration || 0),
+      policyVersion: Number(route.policyVersion || 0),
+      snapshotKey: routeSnapshotKey(
+        route.environment,
+        route.hostname,
+        Number(route.routeGeneration || 0),
+        Number(route.policyVersion || 0)
+      ),
+    });
   } catch {
     return false;
   }
@@ -2080,6 +2212,7 @@ function buildDeploymentFailureDiagnostics({
   verifyCompleted = false,
   routeActivatedInD1,
   routePointerCommitted = false,
+  routePointerCleared,
   previousRouteRestored,
   uploadedWorkerCleanup,
   trafficImpact = 'old_version_retained',
@@ -2098,6 +2231,7 @@ function buildDeploymentFailureDiagnostics({
     verifyCompleted,
     routeActivatedInD1,
     routePointerCommitted,
+    routePointerCleared,
     previousRouteRestored,
     uploadedWorkerCleanup,
     trafficImpact,
@@ -2109,6 +2243,23 @@ function buildDeploymentFailureDiagnostics({
 
 function omitUndefined(input) {
   return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
+}
+
+function logDeploymentRepairRequired(env, input) {
+  const payload = {
+    event: 'pages_deployment_repair_required',
+    environment: input.environment,
+    siteId: input.siteId,
+    deploymentId: input.deploymentId,
+    reason: input.reason,
+  };
+  try {
+    const logger =
+      typeof env?.logDeploymentRepairRequired === 'function' ? env.logDeploymentRepairRequired : globalThis.console?.error;
+    if (typeof logger === 'function') logger(JSON.stringify(payload));
+  } catch {
+    // Diagnostics must never replace the deployment response.
+  }
 }
 
 async function markDeploymentStateWriteFailed(store, deploymentId, { env, versionId = null } = {}) {
@@ -2185,6 +2336,86 @@ async function markRollbackActivationFailed(
   }
 }
 
+async function releaseSiteCommitLockBestEffort(store, environment, siteId, lockId) {
+  if (!lockId || typeof store?.releaseSiteCommitLock !== 'function') return false;
+  try {
+    return await store.releaseSiteCommitLock(environment, siteId, lockId);
+  } catch {
+    return false;
+  }
+}
+
+async function acquireRenewableSiteCommitLease(store, environment, siteId, options) {
+  const acquireOptions = { ...options };
+  delete acquireOptions.bestEffortRelease;
+  const lease = await store.acquireSiteCommitLock(environment, siteId, acquireOptions);
+  if (!lease) return null;
+  const controller = new globalThis.AbortController();
+  const timeout = globalThis.setTimeout(() => {
+    controller.abort(deploymentOperationError('SITE_COMMIT_TIMEOUT'));
+  }, options.timeoutMs || 45 * 1000);
+  let currentLease = lease;
+  let renewal = Promise.resolve();
+  let renewalError = null;
+  const renew = () => {
+    renewal = renewal
+      .then(async () => {
+        const renewed = await store.renewSiteCommitLock(environment, siteId, currentLease.lockId, {
+          fencingToken: currentLease.fencingToken,
+          leaseMs: options.leaseMs,
+        });
+        if (!renewed) throw deploymentOperationError('SITE_POLICY_LOCKED');
+        currentLease = renewed;
+      })
+      .catch((error) => {
+        renewalError = error;
+        controller.abort(error);
+        throw error;
+      });
+    renewal.catch(() => {});
+  };
+  const timer = globalThis.setInterval(renew, options.renewIntervalMs || 20 * 1000);
+  return {
+    ...currentLease,
+    get fencingToken() {
+      return currentLease.fencingToken;
+    },
+    assertHealthy() {
+      if (renewalError) throw renewalError;
+      if (controller.signal.aborted) {
+        throw controller.signal.reason || deploymentOperationError('SITE_POLICY_LOCKED');
+      }
+    },
+    signal: controller.signal,
+    async release() {
+      globalThis.clearInterval(timer);
+      globalThis.clearTimeout(timeout);
+      try {
+        await renewal;
+      } catch {
+        // Preserve the operation error; renewal loss is already reflected in the signal.
+      }
+      return releaseSiteCommitLockBestEffort(store, environment, siteId, currentLease.lockId);
+    },
+  };
+}
+
+async function releaseSiteCommitLeaseBestEffort(lease) {
+  if (!lease || typeof lease.release !== 'function') return false;
+  try {
+    return await lease.release();
+  } catch {
+    return false;
+  }
+}
+
+function assertCommitLeaseHealthy(lease) {
+  if (typeof lease?.assertHealthy === 'function') return lease.assertHealthy();
+  if (lease?.signal?.aborted) {
+    throw lease.signal.reason || deploymentOperationError('SITE_POLICY_LOCKED');
+  }
+}
+
 async function markRuntimeConfigDeploymentFailed(
   store,
   deploymentId,
@@ -2232,7 +2463,6 @@ function normalizeExposureForDeployment(value) {
 }
 
 async function assertRouteSnapshotConverged(env, store, site, route, environment) {
-  if (!route.activeVersionId && route.routeStatus !== 'active') return;
   if (!env?.ROUTE_SNAPSHOTS || typeof env.ROUTE_SNAPSHOTS.get !== 'function') return;
   const version = route.activeVersionId
     ? await store.getSiteVersion(route.activeVersionId, environment)
@@ -2246,6 +2476,7 @@ async function assertRouteSnapshotConverged(env, store, site, route, environment
   const latestSite = (await store.getSite(site.id)) || site;
   const snapshot = buildRouteSnapshot({ site: latestSite, route, version, aclEntries });
   const state = await readRouteSnapshotState(env, snapshot);
+  if (!route.activeVersionId && route.routeStatus !== 'active' && state.state === 'missing' && !state.pointer) return;
   if (state.state !== 'exact') {
     throw deploymentOperationError('ROUTE_ACTIVATION_CONFLICT', {
       message: 'Route snapshot state is not converged for activation.',
@@ -2254,7 +2485,10 @@ async function assertRouteSnapshotConverged(env, store, site, route, environment
   }
 }
 
-async function ensurePublicWorkerOfficeNetAbsent(provider, { workerName, executionProvider, deploymentShape, exposure }) {
+async function ensurePublicWorkerOfficeNetAbsent(
+  provider,
+  { store, environment, siteId, workerName, executionProvider, deploymentShape, exposure, signal }
+) {
   if (exposure !== 'public') return;
   if (deploymentShape === 'assets-only') return;
   if (deploymentShape !== 'worker-only' && deploymentShape !== 'worker-with-assets') {
@@ -2270,23 +2504,52 @@ async function ensurePublicWorkerOfficeNetAbsent(provider, { workerName, executi
       action: 'Use a supported execution provider and retry the public activation.',
     });
   }
-  if (typeof provider.removeOfficeNetBinding !== 'function') {
-    throw deploymentOperationError('SITE_PUBLIC_OFFICE_NET_REMOVE_FAILED');
+  const removeAndVerify = async ({ signal: settingsSignal } = {}) => {
+    const providerSignal = combineAbortSignals(signal, settingsSignal);
+    if (typeof provider.removeOfficeNetBinding !== 'function') {
+      throw deploymentOperationError('SITE_PUBLIC_OFFICE_NET_REMOVE_FAILED');
+    }
+    try {
+      await provider.removeOfficeNetBinding({ workerName, signal: providerSignal });
+    } catch (error) {
+      throw deploymentOperationError('SITE_PUBLIC_OFFICE_NET_REMOVE_FAILED', { cause: error });
+    }
+    if (typeof provider.verifyOfficeNetAbsent !== 'function') {
+      throw deploymentOperationError('SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED');
+    }
+    try {
+      const absent = await provider.verifyOfficeNetAbsent({ workerName, signal: providerSignal });
+      if (!absent) throw new Error('OFFICE_NET_PRESENT');
+    } catch (error) {
+      throw deploymentOperationError('SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED', { cause: error });
+    }
+  };
+  if (typeof store?.withRuntimeConfigLock === 'function') {
+    try {
+      await store.withRuntimeConfigLock(environment, siteId, removeAndVerify);
+      return;
+    } catch (error) {
+      if (isPublicOfficeNetFailure(error)) throw error;
+      throw deploymentOperationError('SITE_PUBLIC_OFFICE_NET_REMOVE_FAILED', { cause: error });
+    }
   }
-  try {
-    await provider.removeOfficeNetBinding({ workerName });
-  } catch (error) {
-    throw deploymentOperationError('SITE_PUBLIC_OFFICE_NET_REMOVE_FAILED', { cause: error });
+  await removeAndVerify({ signal });
+}
+
+function combineAbortSignals(...signals) {
+  const activeSignals = signals.filter(Boolean);
+  if (activeSignals.length === 0) return undefined;
+  if (activeSignals.length === 1) return activeSignals[0];
+  if (typeof globalThis.AbortSignal?.any === 'function') return globalThis.AbortSignal.any(activeSignals);
+  const controller = new globalThis.AbortController();
+  for (const activeSignal of activeSignals) {
+    if (activeSignal.aborted) {
+      controller.abort(activeSignal.reason);
+      break;
+    }
+    activeSignal.addEventListener('abort', () => controller.abort(activeSignal.reason), { once: true });
   }
-  if (typeof provider.verifyOfficeNetAbsent !== 'function') {
-    throw deploymentOperationError('SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED');
-  }
-  try {
-    const absent = await provider.verifyOfficeNetAbsent({ workerName });
-    if (!absent) throw new Error('OFFICE_NET_PRESENT');
-  } catch (error) {
-    throw deploymentOperationError('SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED', { cause: error });
-  }
+  return controller.signal;
 }
 
 function isPublicOfficeNetFailure(error) {
@@ -2313,6 +2576,11 @@ function deploymentOperationError(code, { message, action, cause } = {}) {
     SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED: {
       message: 'The public Worker OfficeNet binding could not be verified absent.',
       action: 'Check the active Worker settings and retry the deployment.',
+      status: 503,
+    },
+    ROUTE_SNAPSHOT_WRITE_FAILED: {
+      message: 'Route snapshot could not be written.',
+      action: 'Repair the route snapshot before retrying the deployment.',
       status: 503,
     },
   }[code] || {

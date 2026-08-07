@@ -2207,10 +2207,6 @@ test('runtime vars fallback resynchronizes the latest generation when provider c
       workerName: 'pages-v2-guide-ver-1',
       vars: { API_BASE: 'https://api.example.com', FEATURE_FLAG: 'on' },
     },
-    {
-      workerName: 'pages-v2-guide-ver-1',
-      vars: { API_BASE: 'https://api.example.com', FEATURE_FLAG: 'on' },
-    },
   ]);
   assert.deepEqual(activeBindings, { API_BASE: 'https://api.example.com', FEATURE_FLAG: 'on' });
 });
@@ -2253,7 +2249,7 @@ test('runtime vars legacy provider fallback receives a timeout signal', async ()
 test('runtime provider sync serializes a real WFP settings PATCH with secret PUT', async () => {
   const result = await runRuntimeProviderSecretRace('put');
 
-  assert.equal(result.interleaving, 'secret_queued');
+  assert.equal(result.interleaving, 'secret_waiting_for_site');
   assert.deepEqual(result.bindings, [
     { type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'pages-kv-gateway' },
     { type: 'plain_text', name: 'API_BASE', text: 'https://api.example.com' },
@@ -2264,7 +2260,7 @@ test('runtime provider sync serializes a real WFP settings PATCH with secret PUT
 test('runtime provider sync serializes a real WFP settings PATCH with secret DELETE', async () => {
   const result = await runRuntimeProviderSecretRace('delete');
 
-  assert.equal(result.interleaving, 'secret_queued');
+  assert.equal(result.interleaving, 'secret_waiting_for_site');
   assert.deepEqual(result.bindings, [
     { type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'pages-kv-gateway' },
     { type: 'plain_text', name: 'API_BASE', text: 'https://api.example.com' },
@@ -2422,7 +2418,69 @@ test('runtime provider sync passes the lease abort signal to vars and secret ope
 
   assert.deepEqual(varsResult, { appliesTo: 'active_worker' });
   assert.equal(secretResult, null);
-  assert.deepEqual(signals, [controller.signal, controller.signal]);
+  assert.equal(signals.length, 2);
+  assert.equal(signals.every((signal) => signal instanceof globalThis.AbortSignal), true);
+  assert.notEqual(signals[0], controller.signal);
+  assert.notEqual(signals[1], controller.signal);
+});
+
+test('runtime plain-text sync acquires the site lease before the runtime settings lock and re-reads the active Worker', async () => {
+  const store = await createSeededStore();
+  const site = await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  await activateSite(store, site.id);
+
+  const originalSiteLock = store.withSiteCommitLock.bind(store);
+  const originalRuntimeLock = store.withRuntimeConfigLock.bind(store);
+  let siteLockHeld = false;
+  let siteLockCalls = 0;
+  let runtimeLockCalls = 0;
+  const workerNames = [];
+  store.withSiteCommitLock = async (...args) => {
+    siteLockCalls += 1;
+    return originalSiteLock(args[0], args[1], async (lease) => {
+      siteLockHeld = true;
+      try {
+        return await args[2](lease);
+      } finally {
+        siteLockHeld = false;
+      }
+    }, args[3]);
+  };
+  store.withRuntimeConfigLock = async (...args) => {
+    runtimeLockCalls += 1;
+    assert.equal(siteLockHeld, true);
+    return originalRuntimeLock(args[0], args[1], async (lock) => {
+      assert.equal(siteLockHeld, true);
+      return args[2](lock);
+    }, args[3]);
+  };
+
+  const environment = testEnv(store, {
+    WFP_PROVIDER: {
+      replacePlainTextBindings: async ({ workerName }) => workerNames.push(workerName),
+    },
+  });
+  const result = await syncActiveWfpPlainTextBindings(
+    store,
+    environment,
+    { environment: 'production' },
+    site,
+    { vars: [{ name: 'API_BASE', value: 'https://api.example.com' }], generation: 1 }
+  );
+
+  assert.deepEqual(result, { appliesTo: 'active_worker' });
+  assert.equal(siteLockCalls, 1);
+  assert.equal(runtimeLockCalls, 1);
+  assert.deepEqual(workerNames, ['pages-v2-guide-ver-1']);
 });
 
 test('runtime vars mutations are idempotent and apply on the next deployment without an active Worker', async () => {
@@ -3582,14 +3640,7 @@ async function runRuntimeProviderSecretRace(operation) {
   }
 
   let runtimeQueue = Promise.resolve();
-  let lockAttempts = 0;
-  let notifySecondLockAttempt;
-  const secondLockAttempt = new Promise((resolve) => {
-    notifySecondLockAttempt = resolve;
-  });
   store.withRuntimeConfigLock = async (_environment, _siteId, callback) => {
-    lockAttempts += 1;
-    if (lockAttempts === 2) notifySecondLockAttempt();
     const previous = runtimeQueue;
     let release;
     const gate = new Promise((resolve) => {
@@ -3658,10 +3709,12 @@ async function runRuntimeProviderSecretRace(operation) {
     name: 'API_TOKEN',
     ...(operation === 'put' ? { value: 'secret-value' } : {}),
   });
-  const interleaving = await Promise.race([
-    secretSync.then(() => 'secret_completed'),
-    secondLockAttempt.then(() => 'secret_queued'),
-  ]);
+  let secretCompleted = false;
+  void secretSync.then(() => {
+    secretCompleted = true;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const interleaving = secretCompleted ? 'secret_completed' : 'secret_waiting_for_site';
   releaseFirstSettingsGet();
   const [varResult, secretResult] = await Promise.all([varSync, secretSync]);
 
