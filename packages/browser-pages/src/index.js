@@ -426,7 +426,7 @@ const SITE_ERROR_REGISTRY = Object.freeze({
   },
 });
 
-export function siteErrorResponse(request, code, { hostname, message } = {}) {
+export function siteErrorResponse(request, code, { hostname, message, detail } = {}) {
   const entry = SITE_ERROR_REGISTRY[code] || GENERIC_SITE_ERROR;
   if (!wantsHtml(request)) {
     return jsonResponse({ error: { code, message: message ?? entry.message } }, entry.status, {
@@ -438,7 +438,7 @@ export function siteErrorResponse(request, code, { hostname, message } = {}) {
   return browserPageResponse({
     ...page,
     tone: page.tone || 'danger',
-    detail: page.detail ?? `状态详情：${code}`,
+    detail: detail ?? page.detail ?? `状态详情：${code}`,
     status: entry.status,
     actionHref: hostname ? `https://${hostname}/` : '',
     actionLabel: page.actionLabel || '重新打开站点',

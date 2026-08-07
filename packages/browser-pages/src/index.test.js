@@ -47,6 +47,17 @@ test('siteErrorResponse renders HTML with status detail and safe hostname action
   assert.match(text, /你暂时没有访问权限/);
 });
 
+test('siteErrorResponse renders and escapes an explicit HTML detail', async () => {
+  const response = siteErrorResponse(
+    new Request('https://demo.pages.xd.team/', { headers: { Accept: 'text/html' } }),
+    'IP_DENIED',
+    { detail: '状态详情：IP_DENIED；当前 IP：<script>' }
+  );
+  const text = await response.text();
+  assert.match(text, /状态详情：IP_DENIED；当前 IP：&lt;script&gt;/);
+  assert.doesNotMatch(text, /<script>/);
+});
+
 test('siteErrorResponse resolves status and JSON message from the registry', async () => {
   const response = siteErrorResponse(new Request('https://demo.pages.xd.team/'), 'SITE_SESSION_STALE');
   assert.equal(response.status, 403);

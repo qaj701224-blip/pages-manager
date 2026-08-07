@@ -871,14 +871,34 @@ test('renders a negotiated HTML page when the signed-in callback user has no acc
 test('renders a negotiated HTML page for denied client IPs', async () => {
   const response = await worker.fetch(
     new Request('https://demo.pages.xd.team/', {
-      headers: { Accept: 'text/html' },
+      headers: { 'CF-Connecting-IP': '192.0.2.10', Accept: 'text/html' },
     }),
     routeEnv()
   );
 
   assert.equal(response.status, 403);
   assert.match(response.headers.get('Content-Type'), /text\/html/);
-  assert.match(await response.text(), /当前网络不在允许范围，请连接公司网络或 VPN 后重试/);
+  const text = await response.text();
+  assert.match(text, /当前网络不在允许范围，请连接公司网络或 VPN 后重试/);
+  assert.match(text, /状态详情：IP_DENIED；当前 IP：192\.0\.2\.10/);
+});
+
+test('keeps denied client IP out of negotiated JSON errors', async () => {
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/', {
+      headers: { 'CF-Connecting-IP': '192.0.2.10' },
+    }),
+    routeEnv()
+  );
+
+  assert.equal(response.status, 403);
+  assert.match(response.headers.get('Content-Type'), /application\/json/);
+  assert.deepEqual(await response.json(), {
+    error: {
+      code: 'IP_DENIED',
+      message: 'Client IP is not allowed.',
+    },
+  });
 });
 
 test('renders a negotiated HTML page for invalid site hosts', async () => {
