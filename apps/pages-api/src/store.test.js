@@ -96,6 +96,41 @@ test('createSite creates owner membership and inactive route authority record', 
   });
 });
 
+test('D1 audit statements bind omitted nullable fields as null', () => {
+  let bound = [];
+  const db = {
+    prepare() {
+      return {
+        bind(...args) {
+          bound = args;
+          return this;
+        },
+      };
+    },
+  };
+  const store = new D1PagesStore(db);
+
+  store.auditEventStatement({
+    id: 'audit_1',
+    environment: 'staging',
+    eventType: 'admin.site.exposure',
+    actorUserId: 'usr_admin',
+    actorType: 'platform_admin',
+    siteId: 'site_1',
+    routeId: 'route_1',
+    decision: 'allow',
+    statusCode: 200,
+    metadata: { stage: 'policy_committed' },
+    createdAt: '2026-08-07T10:00:00.000Z',
+  });
+
+  assert.equal(bound.includes(undefined), false);
+  assert.equal(bound[2], null);
+  assert.equal(bound[8], null);
+  assert.equal(bound[11], null);
+  assert.equal(bound[12], null);
+});
+
 test('D1 store filters audit events by environment', async () => {
   let capturedSql = '';
   let capturedArgs = [];

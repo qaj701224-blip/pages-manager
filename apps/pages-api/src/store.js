@@ -4402,18 +4402,18 @@ export class D1PagesStore {
       .bind(
         record.id,
         environment,
-        record.traceId,
+        record.traceId ?? null,
         record.eventType,
-        record.actorUserId,
+        record.actorUserId ?? null,
         record.actorType,
-        record.siteId,
-        record.routeId,
-        record.versionId,
+        record.siteId ?? null,
+        record.routeId ?? null,
+        record.versionId ?? null,
         record.decision,
-        record.statusCode,
-        record.ipHash,
-        record.userAgentHash,
-        stringifyJsonColumn(record.metadata),
+        record.statusCode ?? null,
+        record.ipHash ?? null,
+        record.userAgentHash ?? null,
+        stringifyJsonColumn(record.metadata ?? null),
         record.createdAt
       );
   }
