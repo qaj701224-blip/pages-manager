@@ -55,7 +55,7 @@ test('siteErrorResponse renders and escapes an explicit HTML detail', async () =
   );
   const text = await response.text();
   assert.match(text, /状态详情：IP_DENIED<br>当前 IP：&lt;script&gt;/);
-  assert.doesNotMatch(text, /<script>/);
+  assert.doesNotMatch(text, /<script>/i);
 });
 
 test('siteErrorResponse resolves status and JSON message from the registry', async () => {
