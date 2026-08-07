@@ -60,6 +60,7 @@ import {
   siteOwnerCandidateLabel,
   siteOwnerCandidateMeta,
 } from '../site-settings-model.js';
+import { adminDeploymentActorView } from '../site-display-model.js';
 import { PageHeading } from './SitesDirectory.jsx';
 
 const SITE_TABS = new Set(['overview', 'deployments', 'access', 'config', 'settings']);
@@ -205,6 +206,7 @@ export function SiteDetail({
       {state.status === 'ready' && state.site ? (
         <SiteTabContent
           site={state.site}
+          scope={scope}
           siteApi={siteApi}
           tab={activeTab}
           resourceState={resourceState}
@@ -295,8 +297,18 @@ function ContextLink({ href, active, icon, label }) {
   );
 }
 
-function SiteTabContent({ site, siteApi, tab, resourceState, onResourceUpdate, onSitePatch, onResourceReload, onSiteDeleted }) {
-  if (tab === 'deployments') return <DeploymentsPanel state={resourceState} site={site} />;
+function SiteTabContent({
+  site,
+  scope,
+  siteApi,
+  tab,
+  resourceState,
+  onResourceUpdate,
+  onSitePatch,
+  onResourceReload,
+  onSiteDeleted,
+}) {
+  if (tab === 'deployments') return <DeploymentsPanel state={resourceState} site={site} scope={scope} />;
   if (tab === 'access') {
     return (
       <AccessPanel
@@ -376,7 +388,7 @@ function SiteStatusSummary({ site }) {
   );
 }
 
-function DeploymentsPanel({ state, site }) {
+function DeploymentsPanel({ state, site, scope }) {
   if (state.status === 'loading') return <div className="placeholder">加载中</div>;
   if (state.status === 'error') return <div className="placeholder">无法加载部署记录</div>;
   const deployments = state.data?.deployments || [];
@@ -391,7 +403,7 @@ function DeploymentsPanel({ state, site }) {
       <div className="deployment-table-head">
         <span>Deployment</span>
         <span>来源</span>
-        <span>归属</span>
+        {scope === 'admin' ? <span>操作人</span> : <span>归属</span>}
         <span>状态</span>
         <span>创建时间</span>
         <span>完成时间</span>
@@ -404,7 +416,11 @@ function DeploymentsPanel({ state, site }) {
               <span>{deployment.operation || '-'}</span>
             </div>
             <span>{deployment.source || 'unknown'}</span>
-            <span title={deploymentOwnerLabel(deployment, site)}>{deploymentOwnerLabel(deployment, site)}</span>
+            {scope === 'admin' ? (
+              <DeploymentActorCell actor={adminDeploymentActorView(deployment.actor)} />
+            ) : (
+              <span title={deploymentOwnerLabel(deployment, site)}>{deploymentOwnerLabel(deployment, site)}</span>
+            )}
             <span className="tag muted">{deployment.status || 'unknown'}</span>
             <span>{formatDate(deployment.createdAt)}</span>
             <span>{formatDate(deployment.completedAt)}</span>
@@ -413,6 +429,15 @@ function DeploymentsPanel({ state, site }) {
         </div>
       ))}
     </section>
+  );
+}
+
+function DeploymentActorCell({ actor }) {
+  return (
+    <span title={actor.secondary ? `${actor.primary} · ${actor.secondary}` : actor.primary}>
+      {actor.primary}
+      {actor.secondary ? ` · ${actor.secondary}` : ''}
+    </span>
   );
 }
 

@@ -225,25 +225,26 @@ test('D1 store admin list queries are bounded and site detail can be fetched by 
     prepare(sql) {
       const call = { sql, args: [] };
       calls.push(call);
-      return {
+      const statement = {
+        first: async () => null,
+        all: async () => ({ results: [] }),
         bind(...args) {
           call.args = args;
-          return {
-            all: async () => ({ results: [] }),
-            first: async () => null,
-          };
+          return statement;
         },
       };
+      return statement;
     },
   };
   const store = new D1PagesStore(db, { now: () => '2026-07-02T00:00:00.000Z' });
 
   await store.listAdminSites({ environment: 'production' });
   await store.listAdminSiteDeployments({ environment: 'production', siteId: 'site_1' });
+  await store.getAdminDashboard({ environment: 'production' });
   await store.listAdminTeams({ environment: 'production' });
   await store.getAdminSiteById('site_1', 'production');
 
-  const [sites, deployments, teams, siteDetail] = calls;
+  const [sites, deployments] = calls;
   assert.match(sites.sql, /LIMIT \?/);
   assert.match(
     sites.sql,
@@ -253,6 +254,20 @@ test('D1 store admin list queries are bounded and site detail can be fetched by 
   assert.deepEqual(sites.args, ['production', 200]);
   assert.match(deployments.sql, /LIMIT \?/);
   assert.deepEqual(deployments.args, ['production', 'site_1', 100]);
+  assert.match(deployments.sql, /sites\.id AS joined_site_id/);
+  assert.match(deployments.sql, /LEFT JOIN users AS actor_users/);
+  assert.match(deployments.sql, /actor_users\.email AS actor_user_email/);
+  assert.match(deployments.sql, /actor_users\.realname AS actor_user_realname/);
+  const dashboardDeployments = calls.find(
+    (call) => call.sql.includes('SELECT deployments.*') && call.sql.includes('status = \'failed\'')
+  );
+  assert.ok(dashboardDeployments);
+  assert.match(dashboardDeployments.sql, /sites\.id AS joined_site_id/);
+  assert.match(dashboardDeployments.sql, /LEFT JOIN users AS actor_users/);
+  assert.match(dashboardDeployments.sql, /actor_users\.email AS actor_user_email/);
+  assert.match(dashboardDeployments.sql, /actor_users\.realname AS actor_user_realname/);
+  const teams = calls.find((call) => call.sql.includes('SELECT * FROM teams'));
+  const siteDetail = calls.find((call) => call.sql.includes('WHERE sites.id = ? AND sites.environment ='));
   assert.match(teams.sql, /LIMIT \?/);
   assert.deepEqual(teams.args, ['production', 200]);
   assert.match(siteDetail.sql, /WHERE sites\.id = \? AND sites\.environment = \?/);

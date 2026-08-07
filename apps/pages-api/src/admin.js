@@ -2584,17 +2584,27 @@ function formatPlatformAdmin(admin) {
 }
 
 function formatAdminDeployment(deployment) {
+  const ownerState = deployment.ownerState === 'not_created' ? 'not_created' : 'persisted';
+  const actor = deployment.actor || {};
   const formatted = {
     id: deployment.id,
     siteId: deployment.siteId,
     siteSlug: deployment.siteSlug || null,
     owner: {
-      type: deployment.ownerType || 'user',
-      id: deployment.ownerId || deployment.ownerUserId || null,
-      email: deployment.ownerEmail || null,
-      displayName: deployment.ownerDisplayName || null,
-      departmentPath: deployment.ownerDepartmentPath || null,
-      teamType: deployment.ownerTeamType || null,
+      state: ownerState,
+      type: ownerState === 'not_created' ? null : deployment.ownerType || 'user',
+      id: ownerState === 'not_created' ? null : deployment.ownerId || deployment.ownerUserId || null,
+      email: ownerState === 'not_created' ? null : deployment.ownerEmail || null,
+      displayName: ownerState === 'not_created' ? null : deployment.ownerDisplayName || null,
+      departmentPath: ownerState === 'not_created' ? null : deployment.ownerDepartmentPath || null,
+      teamType: ownerState === 'not_created' ? null : deployment.ownerTeamType || null,
+    },
+    actor: {
+      type: actor.type ?? deployment.actorType ?? null,
+      id: actor.id ?? deployment.actorId ?? null,
+      userId: actor.userId ?? deployment.actorUserId ?? null,
+      email: actor.email ?? null,
+      displayName: actor.displayName ?? null,
     },
     status: deployment.status,
     source: deployment.source || null,
