@@ -166,6 +166,17 @@ ALTER TABLE sites ADD COLUMN default_access_mode TEXT;
 ALTER TABLE site_routes ADD COLUMN exposure TEXT NOT NULL DEFAULT 'internal';
 ALTER TABLE site_routes ADD COLUMN access_mode TEXT;
 
+CREATE TABLE IF NOT EXISTS site_policy_locks (
+  environment TEXT NOT NULL,
+  site_id TEXT NOT NULL,
+  lock_id TEXT NOT NULL,
+  fencing_token INTEGER NOT NULL,
+  acquired_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (environment, site_id)
+);
+
 UPDATE sites
 SET default_access_mode = CASE default_visibility
   WHEN 'internal' THEN 'anonymous'
@@ -224,8 +235,6 @@ git commit -m "feat(pages-api): 增加站点 exposure policy 字段"
 
 **Files:**
 
-- Modify: `apps/pages-api/migrations/0019_site_access_policy.sql`
-- Modify: `apps/pages-api/src/schema.js`
 - Modify: `apps/pages-api/src/store.js`
 - Modify: `apps/pages-api/src/test-store.js`
 - Modify: `apps/pages-api/src/route-snapshot.js`
@@ -247,22 +256,7 @@ assert.equal(repaired.pointerConfirmed, true);
 
 - [ ] **Step 2: 增加 `site_policy_locks` 表和 Store/TestStore 对称 lease API**
 
-在 `0019` 增加 `(environment, site_id)` 主键、`lock_id`、`fencing_token`、`expires_at`、`acquired_at`、`updated_at` 字段：
-
-```sql
-CREATE TABLE IF NOT EXISTS site_policy_locks (
-  environment TEXT NOT NULL,
-  site_id TEXT NOT NULL,
-  lock_id TEXT NOT NULL,
-  fencing_token INTEGER NOT NULL,
-  acquired_at TEXT NOT NULL,
-  expires_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  PRIMARY KEY (environment, site_id)
-);
-```
-
-实现以下接口并保持参数一致：
+实现以下接口并保持参数一致；migration 和 schema 已在 Task 2 一次性定义，后续任务不再修改已提交的 `0019` 文件：
 
 ```js
 withSiteCommitLock(environment, siteId, callback, options = {})
@@ -328,6 +322,8 @@ git commit -m "feat(pages-api): 增加站点策略租约与统一提交"
 - Modify: `apps/pages-api/src/sites.js`
 - Modify: `apps/pages-api/src/console.js`
 - Modify: `apps/pages-api/src/admin.js`
+- Modify: `apps/pages-api/src/store.js`
+- Modify: `apps/pages-api/src/test-store.js`
 - Modify: `apps/pages-api/src/openapi.js`
 - Test: `apps/pages-api/src/sites.test.js`
 - Test: `apps/pages-api/src/console.test.js`
@@ -620,7 +616,7 @@ git commit -m "feat(pages-console): 增加站点公网 exposure 管理界面"
 
 ```bash
 node --test scripts/pages-v2-docs.test.js scripts/public-docs.test.js scripts/workflows.test.js
-git add docs apps/pages-cli/src/commands/shared.js apps/pages-cli/README.md apps/pages-api/src/public-docs.js pages-deploy.skill.md .github/workflows/deploy-pages-v2.yml .github/workflows/deploy-pages-v2-staging.yml scripts/pages-v2-docs.test.js scripts/public-docs.test.js scripts/workflows.test.js
+git add docs/security/routing-and-access.md docs/architecture/publishing-and-runtime.md docs/architecture/data-model.md docs/operations/resources-and-deployment.md docs/operations/observability-and-rollout.md docs/architecture/xd-cell-console.md docs/api-boundary.md apps/pages-cli/src/commands/shared.js apps/pages-cli/README.md apps/pages-api/src/public-docs.js pages-deploy.skill.md .github/workflows/deploy-pages-v2.yml .github/workflows/deploy-pages-v2-staging.yml scripts/pages-v2-docs.test.js scripts/public-docs.test.js scripts/workflows.test.js
 git commit -m "docs: 同步公网 exposure 行为与发布顺序"
 ```
 
