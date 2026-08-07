@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildRouteSnapshot, RoutePointerDO, writeRouteSnapshot } from './route-snapshot.js';
+import {
+  buildRouteSnapshot,
+  readRouteSnapshotState,
+  repairRouteSnapshot,
+  RoutePointerDO,
+  writeRouteSnapshot,
+} from './route-snapshot.js';
 
 test('builds immutable route snapshot from authority records', () => {
   const snapshot = buildRouteSnapshot({
@@ -32,7 +38,7 @@ test('builds immutable route snapshot from authority records', () => {
   });
 
   assert.deepEqual(snapshot, {
-    schemaVersion: 2,
+    schemaVersion: 3,
     routeId: 'route_1',
     hostname: 'docs.pages.xd.team',
     environment: 'production',
@@ -58,6 +64,8 @@ test('builds immutable route snapshot from authority records', () => {
     deploymentShape: 'worker-only',
     resolvedFallback: null,
     routingMode: 'worker-only',
+    exposure: 'internal',
+    accessMode: 'org',
     visibility: 'org',
     policyVersion: 1,
     routeGeneration: 2,
@@ -97,6 +105,110 @@ test('team-owned route snapshots do not publish the creator as owner', () => {
   });
 
   assert.equal(snapshot.ownerUserId, null);
+});
+
+test('unknown legacy visibility cannot produce a route snapshot', () => {
+  assert.throws(
+    () =>
+      buildRouteSnapshot({
+        site: { id: 'site_1', slug: 'docs', siteUuid: 'uuid_1' },
+        route: {
+          id: 'route_1',
+          hostname: 'docs.pages.xd.team',
+          environment: 'production',
+          runtime: 'wfp',
+          visibility: 'public',
+          policyVersion: 1,
+          routeGeneration: 2,
+          routeStatus: 'active',
+          cacheTier: 'fast',
+        },
+      }),
+    /SITE_POLICY_INVALID/,
+  );
+});
+
+test('repairs a missing or lower pointer without changing the snapshot policy version', async () => {
+  const writes = new Map();
+  let putCount = 0;
+  const snapshot = buildRouteSnapshot({
+    site: { id: 'site_1', slug: 'docs', siteUuid: 'uuid_1' },
+    route: {
+      id: 'route_1',
+      hostname: 'docs.pages.xd.team',
+      environment: 'production',
+      runtime: 'wfp',
+      workerName: 'pages-v2-docs-ver-1',
+      activeVersionId: 'ver_1',
+      visibility: 'org',
+      policyVersion: 3,
+      routeGeneration: 2,
+      routeStatus: 'active',
+      cacheTier: 'fast',
+    },
+    version: { id: 'ver_1', contentHash: 'sha256:abc', ...workerOnlyDecision() },
+  });
+  const target = {
+    get: async (key) => (writes.has(key) ? JSON.stringify(writes.get(key)) : null),
+    put: async (key, value) => {
+      putCount += 1;
+      writes.set(key, JSON.parse(value));
+    },
+  };
+
+  const repaired = await repairRouteSnapshot(target, snapshot);
+  assert.equal(repaired.pointerConfirmed, true);
+  assert.equal(repaired.repaired, true);
+  assert.equal(repaired.snapshot.policyVersion, 3);
+  assert.equal(putCount, 2);
+
+  const exact = await repairRouteSnapshot(target, snapshot);
+  assert.equal(exact.pointerConfirmed, true);
+  assert.equal(exact.repaired, false);
+  assert.equal(putCount, 2);
+  assert.deepEqual((await readRouteSnapshotState(target, snapshot)).state, 'exact');
+});
+
+test('does not overwrite a pointer that is ahead of the authority snapshot', async () => {
+  const writes = new Map([
+    [
+      'production:route_pointer:docs.pages.xd.team',
+      {
+        hostname: 'docs.pages.xd.team',
+        environment: 'production',
+        routeGeneration: 2,
+        policyVersion: 4,
+        snapshotKey: 'production:route_snapshot:docs.pages.xd.team:2:4',
+      },
+    ],
+  ]);
+  let putCount = 0;
+  const snapshot = buildRouteSnapshot({
+    site: { id: 'site_1', slug: 'docs', siteUuid: 'uuid_1' },
+    route: {
+      id: 'route_1',
+      hostname: 'docs.pages.xd.team',
+      environment: 'production',
+      runtime: 'wfp',
+      visibility: 'org',
+      policyVersion: 3,
+      routeGeneration: 2,
+      routeStatus: 'active',
+      cacheTier: 'fast',
+    },
+  });
+  const result = await repairRouteSnapshot(
+    {
+      get: async (key) => (writes.has(key) ? JSON.stringify(writes.get(key)) : null),
+      put: async () => {
+        putCount += 1;
+      },
+    },
+    snapshot,
+  );
+  assert.equal(result.state, 'ahead');
+  assert.equal(result.pointerConfirmed, false);
+  assert.equal(putCount, 0);
 });
 
 test('writes immutable snapshot and pointer records', async () => {

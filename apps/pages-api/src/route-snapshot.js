@@ -1,6 +1,10 @@
+import { accessModeFromVisibility, normalizeExposure, visibilityFromAccessMode } from '@xd/pages-access-policy';
+
 export function buildRouteSnapshot({ site, route, version, aclEntries = [] }) {
+  const accessMode = accessModeFromVisibility(route.visibility);
+  if (!accessMode) throw new Error('SITE_POLICY_INVALID');
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     routeId: route.id,
     hostname: route.hostname,
     environment: route.environment,
@@ -22,7 +26,9 @@ export function buildRouteSnapshot({ site, route, version, aclEntries = [] }) {
     deploymentShape: version?.deploymentShape || (route.routeStatus === 'active' ? null : 'inactive'),
     resolvedFallback: version?.resolvedFallback || null,
     routingMode: version?.routingMode || null,
-    visibility: route.visibility,
+    exposure: normalizeExposure(route.exposure),
+    accessMode,
+    visibility: visibilityFromAccessMode(accessMode),
     policyVersion: route.policyVersion,
     routeGeneration: route.routeGeneration,
     routeStatus: route.routeStatus,
@@ -77,6 +83,78 @@ export async function writeRouteSnapshotUnlocked(routeSnapshots, snapshot) {
   await routeSnapshots.put(snapshotKey, JSON.stringify(snapshot));
   await routeSnapshots.put(routePointerKey(snapshot.environment, snapshot.hostname), JSON.stringify(pointer));
   return { snapshotKey, pointer };
+}
+
+export async function readRouteSnapshotState(target, snapshot) {
+  const routeSnapshots = target?.ROUTE_SNAPSHOTS || target;
+  if (!routeSnapshots || typeof routeSnapshots.get !== 'function') {
+    throw new Error('Route snapshot store is required');
+  }
+  const pointerKey = routePointerKey(snapshot.environment, snapshot.hostname);
+  const expectedKey = routeSnapshotKey(snapshot.environment, snapshot.hostname, snapshot.routeGeneration, snapshot.policyVersion);
+  const rawPointer = await routeSnapshots.get(pointerKey);
+  if (!rawPointer) return { state: 'missing', pointer: null, snapshot: null, snapshotKey: expectedKey };
+
+  let pointer;
+  try {
+    pointer = parseSnapshotValue(rawPointer);
+  } catch {
+    return { state: 'invalid', pointer: null, snapshot: null, snapshotKey: expectedKey };
+  }
+  if (
+    pointer?.environment !== snapshot.environment ||
+    pointer?.hostname !== snapshot.hostname ||
+    !Number.isInteger(pointer?.routeGeneration) ||
+    !Number.isInteger(pointer?.policyVersion) ||
+    typeof pointer?.snapshotKey !== 'string'
+  ) {
+    return { state: 'invalid', pointer, snapshot: null, snapshotKey: expectedKey };
+  }
+  if (
+    pointer.routeGeneration > snapshot.routeGeneration ||
+    (pointer.routeGeneration === snapshot.routeGeneration && pointer.policyVersion > snapshot.policyVersion)
+  ) {
+    return { state: 'ahead', pointer, snapshot: null, snapshotKey: expectedKey };
+  }
+
+  const rawSnapshot = await routeSnapshots.get(pointer.snapshotKey);
+  let currentSnapshot = null;
+  if (rawSnapshot) {
+    try {
+      currentSnapshot = parseSnapshotValue(rawSnapshot);
+    } catch {
+      return { state: 'invalid', pointer, snapshot: null, snapshotKey: expectedKey };
+    }
+  }
+  const exactPointer =
+    pointer.routeGeneration === snapshot.routeGeneration &&
+    pointer.policyVersion === snapshot.policyVersion &&
+    pointer.snapshotKey === expectedKey;
+  const exactSnapshot = currentSnapshot && snapshotTupleMatches(currentSnapshot, snapshot);
+  if (exactPointer && exactSnapshot) {
+    return { state: 'exact', pointer, snapshot: currentSnapshot, snapshotKey: expectedKey };
+  }
+  return {
+    state: pointer.routeGeneration < snapshot.routeGeneration || pointer.policyVersion < snapshot.policyVersion ? 'lower' : 'missing',
+    pointer,
+    snapshot: currentSnapshot,
+    snapshotKey: expectedKey,
+  };
+}
+
+export async function repairRouteSnapshot(target, snapshot) {
+  const before = await readRouteSnapshotState(target, snapshot);
+  if (before.state === 'invalid') throw new Error('ROUTE_POINTER_INVALID');
+  if (before.state === 'ahead') return { ...before, repaired: false, pointerConfirmed: false };
+  if (before.state === 'exact') return { ...before, repaired: false, pointerConfirmed: true };
+
+  await writeRouteSnapshot(target, snapshot);
+  const after = await readRouteSnapshotState(target, snapshot);
+  return {
+    ...after,
+    repaired: true,
+    pointerConfirmed: after.state === 'exact',
+  };
 }
 
 async function writeRouteSnapshotThroughLock(routePointerLocks, snapshot) {
@@ -171,6 +249,21 @@ async function readExistingPointer(routeSnapshots, snapshot) {
 
 function routePointerKeyFromSnapshot(snapshot) {
   return routePointerKey(snapshot.environment, snapshot.hostname);
+}
+
+function parseSnapshotValue(value) {
+  if (typeof value === 'object') return value;
+  return JSON.parse(value);
+}
+
+function snapshotTupleMatches(actual, expected) {
+  return (
+    actual?.environment === expected.environment &&
+    actual?.hostname === expected.hostname &&
+    actual?.routeGeneration === expected.routeGeneration &&
+    actual?.policyVersion === expected.policyVersion &&
+    actual?.schemaVersion === expected.schemaVersion
+  );
 }
 
 function assertSnapshotEnvironment(environment) {
