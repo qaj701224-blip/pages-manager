@@ -4476,13 +4476,28 @@ export class D1PagesStore {
       visibility,
       requiredArtifactAvailability = null,
       updatedAt,
+      lease = null,
     },
     environment,
     expectedRoute = null
   ) {
-    const expectedConditions = expectedRoute
-      ? ' AND route_generation = ? AND policy_version = ? AND runtime_config_generation = ? AND active_version_id IS ?'
-      : '';
+    const leaseValue = lease ? normalizeSitePolicyLease(lease) : null;
+    if (leaseValue) await this.assertSitePolicyLease(environment, siteId, leaseValue, this.now());
+    const expectedConditions = [];
+    if (expectedRoute) {
+      expectedConditions.push(
+        ' AND route_generation = ? AND policy_version = ? AND runtime_config_generation = ? AND active_version_id IS ?'
+      );
+      if (Object.hasOwn(expectedRoute, 'exposure')) expectedConditions.push(' AND exposure = ?');
+    }
+    if (leaseValue) {
+      expectedConditions.push(
+        ` AND EXISTS (
+          SELECT 1 FROM site_policy_locks
+          WHERE environment = ? AND site_id = ? AND lock_id = ? AND fencing_token = ? AND expires_at > ?
+        )`
+      );
+    }
     const artifactAvailabilityCondition = requiredArtifactAvailability
       ? ` AND EXISTS (
           SELECT 1 FROM site_versions
@@ -4496,12 +4511,54 @@ export class D1PagesStore {
         ? [
             expectedRoute.routeGeneration,
             expectedRoute.policyVersion,
-            expectedRoute.runtimeConfigGeneration || 0,
-            expectedRoute.activeVersionId,
-          ]
+          expectedRoute.runtimeConfigGeneration || 0,
+          expectedRoute.activeVersionId,
+          ...(Object.hasOwn(expectedRoute, 'exposure') ? [normalizeExposure(expectedRoute.exposure)] : []),
+        ]
+        : []),
+      ...(leaseValue
+        ? [environment, siteId, leaseValue.lockId, leaseValue.fencingToken, this.now()]
         : []),
       ...(requiredArtifactAvailability ? [activeVersionId, requiredArtifactAvailability] : []),
     ];
+    const routeExpected = Boolean(expectedRoute || requiredArtifactAvailability || leaseValue);
+    const whereSuffix = [
+      environment ? ' AND environment = ?' : '',
+      expectedConditions.join(''),
+      artifactAvailabilityCondition,
+    ].join('');
+    const bindValues = environment
+      ? [
+          activeVersionId,
+          workerName,
+          runtime,
+          executionProvider,
+          dispatchType,
+          dispatchBindingName,
+          slotId,
+          visibility,
+          accessModeFromVisibility(visibility),
+          cacheTierForVisibility(visibility),
+          updatedAt,
+          siteId,
+          environment,
+          ...conditionBinds,
+        ]
+      : [
+          activeVersionId,
+          workerName,
+          runtime,
+          executionProvider,
+          dispatchType,
+          dispatchBindingName,
+          slotId,
+          visibility,
+          accessModeFromVisibility(visibility),
+          cacheTierForVisibility(visibility),
+          updatedAt,
+          siteId,
+          ...conditionBinds,
+        ];
     const result = await this.db
       .prepare(
         `UPDATE site_routes
@@ -4509,44 +4566,11 @@ export class D1PagesStore {
           execution_provider = ?, dispatch_type = ?, dispatch_binding_name = ?, slot_id = ?,
           visibility = ?, access_mode = ?, cache_tier = ?, route_status = 'active', route_generation = route_generation + 1,
           updated_at = ?
-        WHERE site_id = ?${environment ? ' AND environment = ?' : ''}${expectedConditions}${artifactAvailabilityCondition}`
+        WHERE site_id = ?${whereSuffix}`
       )
-      .bind(
-        ...(environment
-          ? [
-              activeVersionId,
-              workerName,
-              runtime,
-              executionProvider,
-              dispatchType,
-              dispatchBindingName,
-              slotId,
-              visibility,
-              accessModeFromVisibility(visibility),
-              cacheTierForVisibility(visibility),
-              updatedAt,
-              siteId,
-              environment,
-              ...conditionBinds,
-            ]
-          : [
-              activeVersionId,
-              workerName,
-              runtime,
-              executionProvider,
-              dispatchType,
-              dispatchBindingName,
-              slotId,
-              visibility,
-              accessModeFromVisibility(visibility),
-              cacheTierForVisibility(visibility),
-              updatedAt,
-              siteId,
-              ...conditionBinds,
-            ])
-      )
+      .bind(...bindValues)
       .run();
-    if ((expectedRoute || requiredArtifactAvailability) && result?.meta?.changes === 0) return null;
+    if (routeExpected && result?.meta?.changes === 0) return null;
     return this.getRouteBySiteId(siteId, environment);
   }
 

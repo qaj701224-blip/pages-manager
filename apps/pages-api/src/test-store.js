@@ -2322,6 +2322,7 @@ class TestPagesStore {
       visibility,
       requiredArtifactAvailability = null,
       updatedAt,
+      lease = null,
     },
     environment,
     expectedRoute = null
@@ -2331,6 +2332,7 @@ class TestPagesStore {
     if (!route) return null;
     if (environment && route.environment !== environment) return null;
     if (expectedRoute && !routeActivationMatches(route, expectedRoute)) return null;
+    if (lease) this.assertSitePolicyLease(environment, siteId, lease, this.now());
     if (requiredArtifactAvailability) {
       const version = this.siteVersions.get(activeVersionId);
       if (!version || version.siteId !== siteId || version.artifactAvailability !== requiredArtifactAvailability) return null;
@@ -3384,6 +3386,7 @@ function routeActivationMatches(actual, expected) {
     actual.activeVersionId === expected.activeVersionId &&
     actual.routeGeneration === expected.routeGeneration &&
     actual.policyVersion === expected.policyVersion &&
+    (!Object.hasOwn(expected, 'exposure') || normalizeExposure(actual.exposure) === normalizeExposure(expected.exposure)) &&
     (actual.runtimeConfigGeneration || 0) === (expected.runtimeConfigGeneration || 0)
   );
 }

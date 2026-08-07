@@ -376,10 +376,19 @@ test('successful production redeploy does not queue cleanup for staging-prefixed
   const store = await createSeededStore();
   const env = testEnv(store, createSnapshotStore());
 
+  await assertDeployOk(
+    await worker.fetch(
+      deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+        'Idempotency-Key': 'staging_prefix_seed',
+      }),
+      env
+    )
+  );
+
   await store.activateSiteVersion(
     'site_1',
     {
-      activeVersionId: 'ver_staging_prefix',
+      activeVersionId: 'ver_1',
       workerName: 'pages-v2-staging-guide-ver-old',
       runtime: 'worker',
       executionProvider: 'wfp',
@@ -390,6 +399,7 @@ test('successful production redeploy does not queue cleanup for staging-prefixed
     'production',
     await store.getRouteBySiteId('site_1', 'production')
   );
+  await writeCurrentRouteSnapshot(store, env.ROUTE_SNAPSHOTS);
 
   await assertDeployOk(
     await worker.fetch(
@@ -3149,6 +3159,9 @@ test('WFP worker deployment binds office VPC network when tunnel id is configure
     PAGES_USER_WORKER_VPC_TUNNEL_ID: 'test-office-tunnel-id',
     fetch: async (request) => {
       requests.push(request);
+      if (request.method === 'GET' && request.url.endsWith('/settings')) {
+        return Response.json({ success: true, result: { bindings: [] } });
+      }
       return Response.json({ success: true, result: { id: 'ok' } });
     },
   });
@@ -3169,6 +3182,332 @@ test('WFP worker deployment binds office VPC network when tunnel id is configure
     { type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'pages-kv-gateway' },
     { type: 'vpc_network', name: 'XD_OFFICE_NET', tunnel_id: 'test-office-tunnel-id' },
   ]);
+});
+
+test('WFP public worker deployment does not bind office VPC network', async () => {
+  const store = await createSeededStore();
+  const lease = await store.acquireSiteCommitLock('production', 'site_1', { lockId: 'public_deploy_lock' });
+  const currentRoute = await store.getRouteBySiteId('site_1', 'production');
+  await store.updateSiteAccessPolicy({
+    environment: 'production',
+    siteId: 'site_1',
+    exposure: 'public',
+    expected: {
+      policyVersion: currentRoute.policyVersion,
+      routeGeneration: currentRoute.routeGeneration,
+      activeVersionId: currentRoute.activeVersionId,
+      runtimeConfigGeneration: currentRoute.runtimeConfigGeneration,
+    },
+    lease,
+  });
+  await store.releaseSiteCommitLock('production', 'site_1', lease.lockId);
+
+  const requests = [];
+  const env = testEnv(store, createSnapshotStore(), {
+    WFP_PROVIDER: undefined,
+    CF_ACCOUNT_ID: 'account_1',
+    CF_API_TOKEN: 'cf_secret_token',
+    WFP_DISPATCH_NAMESPACE: 'xd-cell-workers-production',
+    PAGES_USER_WORKER_VPC_TUNNEL_ID: 'test-office-tunnel-id',
+    fetch: async (request) => {
+      requests.push(request);
+      if (request.method === 'GET' && request.url.endsWith('/settings')) {
+        return Response.json({ success: true, result: { bindings: [] } });
+      }
+      return Response.json({ success: true, result: { id: 'ok' } });
+    },
+  });
+
+  const response = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload(),
+      { 'Idempotency-Key': 'wfp_public_no_office_net' }
+    ),
+    env
+  );
+
+  assert.equal(response.status, 201, await response.clone().text());
+  const uploadRequest = requests.find((request) => request.method === 'PUT');
+  const metadata = JSON.parse(await (await uploadRequest.formData()).get('metadata').text());
+  assert.deepEqual(metadata.bindings, [
+    { type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'pages-kv-gateway' },
+  ]);
+});
+
+test('WFP public activation fails closed when OfficeNet cannot be verified absent', async () => {
+  const store = await createSeededStore();
+  const lease = await store.acquireSiteCommitLock('production', 'site_1', { lockId: 'public_verify_lock' });
+  const currentRoute = await store.getRouteBySiteId('site_1', 'production');
+  await store.updateSiteAccessPolicy({
+    environment: 'production',
+    siteId: 'site_1',
+    exposure: 'public',
+    expected: {
+      policyVersion: currentRoute.policyVersion,
+      routeGeneration: currentRoute.routeGeneration,
+      activeVersionId: currentRoute.activeVersionId,
+      runtimeConfigGeneration: currentRoute.runtimeConfigGeneration,
+    },
+    lease,
+  });
+  await store.releaseSiteCommitLock('production', 'site_1', lease.lockId);
+
+  const events = [];
+  const snapshots = createSnapshotStore();
+  const env = testEnv(store, snapshots, {
+    WFP_PROVIDER: {
+      upload: async ({ workerName }) => ({ artifactRef: `wfp://test/${workerName}` }),
+      verify: async () => ({ ok: true }),
+      removeOfficeNetBinding: async ({ workerName }) => {
+        events.push(['remove', workerName]);
+        return { removed: true };
+      },
+      verifyOfficeNetAbsent: async ({ workerName }) => {
+        events.push(['verify', workerName]);
+        return false;
+      },
+    },
+  });
+
+  const response = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload(),
+      { 'Idempotency-Key': 'wfp_public_verify_failed' }
+    ),
+    env
+  );
+
+  assert.equal(response.status, 503, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.error.code, 'SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED');
+  assert.deepEqual(events.map(([kind]) => kind), ['remove', 'verify']);
+  assert.equal((await store.getRouteBySiteId('site_1', 'production')).activeVersionId, null);
+  assert.equal(snapshots.read('production:route_pointer:guide.pages.xd.team') ?? null, null);
+});
+
+test('WFP public rollback removes and verifies OfficeNet before route cutover', async () => {
+  const store = await createSeededStore();
+  const snapshots = createSnapshotStore();
+  const initialEnv = testEnv(store, snapshots);
+  await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload(),
+      { 'Idempotency-Key': 'public_rollback_deploy_1' }
+    ),
+    initialEnv
+  );
+  await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ moduleContent: 'export default { fetch() { return new Response("v2"); } };' }),
+      { 'Idempotency-Key': 'public_rollback_deploy_2' }
+    ),
+    initialEnv
+  );
+  const lease = await store.acquireSiteCommitLock('production', 'site_1', { lockId: 'public_rollback_policy' });
+  const currentRoute = await store.getRouteBySiteId('site_1', 'production');
+  await store.updateSiteAccessPolicy({
+    environment: 'production',
+    siteId: 'site_1',
+    exposure: 'public',
+    expected: {
+      policyVersion: currentRoute.policyVersion,
+      routeGeneration: currentRoute.routeGeneration,
+      activeVersionId: currentRoute.activeVersionId,
+      runtimeConfigGeneration: currentRoute.runtimeConfigGeneration,
+    },
+    lease,
+  });
+  await store.releaseSiteCommitLock('production', 'site_1', lease.lockId);
+  await writeCurrentRouteSnapshot(store, snapshots);
+
+  const events = [];
+  const env = testEnv(store, snapshots, {
+    WFP_PROVIDER: {
+      removeOfficeNetBinding: async ({ workerName }) => events.push(['remove', workerName]),
+      verifyOfficeNetAbsent: async ({ workerName }) => {
+        events.push(['verify', workerName]);
+        return true;
+      },
+    },
+  });
+  const rollback = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback', {}, { 'Idempotency-Key': 'public_rollback_1' }),
+    env
+  );
+
+  assert.equal(rollback.status, 201, await rollback.clone().text());
+  assert.deepEqual(events, [
+    ['remove', 'pages-v2-guide-ver-1'],
+    ['verify', 'pages-v2-guide-ver-1'],
+    ['remove', 'pages-v2-guide-ver-2'],
+    ['verify', 'pages-v2-guide-ver-2'],
+  ]);
+  const route = await store.getRouteBySiteId('site_1', 'production');
+  assert.equal(route.activeVersionId, 'ver_1');
+  assert.equal(route.exposure, 'public');
+});
+
+test('WFP public rollback fails before cutover when the current Worker OfficeNet state is unsafe', async () => {
+  const store = await createSeededStore();
+  const snapshots = createSnapshotStore();
+  const env = testEnv(store, snapshots);
+  await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'public_rollback_guard_deploy_1',
+    }),
+    env
+  );
+  await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ moduleContent: 'export default { fetch() { return new Response("v2"); } };' }),
+      { 'Idempotency-Key': 'public_rollback_guard_deploy_2' }
+    ),
+    env
+  );
+  const lease = await store.acquireSiteCommitLock('production', 'site_1', { lockId: 'public_rollback_guard_policy' });
+  const currentRoute = await store.getRouteBySiteId('site_1', 'production');
+  await store.updateSiteAccessPolicy({
+    environment: 'production',
+    siteId: 'site_1',
+    exposure: 'public',
+    expected: {
+      policyVersion: currentRoute.policyVersion,
+      routeGeneration: currentRoute.routeGeneration,
+      activeVersionId: currentRoute.activeVersionId,
+      runtimeConfigGeneration: currentRoute.runtimeConfigGeneration,
+    },
+    lease,
+  });
+  await store.releaseSiteCommitLock('production', 'site_1', lease.lockId);
+  await writeCurrentRouteSnapshot(store, snapshots);
+
+  env.WFP_PROVIDER = {
+    removeOfficeNetBinding: async () => ({ removed: true }),
+    verifyOfficeNetAbsent: async ({ workerName }) => workerName !== 'pages-v2-guide-ver-2',
+  };
+  const rollback = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback', {}, {
+      'Idempotency-Key': 'public_rollback_guard_failed',
+    }),
+    env
+  );
+
+  assert.equal(rollback.status, 503, await rollback.clone().text());
+  assert.equal((await rollback.json()).error.code, 'SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED');
+  assert.equal((await store.getRouteBySiteId('site_1', 'production')).activeVersionId, 'ver_2');
+  const failed = await store.getDeployment('dep_3', 'production');
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.failureStage, 'rollback_public_office_net');
+});
+
+test('rollback records a terminal failure and releases its lease when the route disappears after locking', async () => {
+  const store = await createSeededStore();
+  const env = testEnv(store, createSnapshotStore());
+  await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'rollback_route_missing_deploy_1',
+    }),
+    env
+  );
+  await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ moduleContent: 'export default { fetch() { return new Response("v2"); } };' }),
+      { 'Idempotency-Key': 'rollback_route_missing_deploy_2' }
+    ),
+    env
+  );
+
+  const originalAcquire = store.acquireSiteCommitLock.bind(store);
+  const originalGetRoute = store.getRouteBySiteId.bind(store);
+  let hideNextRoute = false;
+  store.acquireSiteCommitLock = async (...args) => {
+    const lease = await originalAcquire(...args);
+    hideNextRoute = Boolean(lease);
+    return lease;
+  };
+  store.getRouteBySiteId = async (...args) => {
+    if (hideNextRoute) {
+      hideNextRoute = false;
+      return null;
+    }
+    return originalGetRoute(...args);
+  };
+
+  const rollback = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback', {}, {
+      'Idempotency-Key': 'rollback_route_missing',
+    }),
+    env
+  );
+
+  assert.equal(rollback.status, 409, await rollback.clone().text());
+  assert.equal((await rollback.json()).error.code, 'ROUTE_ACTIVATION_CONFLICT');
+  const failed = await store.getDeployment('dep_3', 'production');
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.errorCode, 'ROUTE_ACTIVATION_CONFLICT');
+  assert.ok(await originalAcquire('production', 'site_1', { lockId: 'rollback_route_missing_retry' }));
+});
+
+test('deployment rejects exposure drift between upload and activation', async () => {
+  const store = await createSeededStore();
+  const policyLease = await store.acquireSiteCommitLock('production', 'site_1', { lockId: 'deploy_exposure_initial' });
+  const initialRoute = await store.getRouteBySiteId('site_1', 'production');
+  await store.updateSiteAccessPolicy({
+    environment: 'production',
+    siteId: 'site_1',
+    exposure: 'public',
+    expected: {
+      policyVersion: initialRoute.policyVersion,
+      routeGeneration: initialRoute.routeGeneration,
+      activeVersionId: initialRoute.activeVersionId,
+      runtimeConfigGeneration: initialRoute.runtimeConfigGeneration,
+    },
+    lease: policyLease,
+  });
+  await store.releaseSiteCommitLock('production', 'site_1', policyLease.lockId);
+
+  const env = testEnv(store, createSnapshotStore(), {
+    WFP_PROVIDER: {
+      upload: async ({ workerName }) => {
+        const lease = await store.acquireSiteCommitLock('production', 'site_1', { lockId: 'deploy_exposure_drift' });
+        const route = await store.getRouteBySiteId('site_1', 'production');
+        await store.updateSiteAccessPolicy({
+          environment: 'production',
+          siteId: 'site_1',
+          exposure: 'internal',
+          expected: {
+            policyVersion: route.policyVersion,
+            routeGeneration: route.routeGeneration,
+            activeVersionId: route.activeVersionId,
+            runtimeConfigGeneration: route.runtimeConfigGeneration,
+          },
+          lease,
+        });
+        await store.releaseSiteCommitLock('production', 'site_1', lease.lockId);
+        return { artifactRef: `wfp://test/${workerName}` };
+      },
+      verify: async () => ({ ok: true }),
+      delete: async () => null,
+    },
+  });
+  const response = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'deploy_exposure_drift',
+    }),
+    env
+  );
+
+  assert.equal(response.status, 409, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'ROUTE_ACTIVATION_CONFLICT');
+  const route = await store.getRouteBySiteId('site_1', 'production');
+  assert.equal(route.activeVersionId, null);
+  assert.equal(route.exposure, 'internal');
 });
 
 test('WFP worker-with-assets deployment binds office VPC network when tunnel id is configured', async () => {
@@ -4461,6 +4800,8 @@ test('marks deployment failed when route snapshot write fails and replays failed
     slotId: null,
     activeVersionId: null,
     visibility: 'org',
+    exposure: 'internal',
+    accessMode: 'org',
     policyVersion: 1,
     routeGeneration: 2,
     runtimeConfigGeneration: 0,
@@ -5310,6 +5651,154 @@ test('keeps previous active route when rollback snapshot write fails', async () 
   assert.equal(route.workerName, 'pages-v2-guide-ver-2');
   assert.equal(route.routeGeneration, 4);
   assert.equal(route.routeStatus, 'active');
+});
+
+test('public rollback snapshot failure re-verifies the restored active Worker OfficeNet state', async () => {
+  const store = await createSeededStore();
+  const snapshots = createSnapshotStore();
+  const env = testEnv(store, snapshots);
+
+  await assertDeployOk(
+    await worker.fetch(
+      deploymentRequest(
+        'https://api.pages.xd.team/.xd-pages/api/deployments',
+        deployPayload(),
+        { 'Idempotency-Key': 'public_restore_office_net_deploy_1' }
+      ),
+      env
+    )
+  );
+  await assertDeployOk(
+    await worker.fetch(
+      deploymentRequest(
+        'https://api.pages.xd.team/.xd-pages/api/deployments',
+        deployPayload({ moduleContent: 'export default { fetch() { return new Response("v2"); } };' }),
+        { 'Idempotency-Key': 'public_restore_office_net_deploy_2' }
+      ),
+      env
+    )
+  );
+
+  const lease = await store.acquireSiteCommitLock('production', 'site_1', { lockId: 'public_restore_office_net_policy' });
+  const currentRoute = await store.getRouteBySiteId('site_1', 'production');
+  await store.updateSiteAccessPolicy({
+    environment: 'production',
+    siteId: 'site_1',
+    exposure: 'public',
+    expected: {
+      policyVersion: currentRoute.policyVersion,
+      routeGeneration: currentRoute.routeGeneration,
+      activeVersionId: currentRoute.activeVersionId,
+      runtimeConfigGeneration: currentRoute.runtimeConfigGeneration,
+    },
+    lease,
+  });
+  await store.releaseSiteCommitLock('production', 'site_1', lease.lockId);
+  await writeCurrentRouteSnapshot(store, snapshots);
+
+  const events = [];
+  env.WFP_PROVIDER = {
+    removeOfficeNetBinding: async ({ workerName }) => events.push(['remove', workerName]),
+    verifyOfficeNetAbsent: async ({ workerName }) => {
+      events.push(['verify', workerName]);
+      return true;
+    },
+  };
+  env.ROUTE_SNAPSHOTS = failingSnapshotStore();
+
+  const rollback = await worker.fetch(
+    jsonRequest(
+      'https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback',
+      {},
+      { 'Idempotency-Key': 'public_restore_office_net_rb' }
+    ),
+    env
+  );
+
+  assert.equal(rollback.status, 503, await rollback.clone().text());
+  assert.equal((await rollback.json()).error.code, 'ROUTE_SNAPSHOT_WRITE_FAILED');
+  assert.deepEqual(events, [
+    ['remove', 'pages-v2-guide-ver-1'],
+    ['verify', 'pages-v2-guide-ver-1'],
+    ['remove', 'pages-v2-guide-ver-2'],
+    ['verify', 'pages-v2-guide-ver-2'],
+    ['remove', 'pages-v2-guide-ver-2'],
+    ['verify', 'pages-v2-guide-ver-2'],
+  ]);
+  assert.equal((await store.getRouteBySiteId('site_1', 'production')).activeVersionId, 'ver_2');
+});
+
+test('public rollback snapshot failure disables the restored route when OfficeNet cannot be verified', async () => {
+  const store = await createSeededStore();
+  const snapshots = createSnapshotStore();
+  const env = testEnv(store, snapshots);
+
+  await assertDeployOk(
+    await worker.fetch(
+      deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+        'Idempotency-Key': 'public_restore_office_net_unsafe_deploy_1',
+      }),
+      env
+    )
+  );
+  await assertDeployOk(
+    await worker.fetch(
+      deploymentRequest(
+        'https://api.pages.xd.team/.xd-pages/api/deployments',
+        deployPayload({ moduleContent: 'export default { fetch() { return new Response("v2"); } };' }),
+        { 'Idempotency-Key': 'public_restore_office_net_unsafe_deploy_2' }
+      ),
+      env
+    )
+  );
+
+  const lease = await store.acquireSiteCommitLock('production', 'site_1', { lockId: 'public_restore_office_net_unsafe_policy' });
+  const currentRoute = await store.getRouteBySiteId('site_1', 'production');
+  await store.updateSiteAccessPolicy({
+    environment: 'production',
+    siteId: 'site_1',
+    exposure: 'public',
+    expected: {
+      policyVersion: currentRoute.policyVersion,
+      routeGeneration: currentRoute.routeGeneration,
+      activeVersionId: currentRoute.activeVersionId,
+      runtimeConfigGeneration: currentRoute.runtimeConfigGeneration,
+    },
+    lease,
+  });
+  await store.releaseSiteCommitLock('production', 'site_1', lease.lockId);
+  await writeCurrentRouteSnapshot(store, snapshots);
+
+  const events = [];
+  env.WFP_PROVIDER = {
+    removeOfficeNetBinding: async ({ workerName }) => events.push(['remove', workerName]),
+    verifyOfficeNetAbsent: async ({ workerName }) => {
+      events.push(['verify', workerName]);
+      return workerName !== 'pages-v2-guide-ver-2' || events.filter(([kind]) => kind === 'verify').length < 3;
+    },
+  };
+  env.ROUTE_SNAPSHOTS = failFirstSnapshotPutAfter(snapshots, async () => {});
+
+  const rollback = await worker.fetch(
+    jsonRequest(
+      'https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback',
+      {},
+      { 'Idempotency-Key': 'public_restore_office_net_unsafe_rb' }
+    ),
+    env
+  );
+
+  assert.equal(rollback.status, 503, await rollback.clone().text());
+  assert.equal((await rollback.json()).error.code, 'SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED');
+  const route = await store.getRouteBySiteId('site_1', 'production');
+  assert.equal(route.activeVersionId, 'ver_2');
+  assert.equal(route.exposure, 'internal');
+  assert.equal(route.visibility, 'disabled');
+  const pointer = snapshots.read('production:route_pointer:guide.pages.xd.team');
+  const snapshot = snapshots.read(pointer.snapshotKey);
+  assert.equal(snapshot.exposure, 'internal');
+  assert.equal(snapshot.accessMode, 'disabled');
+  assert.equal(snapshot.visibility, 'disabled');
 });
 
 test('rollback snapshot failure restores previous route snapshot after a concurrent policy pointer advance', async () => {

@@ -519,6 +519,56 @@ for (const backend of storeBackends) {
     }
   });
 
+  test(`${backend.name} contract: activation fences exposure drift and expired policy leases`, async () => {
+    const fixture = await backend.create();
+    try {
+      await createSite(fixture.store);
+      const lease = await fixture.store.acquireSiteCommitLock('production', 'site_1', {
+        lockId: 'policy_activation_lock',
+      });
+      const initialRoute = await fixture.store.getRouteBySiteId('site_1', 'production');
+      const expected = {
+        activeVersionId: initialRoute.activeVersionId,
+        policyVersion: initialRoute.policyVersion,
+        routeGeneration: initialRoute.routeGeneration,
+        runtimeConfigGeneration: initialRoute.runtimeConfigGeneration,
+        exposure: initialRoute.exposure,
+      };
+
+      assert.equal(
+        await fixture.store.activateSiteVersion(
+          'site_1',
+          { activeVersionId: 'ver_1', workerName: 'worker_1', visibility: 'org', updatedAt: NOW, lease },
+          'production',
+          { ...expected, exposure: 'public' },
+        ),
+        null,
+      );
+
+      const activated = await fixture.store.activateSiteVersion(
+        'site_1',
+        { activeVersionId: 'ver_1', workerName: 'worker_1', visibility: 'org', updatedAt: NOW, lease },
+        'production',
+        expected,
+      );
+      assert.equal(activated.activeVersionId, 'ver_1');
+
+      await fixture.store.releaseSiteCommitLock('production', 'site_1', lease.lockId);
+      await assert.rejects(
+        () =>
+          fixture.store.activateSiteVersion(
+            'site_1',
+            { activeVersionId: 'ver_2', workerName: 'worker_2', visibility: 'org', updatedAt: NOW, lease },
+            'production',
+            { ...expected, activeVersionId: 'ver_1', routeGeneration: activated.routeGeneration },
+          ),
+        /SITE_POLICY_CONFLICT/,
+      );
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   test(`${backend.name} contract: site commit leases fence stale holders without resetting tokens`, async () => {
     const fixture = await backend.create();
     try {
