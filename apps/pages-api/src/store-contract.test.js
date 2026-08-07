@@ -19,8 +19,36 @@ const storeBackends = [
   {
     name: 'TestPagesStore',
     async create() {
+      const store = createTestPagesStore({ now: () => NOW });
       return {
-        store: createTestPagesStore({ now: () => NOW }),
+        store,
+        async setRawSitePolicy(siteId, { defaultExposure, defaultAccessMode } = {}) {
+          const site = store.sites.get(siteId);
+          if (defaultExposure !== undefined) site.defaultExposure = defaultExposure;
+          if (defaultAccessMode !== undefined) site.defaultAccessMode = defaultAccessMode;
+        },
+        async getRawSitePolicy(siteId) {
+          const site = store.sites.get(siteId);
+          return {
+            defaultVisibility: site.defaultVisibility,
+            defaultExposure: site.defaultExposure,
+            defaultAccessMode: site.defaultAccessMode,
+          };
+        },
+        async setRawRoutePolicy(siteId, { exposure, accessMode, visibility } = {}) {
+          const route = store.routes.get(store.routeBySiteId.get(siteId));
+          if (exposure !== undefined) route.exposure = exposure;
+          if (accessMode !== undefined) route.accessMode = accessMode;
+          if (visibility !== undefined) route.visibility = visibility;
+        },
+        async getRawRoutePolicy(siteId) {
+          const route = store.routes.get(store.routeBySiteId.get(siteId));
+          return {
+            visibility: route.visibility,
+            exposure: route.exposure,
+            accessMode: route.accessMode,
+          };
+        },
         dispose() {},
       };
     },
@@ -35,6 +63,62 @@ const storeBackends = [
           now: () => NOW,
           secretEncryptionKey: 'store-contract-test-encryption-key',
         }),
+        async setRawSitePolicy(siteId, { defaultExposure, defaultAccessMode } = {}) {
+          const updates = [];
+          const values = [];
+          if (defaultExposure !== undefined) {
+            updates.push('default_exposure = ?');
+            values.push(defaultExposure);
+          }
+          if (defaultAccessMode !== undefined) {
+            updates.push('default_access_mode = ?');
+            values.push(defaultAccessMode);
+          }
+          if (updates.length > 0) {
+            await db.prepare(`UPDATE sites SET ${updates.join(', ')} WHERE id = ?`).bind(...values, siteId).run();
+          }
+        },
+        async getRawSitePolicy(siteId) {
+          const row = await db
+            .prepare('SELECT default_visibility, default_exposure, default_access_mode FROM sites WHERE id = ?')
+            .bind(siteId)
+            .first();
+          return {
+            defaultVisibility: row.default_visibility,
+            defaultExposure: row.default_exposure,
+            defaultAccessMode: row.default_access_mode,
+          };
+        },
+        async setRawRoutePolicy(siteId, { exposure, accessMode, visibility } = {}) {
+          const updates = [];
+          const values = [];
+          if (exposure !== undefined) {
+            updates.push('exposure = ?');
+            values.push(exposure);
+          }
+          if (accessMode !== undefined) {
+            updates.push('access_mode = ?');
+            values.push(accessMode);
+          }
+          if (visibility !== undefined) {
+            updates.push('visibility = ?');
+            values.push(visibility);
+          }
+          if (updates.length > 0) {
+            await db.prepare(`UPDATE site_routes SET ${updates.join(', ')} WHERE site_id = ?`).bind(...values, siteId).run();
+          }
+        },
+        async getRawRoutePolicy(siteId) {
+          const row = await db
+            .prepare('SELECT visibility, exposure, access_mode FROM site_routes WHERE site_id = ?')
+            .bind(siteId)
+            .first();
+          return {
+            visibility: row.visibility,
+            exposure: row.exposure,
+            accessMode: row.access_mode,
+          };
+        },
         dispose() {
           db.close();
         },
@@ -240,6 +324,8 @@ for (const backend of storeBackends) {
           ownerId: site.ownerId,
           ownerUserId: site.ownerUserId,
           environment: site.environment,
+          defaultExposure: site.defaultExposure,
+          defaultAccessMode: site.defaultAccessMode,
         },
         {
           id: 'site_1',
@@ -247,6 +333,8 @@ for (const backend of storeBackends) {
           ownerId: 'usr_owner',
           ownerUserId: 'usr_owner',
           environment: 'production',
+          defaultExposure: 'internal',
+          defaultAccessMode: 'org',
         },
       );
       assert.deepEqual(
@@ -260,6 +348,8 @@ for (const backend of storeBackends) {
           hostname: 'docs.pages.xd.team',
           runtime: 'disabled',
           visibility: 'org',
+          exposure: 'internal',
+          accessMode: 'org',
           routeStatus: 'disabled',
           runtimeConfigGeneration: 0,
         },
@@ -303,6 +393,119 @@ for (const backend of storeBackends) {
         hostname: 'docs-staging.pages.xd.team',
       });
       assert.equal(stagingSite.environment, 'staging');
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  test(`${backend.name} contract: legacy visibility writes preserve exposure and dual-write canonical access mode`, async () => {
+    const fixture = await backend.create();
+    try {
+      await createSite(fixture.store);
+      await fixture.setRawSitePolicy('site_1', { defaultExposure: 'public' });
+      await fixture.setRawRoutePolicy('site_1', { exposure: 'public' });
+
+      const visibilityRoute = await fixture.store.updateSiteVisibility(
+        'site_1',
+        { visibility: 'internal', updatedAt: '2026-07-28T00:01:00.000Z' },
+        'production',
+      );
+      assert.deepEqual(
+        {
+          visibility: visibilityRoute.visibility,
+          exposure: visibilityRoute.exposure,
+          accessMode: visibilityRoute.accessMode,
+        },
+        { visibility: 'internal', exposure: 'public', accessMode: 'anonymous' },
+      );
+      assert.deepEqual(await fixture.getRawRoutePolicy('site_1'), {
+        visibility: 'internal',
+        exposure: 'public',
+        accessMode: 'anonymous',
+      });
+      assert.deepEqual(
+        {
+          defaultVisibility: (await fixture.store.getSite('site_1')).defaultVisibility,
+          defaultExposure: (await fixture.store.getSite('site_1')).defaultExposure,
+          defaultAccessMode: (await fixture.store.getSite('site_1')).defaultAccessMode,
+        },
+        { defaultVisibility: 'internal', defaultExposure: 'public', defaultAccessMode: 'anonymous' },
+      );
+      assert.deepEqual(await fixture.getRawSitePolicy('site_1'), {
+        defaultVisibility: 'internal',
+        defaultExposure: 'public',
+        defaultAccessMode: 'anonymous',
+      });
+
+      await fixture.store.transferSiteOwner(
+        'site_1',
+        {
+          ownerType: 'user',
+          ownerId: 'usr_next',
+          ownerUserId: 'usr_next',
+          defaultVisibility: 'owner',
+          updatedAt: '2026-07-28T00:02:00.000Z',
+        },
+        'production',
+      );
+      assert.deepEqual(
+        {
+          defaultVisibility: (await fixture.store.getSite('site_1')).defaultVisibility,
+          defaultExposure: (await fixture.store.getSite('site_1')).defaultExposure,
+          defaultAccessMode: (await fixture.store.getSite('site_1')).defaultAccessMode,
+        },
+        { defaultVisibility: 'owner', defaultExposure: 'public', defaultAccessMode: 'owner' },
+      );
+      assert.deepEqual(await fixture.getRawSitePolicy('site_1'), {
+        defaultVisibility: 'owner',
+        defaultExposure: 'public',
+        defaultAccessMode: 'owner',
+      });
+
+      const activated = await fixture.store.activateSiteVersion(
+        'site_1',
+        {
+          activeVersionId: 'ver_1',
+          workerName: 'pages-v2-docs-ver-1',
+          visibility: 'acl',
+          updatedAt: '2026-07-28T00:03:00.000Z',
+        },
+        'production',
+      );
+      assert.deepEqual(
+        {
+          visibility: activated.visibility,
+          exposure: activated.exposure,
+          accessMode: activated.accessMode,
+          cacheTier: activated.cacheTier,
+        },
+        { visibility: 'acl', exposure: 'public', accessMode: 'acl', cacheTier: 'sensitive' },
+      );
+      assert.deepEqual(await fixture.getRawRoutePolicy('site_1'), {
+        visibility: 'acl',
+        exposure: 'public',
+        accessMode: 'acl',
+      });
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  test(`${backend.name} contract: unknown legacy visibility remains fail closed during compatibility reads`, async () => {
+    const fixture = await backend.create();
+    try {
+      await createSite(fixture.store);
+      await fixture.setRawRoutePolicy('site_1', {
+        exposure: 'public',
+        accessMode: 'org',
+        visibility: 'public',
+      });
+
+      const route = await fixture.store.getRouteBySiteId('site_1', 'production');
+      assert.deepEqual(
+        { visibility: route.visibility, exposure: route.exposure, accessMode: route.accessMode },
+        { visibility: 'public', exposure: 'public', accessMode: null },
+      );
     } finally {
       fixture.dispose();
     }
@@ -690,6 +893,8 @@ function pickRoute(route) {
     hostname: route.hostname,
     runtime: route.runtime,
     visibility: route.visibility,
+    exposure: route.exposure,
+    accessMode: route.accessMode,
     routeStatus: route.routeStatus,
     runtimeConfigGeneration: route.runtimeConfigGeneration,
   };

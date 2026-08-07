@@ -84,6 +84,8 @@ test('createSite creates owner membership and inactive route authority record', 
     slotId: null,
     activeVersionId: null,
     visibility: 'acl',
+    exposure: 'internal',
+    accessMode: 'acl',
     policyVersion: 1,
     routeGeneration: 0,
     runtimeConfigGeneration: 0,
@@ -4909,7 +4911,16 @@ function fakeTransferSiteOwnerDb({ site, members = [] } = {}) {
             },
             run: async () => {
               if (/UPDATE sites\s+SET owner_type = \?/.test(sql)) {
-                const [ownerType, ownerId, ownerUserId, defaultVisibility, updatedAt, siteId, environment] = args;
+                const [
+                  ownerType,
+                  ownerId,
+                  ownerUserId,
+                  defaultVisibility,
+                  defaultAccessMode,
+                  updatedAt,
+                  siteId,
+                  environment,
+                ] = args;
                 if (state.site?.id !== siteId || state.site?.environment !== environment || state.site?.deleted_at) {
                   return { meta: { changes: 0 } };
                 }
@@ -4918,6 +4929,7 @@ function fakeTransferSiteOwnerDb({ site, members = [] } = {}) {
                   owner_id: ownerId,
                   owner_user_id: ownerUserId,
                   default_visibility: defaultVisibility,
+                  default_access_mode: defaultAccessMode,
                   updated_at: updatedAt,
                 });
                 return { meta: { changes: 1 } };
@@ -5052,6 +5064,8 @@ function fakeSiteDeleteRestoreRun(state, sql, args) {
       dispatchBindingName,
       slotId,
       visibility,
+      exposure,
+      accessMode,
       policyVersion,
       routeGeneration,
       runtimeConfigGeneration,
@@ -5074,6 +5088,8 @@ function fakeSiteDeleteRestoreRun(state, sql, args) {
       dispatch_binding_name: dispatchBindingName,
       slot_id: slotId,
       visibility,
+      exposure,
+      access_mode: accessMode,
       policy_version: policyVersion,
       route_generation: routeGeneration,
       runtime_config_generation: runtimeConfigGeneration,

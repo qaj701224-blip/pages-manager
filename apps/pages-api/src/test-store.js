@@ -1,3 +1,5 @@
+import { accessModeFromVisibility, normalizeExposure } from '@xd/pages-access-policy';
+
 import {
   cacheTierForVisibility,
   cloneRecord,
@@ -1178,6 +1180,8 @@ class TestPagesStore {
       ownerId: input.ownerId || input.ownerUserId,
       ownerUserId: input.ownerUserId,
       defaultVisibility: input.defaultVisibility,
+      defaultExposure: 'internal',
+      defaultAccessMode: accessModeFromVisibility(input.defaultVisibility),
       executionModeOverride: input.executionModeOverride || null,
       siteUuid: input.siteUuid,
       createdAt: now,
@@ -1259,6 +1263,8 @@ class TestPagesStore {
       ownerId: input.ownerId || input.ownerUserId,
       ownerUserId: input.ownerUserId,
       defaultVisibility: input.defaultVisibility,
+      defaultExposure: 'internal',
+      defaultAccessMode: accessModeFromVisibility(input.defaultVisibility),
       executionModeOverride: input.executionModeOverride || null,
       siteUuid: input.siteUuid,
       createdAt: now,
@@ -1372,7 +1378,14 @@ class TestPagesStore {
   }
 
   async getSite(id) {
-    return cloneRecord(this.sites.get(id) || null);
+    const site = this.sites.get(id) || null;
+    return site
+      ? cloneRecord({
+          ...site,
+          defaultExposure: normalizeExposure(site.defaultExposure),
+          defaultAccessMode: accessModeFromVisibility(site.defaultVisibility),
+        })
+      : null;
   }
 
   async listSitesForUser(userId, actor = {}, environment) {
@@ -1591,7 +1604,13 @@ class TestPagesStore {
   async getRouteBySiteId(siteId, environment) {
     const route = this.routes.get(this.routeBySiteId.get(siteId)) || null;
     if (environment && route?.environment !== environment) return null;
-    return cloneRecord(route);
+    return route
+      ? cloneRecord({
+          ...route,
+          exposure: normalizeExposure(route.exposure),
+          accessMode: accessModeFromVisibility(route.visibility),
+        })
+      : null;
   }
 
   async updateSiteVisibility(siteId, { visibility, updatedAt }, environment) {
@@ -1601,8 +1620,10 @@ class TestPagesStore {
     if (environment && route.environment !== environment) return null;
 
     site.defaultVisibility = visibility;
+    site.defaultAccessMode = accessModeFromVisibility(visibility);
     site.updatedAt = updatedAt || this.now();
     route.visibility = visibility;
+    route.accessMode = accessModeFromVisibility(visibility);
     route.policyVersion += 1;
     route.cacheTier = cacheTierForVisibility(visibility);
     route.updatedAt = updatedAt || this.now();
@@ -1656,7 +1677,10 @@ class TestPagesStore {
     site.ownerType = ownerType || 'user';
     site.ownerId = ownerId;
     site.ownerUserId = ownerUserId;
-    if (defaultVisibility) site.defaultVisibility = defaultVisibility;
+    if (defaultVisibility) {
+      site.defaultVisibility = defaultVisibility;
+      site.defaultAccessMode = accessModeFromVisibility(defaultVisibility);
+    }
     site.updatedAt = now;
 
     if (site.ownerType === 'user') {
@@ -1686,8 +1710,11 @@ class TestPagesStore {
     if (expectedRoute && !routesMatchIgnoringRuntimeConfigGeneration(route, expectedRoute)) return cloneRecord(route);
 
     site.defaultVisibility = previousSite.defaultVisibility;
+    site.defaultAccessMode = accessModeFromVisibility(previousSite.defaultVisibility);
     site.updatedAt = previousSite.updatedAt;
     Object.assign(route, routeWithLatestRuntimeConfig(cloneRecord(previousRoute), route));
+    route.exposure = normalizeExposure(route.exposure);
+    route.accessMode = accessModeFromVisibility(route.visibility);
     return cloneRecord(route);
   }
 
@@ -2133,6 +2160,8 @@ class TestPagesStore {
     route.activeVersionId = activeVersionId;
     route.workerName = workerName;
     route.visibility = visibility;
+    route.accessMode = accessModeFromVisibility(visibility);
+    route.cacheTier = cacheTierForVisibility(visibility);
     route.runtime = runtime;
     route.executionProvider = executionProvider;
     route.dispatchType = dispatchType;
@@ -2150,6 +2179,8 @@ class TestPagesStore {
     if (!route || !previousRoute) return null;
     if (environment && route.environment !== environment) return null;
     Object.assign(route, cloneRecord(previousRoute));
+    route.exposure = normalizeExposure(route.exposure);
+    route.accessMode = accessModeFromVisibility(route.visibility);
     return cloneRecord(route);
   }
 
@@ -2553,8 +2584,16 @@ class TestPagesStore {
     const version = route?.activeVersionId ? this.siteVersions.get(route.activeVersionId) : null;
     return {
       ...site,
+      defaultExposure: normalizeExposure(site.defaultExposure),
+      defaultAccessMode: accessModeFromVisibility(site.defaultVisibility),
       deploymentShape: version?.siteId === site.id ? (version.deploymentShape ?? null) : null,
-      route,
+      route: route
+        ? {
+            ...route,
+            exposure: normalizeExposure(route.exposure),
+            accessMode: accessModeFromVisibility(route.visibility),
+          }
+        : null,
     };
   }
 
@@ -3008,6 +3047,8 @@ function routeRestoredAsNewCommit(previousRoute, currentRoute) {
   return {
     ...previousRoute,
     visibility: currentRoute.visibility,
+    exposure: normalizeExposure(currentRoute.exposure),
+    accessMode: accessModeFromVisibility(currentRoute.visibility),
     policyVersion: currentRoute.policyVersion,
     cacheTier: currentRoute.cacheTier,
     routeGeneration: Math.max(previousRoute.routeGeneration || 0, currentRoute.routeGeneration || 0) + 1,

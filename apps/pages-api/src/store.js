@@ -1,3 +1,5 @@
+import { accessModeFromVisibility, normalizeExposure } from '@xd/pages-access-policy';
+
 import { departmentTeamDisplayName, deriveDepartmentTeamIdentity, normalizeDepartmentPath } from './department-path.js';
 import { MAX_RUNTIME_VARS, runtimeVarObjectsEqual, runtimeVarsObject, validateRuntimeBindingQuotas } from './runtime-config.js';
 import { markRuntimeConfigError } from './runtime-config-diagnostics.js';
@@ -1031,7 +1033,8 @@ export class D1PagesStore {
           site_routes.dispatch_binding_name AS route_dispatch_binding_name,
           site_routes.slot_id AS route_slot_id,
           site_routes.active_version_id AS route_active_version_id,
-          site_routes.visibility AS route_visibility, site_routes.policy_version AS route_policy_version,
+          site_routes.visibility AS route_visibility, site_routes.exposure AS route_exposure,
+          site_routes.access_mode AS route_access_mode, site_routes.policy_version AS route_policy_version,
           site_routes.route_generation AS route_route_generation,
           site_routes.runtime_config_generation AS route_runtime_config_generation,
           site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
@@ -1071,7 +1074,8 @@ export class D1PagesStore {
           site_routes.dispatch_binding_name AS route_dispatch_binding_name,
           site_routes.slot_id AS route_slot_id,
           site_routes.active_version_id AS route_active_version_id,
-          site_routes.visibility AS route_visibility, site_routes.policy_version AS route_policy_version,
+          site_routes.visibility AS route_visibility, site_routes.exposure AS route_exposure,
+          site_routes.access_mode AS route_access_mode, site_routes.policy_version AS route_policy_version,
           site_routes.route_generation AS route_route_generation,
           site_routes.runtime_config_generation AS route_runtime_config_generation,
           site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
@@ -1869,6 +1873,8 @@ export class D1PagesStore {
       ownerId: input.ownerId || input.ownerUserId,
       ownerUserId: input.ownerUserId,
       defaultVisibility: input.defaultVisibility,
+      defaultExposure: 'internal',
+      defaultAccessMode: accessModeFromVisibility(input.defaultVisibility),
       executionModeOverride: input.executionModeOverride || null,
       siteUuid: input.siteUuid,
       createdAt: now,
@@ -1994,9 +2000,10 @@ export class D1PagesStore {
         this.db
           .prepare(
             `INSERT INTO sites (
-              id, slug, environment, owner_type, owner_id, owner_user_id, default_visibility, execution_mode_override, site_uuid,
-              created_at, updated_at, deleted_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+              id, slug, environment, owner_type, owner_id, owner_user_id,
+              default_visibility, default_exposure, default_access_mode,
+              execution_mode_override, site_uuid, created_at, updated_at, deleted_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           )
           .bind(
             site.id,
@@ -2006,6 +2013,8 @@ export class D1PagesStore {
             site.ownerId,
             site.ownerUserId,
             site.defaultVisibility,
+            site.defaultExposure,
+            site.defaultAccessMode,
             site.executionModeOverride,
             site.siteUuid,
             site.createdAt,
@@ -2017,10 +2026,10 @@ export class D1PagesStore {
             `INSERT INTO site_routes (
               id, hostname, site_id, environment, runtime, execution_provider, worker_name,
               dispatch_type, dispatch_binding_name, slot_id,
-              active_version_id, visibility, policy_version, route_generation,
+              active_version_id, visibility, exposure, access_mode, policy_version, route_generation,
               runtime_config_generation, runtime_config_lock_id, runtime_config_lock_expires_at,
               route_status, cache_tier, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           )
           .bind(
             route.id,
@@ -2035,6 +2044,8 @@ export class D1PagesStore {
             route.slotId,
             route.activeVersionId,
             route.visibility,
+            route.exposure,
+            route.accessMode,
             route.policyVersion,
             route.routeGeneration,
             route.runtimeConfigGeneration,
@@ -2092,6 +2103,8 @@ export class D1PagesStore {
       ownerId: input.ownerId || input.ownerUserId,
       ownerUserId: input.ownerUserId,
       defaultVisibility: input.defaultVisibility,
+      defaultExposure: 'internal',
+      defaultAccessMode: accessModeFromVisibility(input.defaultVisibility),
       executionModeOverride: input.executionModeOverride || null,
       siteUuid: input.siteUuid,
       createdAt: now,
@@ -2172,9 +2185,10 @@ export class D1PagesStore {
       this.db
         .prepare(
           `INSERT INTO sites (
-            id, slug, environment, owner_type, owner_id, owner_user_id, default_visibility, execution_mode_override, site_uuid,
-            created_at, updated_at, deleted_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            id, slug, environment, owner_type, owner_id, owner_user_id,
+            default_visibility, default_exposure, default_access_mode,
+            execution_mode_override, site_uuid, created_at, updated_at, deleted_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .bind(
           site.id,
@@ -2184,6 +2198,8 @@ export class D1PagesStore {
           site.ownerId,
           site.ownerUserId,
           site.defaultVisibility,
+          site.defaultExposure,
+          site.defaultAccessMode,
           site.executionModeOverride,
           site.siteUuid,
           site.createdAt,
@@ -2195,10 +2211,10 @@ export class D1PagesStore {
           `INSERT INTO site_routes (
             id, hostname, site_id, environment, runtime, execution_provider, worker_name,
             dispatch_type, dispatch_binding_name, slot_id,
-            active_version_id, visibility, policy_version, route_generation,
+            active_version_id, visibility, exposure, access_mode, policy_version, route_generation,
             runtime_config_generation, runtime_config_lock_id, runtime_config_lock_expires_at,
             route_status, cache_tier, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .bind(
           route.id,
@@ -2213,6 +2229,8 @@ export class D1PagesStore {
           route.slotId,
           route.activeVersionId,
           route.visibility,
+          route.exposure,
+          route.accessMode,
           route.policyVersion,
           route.routeGeneration,
           route.runtimeConfigGeneration,
@@ -2482,17 +2500,18 @@ export class D1PagesStore {
     const nextOwnerType = ownerType || 'user';
     const now = updatedAt || this.now();
     const nextDefaultVisibility = defaultVisibility || site.defaultVisibility;
+    const nextDefaultAccessMode = accessModeFromVisibility(nextDefaultVisibility);
     const statements = [
       this.db
         .prepare(
           `UPDATE sites
-          SET owner_type = ?, owner_id = ?, owner_user_id = ?, default_visibility = ?, updated_at = ?
+          SET owner_type = ?, owner_id = ?, owner_user_id = ?, default_visibility = ?, default_access_mode = ?, updated_at = ?
           WHERE id = ?${environment ? ' AND environment = ?' : ''} AND deleted_at IS NULL`
         )
         .bind(
           ...(environment
-            ? [nextOwnerType, ownerId, ownerUserId, nextDefaultVisibility, now, siteId, environment]
-            : [nextOwnerType, ownerId, ownerUserId, nextDefaultVisibility, now, siteId])
+            ? [nextOwnerType, ownerId, ownerUserId, nextDefaultVisibility, nextDefaultAccessMode, now, siteId, environment]
+            : [nextOwnerType, ownerId, ownerUserId, nextDefaultVisibility, nextDefaultAccessMode, now, siteId])
         ),
     ];
 
@@ -2583,7 +2602,8 @@ export class D1PagesStore {
           site_routes.dispatch_binding_name AS route_dispatch_binding_name,
           site_routes.slot_id AS route_slot_id,
           site_routes.active_version_id AS route_active_version_id,
-          site_routes.visibility AS route_visibility, site_routes.policy_version AS route_policy_version,
+          site_routes.visibility AS route_visibility, site_routes.exposure AS route_exposure,
+          site_routes.access_mode AS route_access_mode, site_routes.policy_version AS route_policy_version,
           site_routes.route_generation AS route_route_generation,
           site_routes.runtime_config_generation AS route_runtime_config_generation,
           site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
@@ -2636,7 +2656,8 @@ export class D1PagesStore {
             site_routes.dispatch_binding_name AS route_dispatch_binding_name,
             site_routes.slot_id AS route_slot_id,
             site_routes.active_version_id AS route_active_version_id,
-            site_routes.visibility AS route_visibility, site_routes.policy_version AS route_policy_version,
+            site_routes.visibility AS route_visibility, site_routes.exposure AS route_exposure,
+            site_routes.access_mode AS route_access_mode, site_routes.policy_version AS route_policy_version,
             site_routes.route_generation AS route_route_generation,
             site_routes.runtime_config_generation AS route_runtime_config_generation,
             site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
@@ -2661,7 +2682,8 @@ export class D1PagesStore {
           site_routes.dispatch_binding_name AS route_dispatch_binding_name,
           site_routes.slot_id AS route_slot_id,
           site_routes.active_version_id AS route_active_version_id,
-          site_routes.visibility AS route_visibility, site_routes.policy_version AS route_policy_version,
+          site_routes.visibility AS route_visibility, site_routes.exposure AS route_exposure,
+          site_routes.access_mode AS route_access_mode, site_routes.policy_version AS route_policy_version,
           site_routes.route_generation AS route_route_generation,
           site_routes.runtime_config_generation AS route_runtime_config_generation,
           site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
@@ -2708,7 +2730,8 @@ export class D1PagesStore {
           site_routes.dispatch_binding_name AS route_dispatch_binding_name,
           site_routes.slot_id AS route_slot_id,
           site_routes.active_version_id AS route_active_version_id,
-          site_routes.visibility AS route_visibility, site_routes.policy_version AS route_policy_version,
+          site_routes.visibility AS route_visibility, site_routes.exposure AS route_exposure,
+          site_routes.access_mode AS route_access_mode, site_routes.policy_version AS route_policy_version,
           site_routes.route_generation AS route_route_generation,
           site_routes.runtime_config_generation AS route_runtime_config_generation,
           site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
@@ -2763,7 +2786,8 @@ export class D1PagesStore {
           site_routes.dispatch_binding_name AS route_dispatch_binding_name,
           site_routes.slot_id AS route_slot_id,
           site_routes.active_version_id AS route_active_version_id,
-          site_routes.visibility AS route_visibility, site_routes.policy_version AS route_policy_version,
+          site_routes.visibility AS route_visibility, site_routes.exposure AS route_exposure,
+          site_routes.access_mode AS route_access_mode, site_routes.policy_version AS route_policy_version,
           site_routes.route_generation AS route_route_generation,
           site_routes.runtime_config_generation AS route_runtime_config_generation,
           site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
@@ -2811,7 +2835,8 @@ export class D1PagesStore {
             site_routes.dispatch_binding_name AS route_dispatch_binding_name,
             site_routes.slot_id AS route_slot_id,
             site_routes.active_version_id AS route_active_version_id,
-            site_routes.visibility AS route_visibility, site_routes.policy_version AS route_policy_version,
+            site_routes.visibility AS route_visibility, site_routes.exposure AS route_exposure,
+            site_routes.access_mode AS route_access_mode, site_routes.policy_version AS route_policy_version,
             site_routes.route_generation AS route_route_generation,
             site_routes.runtime_config_generation AS route_runtime_config_generation,
             site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
@@ -2925,7 +2950,8 @@ export class D1PagesStore {
           site_routes.dispatch_binding_name AS route_dispatch_binding_name,
           site_routes.slot_id AS route_slot_id,
           site_routes.active_version_id AS route_active_version_id,
-          site_routes.visibility AS route_visibility, site_routes.policy_version AS route_policy_version,
+          site_routes.visibility AS route_visibility, site_routes.exposure AS route_exposure,
+          site_routes.access_mode AS route_access_mode, site_routes.policy_version AS route_policy_version,
           site_routes.route_generation AS route_route_generation,
           site_routes.runtime_config_generation AS route_runtime_config_generation,
           site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
@@ -3020,20 +3046,26 @@ export class D1PagesStore {
     if (!(await this.getRouteBySiteId(siteId, environment))) return null;
     const now = updatedAt || this.now();
     const cacheTier = cacheTierForVisibility(visibility);
+    const accessMode = accessModeFromVisibility(visibility);
     await this.db.batch([
       this.db
         .prepare(
-          `UPDATE sites SET default_visibility = ?, updated_at = ? WHERE id = ?${environment ? ' AND environment = ?' : ''}`
+          `UPDATE sites SET default_visibility = ?, default_access_mode = ?, updated_at = ?
+          WHERE id = ?${environment ? ' AND environment = ?' : ''}`
         )
-        .bind(...(environment ? [visibility, now, siteId, environment] : [visibility, now, siteId])),
+        .bind(...(environment ? [visibility, accessMode, now, siteId, environment] : [visibility, accessMode, now, siteId])),
       this.db
         .prepare(
           `UPDATE site_routes
-          SET visibility = ?, policy_version = policy_version + 1,
+          SET visibility = ?, access_mode = ?, policy_version = policy_version + 1,
             cache_tier = ?, updated_at = ?
           WHERE site_id = ?${environment ? ' AND environment = ?' : ''}`
         )
-        .bind(...(environment ? [visibility, cacheTier, now, siteId, environment] : [visibility, cacheTier, now, siteId])),
+        .bind(
+          ...(environment
+            ? [visibility, accessMode, cacheTier, now, siteId, environment]
+            : [visibility, accessMode, cacheTier, now, siteId])
+        ),
     ]);
     return this.getRouteBySiteId(siteId, environment);
   }
@@ -3049,11 +3081,25 @@ export class D1PagesStore {
       return currentRoute;
     }
     await this.db
-      .prepare(`UPDATE sites SET default_visibility = ?, updated_at = ? WHERE id = ?${environment ? ' AND environment = ?' : ''}`)
+      .prepare(
+        `UPDATE sites SET default_visibility = ?, default_access_mode = ?, updated_at = ?
+        WHERE id = ?${environment ? ' AND environment = ?' : ''}`
+      )
       .bind(
         ...(environment
-          ? [previousSite.defaultVisibility, previousSite.updatedAt, siteId, environment]
-          : [previousSite.defaultVisibility, previousSite.updatedAt, siteId])
+          ? [
+              previousSite.defaultVisibility,
+              accessModeFromVisibility(previousSite.defaultVisibility),
+              previousSite.updatedAt,
+              siteId,
+              environment,
+            ]
+          : [
+              previousSite.defaultVisibility,
+              accessModeFromVisibility(previousSite.defaultVisibility),
+              previousSite.updatedAt,
+              siteId,
+            ])
       )
       .run();
     return this.restoreSiteRoute(siteId, routeWithLatestRuntimeConfig(previousRoute, currentRoute), environment);
@@ -4200,7 +4246,7 @@ export class D1PagesStore {
         `UPDATE site_routes
         SET active_version_id = ?, worker_name = ?, runtime = ?,
           execution_provider = ?, dispatch_type = ?, dispatch_binding_name = ?, slot_id = ?,
-          visibility = ?, route_status = 'active', route_generation = route_generation + 1,
+          visibility = ?, access_mode = ?, cache_tier = ?, route_status = 'active', route_generation = route_generation + 1,
           updated_at = ?
         WHERE site_id = ?${environment ? ' AND environment = ?' : ''}${expectedConditions}${artifactAvailabilityCondition}`
       )
@@ -4215,6 +4261,8 @@ export class D1PagesStore {
               dispatchBindingName,
               slotId,
               visibility,
+              accessModeFromVisibility(visibility),
+              cacheTierForVisibility(visibility),
               updatedAt,
               siteId,
               environment,
@@ -4229,6 +4277,8 @@ export class D1PagesStore {
               dispatchBindingName,
               slotId,
               visibility,
+              accessModeFromVisibility(visibility),
+              cacheTierForVisibility(visibility),
               updatedAt,
               siteId,
               ...conditionBinds,
@@ -4246,7 +4296,7 @@ export class D1PagesStore {
         `UPDATE site_routes
         SET active_version_id = ?, worker_name = ?, runtime = ?,
           execution_provider = ?, dispatch_type = ?, dispatch_binding_name = ?, slot_id = ?,
-          visibility = ?, policy_version = ?, route_generation = ?,
+          visibility = ?, exposure = ?, access_mode = ?, policy_version = ?, route_generation = ?,
           runtime_config_generation = ?, route_status = ?, cache_tier = ?, updated_at = ?
         WHERE site_id = ?${environment ? ' AND environment = ?' : ''}`
       )
@@ -4261,6 +4311,8 @@ export class D1PagesStore {
               route.dispatchBindingName,
               route.slotId,
               route.visibility,
+              normalizeExposure(route.exposure),
+              accessModeFromVisibility(route.visibility),
               route.policyVersion,
               route.routeGeneration,
               route.runtimeConfigGeneration || 0,
@@ -4279,6 +4331,8 @@ export class D1PagesStore {
               route.dispatchBindingName,
               route.slotId,
               route.visibility,
+              normalizeExposure(route.exposure),
+              accessModeFromVisibility(route.visibility),
               route.policyVersion,
               route.routeGeneration,
               route.runtimeConfigGeneration || 0,
@@ -4321,7 +4375,7 @@ export class D1PagesStore {
           `UPDATE site_routes
           SET active_version_id = ?, worker_name = ?, runtime = ?,
             execution_provider = ?, dispatch_type = ?, dispatch_binding_name = ?, slot_id = ?,
-            visibility = ?, policy_version = ?, route_generation = ?,
+            visibility = ?, exposure = ?, access_mode = ?, policy_version = ?, route_generation = ?,
             runtime_config_generation = ?, route_status = ?, cache_tier = ?, updated_at = ?
           WHERE site_id = ?${environment ? ' AND environment = ?' : ''}`
         )
@@ -4336,6 +4390,8 @@ export class D1PagesStore {
                 restoredRoute.dispatchBindingName,
                 restoredRoute.slotId,
                 restoredRoute.visibility,
+                normalizeExposure(restoredRoute.exposure),
+                accessModeFromVisibility(restoredRoute.visibility),
                 restoredRoute.policyVersion,
                 restoredRoute.routeGeneration,
                 restoredRoute.runtimeConfigGeneration || 0,
@@ -4354,6 +4410,8 @@ export class D1PagesStore {
                 restoredRoute.dispatchBindingName,
                 restoredRoute.slotId,
                 restoredRoute.visibility,
+                normalizeExposure(restoredRoute.exposure),
+                accessModeFromVisibility(restoredRoute.visibility),
                 restoredRoute.policyVersion,
                 restoredRoute.routeGeneration,
                 restoredRoute.runtimeConfigGeneration || 0,
@@ -5107,6 +5165,8 @@ export function createInitialRoute(input, now) {
     slotId: null,
     activeVersionId: null,
     visibility: input.defaultVisibility,
+    exposure: 'internal',
+    accessMode: accessModeFromVisibility(input.defaultVisibility),
     policyVersion: 1,
     routeGeneration: 0,
     runtimeConfigGeneration: 0,
@@ -5232,6 +5292,8 @@ function routeRestoredAsNewCommit(previousRoute, currentRoute) {
   return {
     ...previousRoute,
     visibility: currentRoute.visibility,
+    exposure: normalizeExposure(currentRoute.exposure),
+    accessMode: accessModeFromVisibility(currentRoute.visibility),
     policyVersion: currentRoute.policyVersion,
     cacheTier: currentRoute.cacheTier,
     routeGeneration: Math.max(previousRoute.routeGeneration || 0, currentRoute.routeGeneration || 0) + 1,
@@ -5275,6 +5337,8 @@ function mapSite(row) {
     ownerId: row.owner_id || row.owner_user_id,
     ownerUserId: row.owner_user_id,
     defaultVisibility: row.default_visibility,
+    defaultExposure: normalizeExposure(row.default_exposure),
+    defaultAccessMode: accessModeFromVisibility(row.default_visibility),
     executionModeOverride: row.execution_mode_override || null,
     siteUuid: row.site_uuid,
     createdAt: row.created_at,
@@ -5450,6 +5514,8 @@ function mapSiteWithJoinedRoute(row) {
         slotId: row.route_slot_id || null,
         activeVersionId: row.route_active_version_id,
         visibility: row.route_visibility,
+        exposure: normalizeExposure(row.route_exposure),
+        accessMode: accessModeFromVisibility(row.route_visibility),
         policyVersion: row.route_policy_version,
         routeGeneration: row.route_route_generation,
         runtimeConfigGeneration: row.route_runtime_config_generation || 0,
@@ -5476,6 +5542,8 @@ function mapSiteRoute(row) {
     slotId: row.slot_id || null,
     activeVersionId: row.active_version_id,
     visibility: row.visibility,
+    exposure: normalizeExposure(row.exposure),
+    accessMode: accessModeFromVisibility(row.visibility),
     policyVersion: row.policy_version,
     routeGeneration: row.route_generation,
     runtimeConfigGeneration: row.runtime_config_generation || 0,
