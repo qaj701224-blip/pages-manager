@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 
 import { getAdminDashboard } from '../api.js';
 import { formatCleanupBacklogAge } from '../admin-resource-governance-model.js';
-import { adminSiteOwnerView } from '../site-display-model.js';
+import { adminDeploymentActorView, adminDeploymentOwnerView } from '../site-display-model.js';
 
 const METRICS = [
   { key: 'sites', label: '站点', icon: Boxes },
@@ -97,8 +97,9 @@ export function AdminDashboard() {
                 <tr>
                   <th>部署</th>
                   <th>站点</th>
-                  <th>来源</th>
-                  <th>归属</th>
+                  <th>客户端来源</th>
+                  <th>站点归属</th>
+                  <th>操作人</th>
                   <th>阶段</th>
                   <th>错误</th>
                   <th>时间</th>
@@ -128,7 +129,8 @@ function DashboardResourceStat({ icon: Icon, label, value, title = '' }) {
 }
 
 function FailedDeploymentRow({ deployment }) {
-  const owner = adminSiteOwnerView(deployment.owner);
+  const owner = adminDeploymentOwnerView(deployment.owner);
+  const actor = adminDeploymentActorView(deployment.actor);
 
   return (
     <tr>
@@ -139,13 +141,28 @@ function FailedDeploymentRow({ deployment }) {
       <td data-label="站点" title={deployment.siteId}>
         {deployment.siteSlug || deployment.siteId}
       </td>
-      <td data-label="来源">{deployment.source || '无'}</td>
-      <td data-label="归属">
+      <td data-label="客户端来源">{deployment.source || '无'}</td>
+      <td data-label="站点归属">
         <div className="owner-cell">
-          <span className={owner.type === 'team' ? 'tag owner-tag team' : 'tag owner-tag user'}>{owner.tag}</span>
+          <span
+            className={
+              owner.type === 'team' ? 'tag owner-tag team' : owner.type === 'not_created' ? 'tag owner-tag not-created' : 'tag owner-tag user'
+            }
+          >
+            {owner.tag}
+          </span>
           <div>
             <strong>{owner.primary}</strong>
             {owner.secondary ? <span>{owner.secondary}</span> : null}
+          </div>
+        </div>
+      </td>
+      <td data-label="操作人">
+        <div className="owner-cell">
+          <span className="tag owner-tag actor">{actor.tag}</span>
+          <div>
+            <strong>{actor.primary}</strong>
+            {actor.secondary ? <span>{actor.secondary}</span> : null}
           </div>
         </div>
       </td>

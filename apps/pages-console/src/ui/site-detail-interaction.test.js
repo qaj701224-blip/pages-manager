@@ -37,9 +37,12 @@ test('account basic section shows SSO sync as secondary description', () => {
 });
 
 test('site deployments show owner context beside deployment source', () => {
-  assert.match(siteDetailSource, /<DeploymentsPanel state=\{resourceState\} site=\{site\} \/>/);
+  assert.match(siteDetailSource, /<DeploymentsPanel state=\{resourceState\} site=\{site\} scope=\{scope\} \/>/);
   assert.match(siteDetailSource, /<span>归属<\/span>/);
   assert.match(siteDetailSource, /deploymentOwnerLabel\(deployment, site\)/);
+  assert.match(siteDetailSource, /scope === 'admin'/);
+  assert.match(siteDetailSource, /<span>操作人<\/span>/);
+  assert.match(siteDetailSource, /adminDeploymentActorView\(deployment\.actor\)/);
 });
 
 test('site overview summarizes service state instead of a raw active status row', () => {
