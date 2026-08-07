@@ -309,10 +309,12 @@ async function buildPlatformHeaders(route, env, identity) {
       dataScope: 'site',
       scope: dataScopes(route, 'site'),
     });
-    headers['CF-Platform-Data-User-Capability'] = await signKvCapability(route, env, identity, traceId, {
-      dataScope: 'user',
-      scope: dataScopes(route, 'user'),
-    });
+    if (identity) {
+      headers['CF-Platform-Data-User-Capability'] = await signKvCapability(route, env, identity, traceId, {
+        dataScope: 'user',
+        scope: dataScopes(route, 'user'),
+      });
+    }
     headers['CF-Platform-KV-Capability'] = await signKvCapability(route, env, identity, traceId, {
       legacy: true,
       scope: legacyKvScopes(route),
@@ -357,11 +359,21 @@ async function signInternalWorkerJwt(route, env, identity, traceId) {
 async function handleRuntimeGatewayRequest(request, env, route, identity, runtimeRoute) {
   if (!route.kv?.enabled) return errorResponse('RUNTIME_NOT_ENABLED', 'Runtime API is not enabled for this site.', 404);
   if (request.method !== 'POST') return errorResponse('METHOD_NOT_ALLOWED', 'Method not allowed.', 405);
+  if (route.exposure === 'public' && !runtimeContentTypeIsJson(request)) {
+    return errorResponse('RUNTIME_CONTENT_TYPE_INVALID', 'Runtime request content type must be application/json.', 415);
+  }
   if (request.headers.get(HEADERS.RUNTIME_REQUEST) !== '1') {
     return errorResponse('RUNTIME_REQUEST_REQUIRED', 'Runtime request header is required.', 403);
   }
-  if (!runtimeOriginAllowed(request)) {
+  const originDecision = runtimeOriginDecision(request, route.exposure === 'public');
+  if (originDecision === 'required') {
+    return errorResponse('RUNTIME_ORIGIN_REQUIRED', 'Runtime request origin is required.', 403);
+  }
+  if (originDecision === 'denied' || (route.exposure === 'public' && !runtimeFetchMetadataAllowed(request))) {
     return errorResponse('RUNTIME_ORIGIN_DENIED', 'Runtime request origin is denied.', 403);
+  }
+  if (runtimeRoute.dataScope === 'user' && !identity) {
+    return errorResponse('USER_REQUIRED', 'User identity is required.', 401);
   }
   if (typeof env.XD_PAGES_KV_GATEWAY?.fetch !== 'function') {
     return errorResponse('RUNTIME_GATEWAY_UNAVAILABLE', 'Runtime gateway is unavailable.', 503);
@@ -406,14 +418,29 @@ function dataRuntimeRoute(gatewayPath, dataScope, operation) {
   return { gatewayPath, dataScope, operation };
 }
 
-function runtimeOriginAllowed(request) {
+function runtimeContentTypeIsJson(request) {
+  const contentType = request.headers.get('Content-Type');
+  if (!contentType) return false;
+  return contentType.split(';', 1)[0].trim().toLowerCase() === 'application/json';
+}
+
+function runtimeOriginDecision(request, requireOrigin) {
   const origin = request.headers.get('Origin');
-  if (!origin) return true;
+  if (!origin) return requireOrigin ? 'required' : 'allowed';
   try {
-    return new URL(origin).origin === new URL(request.url).origin;
+    return new URL(origin).origin === new URL(request.url).origin ? 'allowed' : 'denied';
   } catch {
-    return false;
+    return 'denied';
   }
+}
+
+function runtimeFetchMetadataAllowed(request) {
+  const site = request.headers.get('Sec-Fetch-Site');
+  if (site && site !== 'same-origin') return false;
+  const mode = request.headers.get('Sec-Fetch-Mode');
+  if (mode && mode !== 'cors' && mode !== 'same-origin') return false;
+  const destination = request.headers.get('Sec-Fetch-Dest');
+  return !destination || destination === 'empty';
 }
 
 function sanitizeRuntimeGatewayResponse(response) {
@@ -423,6 +450,7 @@ function sanitizeRuntimeGatewayResponse(response) {
     if (
       lower === 'authorization' ||
       lower === 'set-cookie' ||
+      lower.startsWith('access-control-') ||
       lower.startsWith('cf-platform-') ||
       lower.startsWith('x-pages-') ||
       lower.startsWith('x-xd-pages-')

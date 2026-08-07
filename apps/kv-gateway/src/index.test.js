@@ -12,12 +12,14 @@ class MemoryKv {
   constructor() {
     this.values = new Map();
     this.metadatas = new Map();
+    this.gets = [];
     this.puts = [];
     this.deletes = [];
     this.failPut = null;
   }
 
   async get(key, options) {
+    this.gets.push({ key, options });
     const value = this.values.get(key) ?? null;
     if (options?.type === 'json' && typeof value === 'string') return JSON.parse(value);
     return value;
@@ -212,7 +214,7 @@ test('user data writes under claims subject prefix', async () => {
   assert.equal(gatewayEnv.SITE_DATA.puts[0].options.metadata.__xd_pages.userId, 'usr_123');
 });
 
-test('anonymous user data get returns null and writes fail with USER_REQUIRED', async () => {
+test('anonymous user data get, set, and delete fail with USER_REQUIRED', async () => {
   const gatewayEnv = env();
   const anonymousClaims = dataClaims('user', {
     sub: 'anonymous',
@@ -237,12 +239,13 @@ test('anonymous user data get returns null and writes fail with USER_REQUIRED', 
     gatewayEnv
   );
 
-  assert.equal(getResponse.status, 200);
-  assert.deepEqual(await json(getResponse), { ok: true, key: 'draft', found: false, value: null });
+  assert.equal(getResponse.status, 401);
+  assert.equal((await json(getResponse)).error.code, 'USER_REQUIRED');
   assert.equal(setResponse.status, 401);
   assert.equal((await json(setResponse)).error.code, 'USER_REQUIRED');
   assert.equal(deleteResponse.status, 401);
   assert.equal((await json(deleteResponse)).error.code, 'USER_REQUIRED');
+  assert.equal(gatewayEnv.SITE_DATA.gets.length, 0);
   assert.equal(gatewayEnv.SITE_DATA.puts.length, 0);
   assert.equal(gatewayEnv.SITE_DATA.deletes.length, 0);
 });
