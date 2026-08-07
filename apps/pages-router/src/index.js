@@ -9,6 +9,7 @@ import {
   verifySessionJwt,
 } from '@xd/session-kit';
 import { jsonResponse } from '@xd/worker-kit';
+import { accessModeFromVisibility, isValidAccessMode, visibilityFromAccessMode } from '@xd/pages-access-policy';
 
 import { evaluateAccessPolicy } from './access-policy.js';
 import { isPlatformPath } from './platform-path.js';
@@ -52,9 +53,6 @@ export default {
     // runtime API 路径的错误响应固定为 JSON 契约,包括 IP/host/route/policy 前置错误,不做 HTML 协商。
     if (runtimeGatewayPath) request = withJsonOnlyAccept(request);
 
-    const ipDecision = enforceIPAllowlist(request, env);
-    if (ipDecision) return ipDecision;
-
     const environment = readRouterEnvironment(env);
     if (!environment) return siteErrorResponse(request, 'ROUTER_ENV_INVALID');
 
@@ -65,19 +63,21 @@ export default {
       });
     }
 
-    if (url.pathname === SITE_AUTH_CALLBACK_PATH) {
-      const routeResult = await readUsableRoute(request, env, host.hostname, environment);
-      if (!routeResult.ok) return routeResult.response;
-      return handleSiteAuthCallback(request, env, routeResult.route);
-    }
-
-    if (isPlatformPath(url.pathname) && !runtimeGatewayPath) {
+    if (isPlatformPath(url.pathname) && url.pathname !== SITE_AUTH_CALLBACK_PATH && !runtimeGatewayPath) {
       return siteErrorResponse(request, 'PLATFORM_PATH_RESERVED');
     }
 
-    const routeResult = await readUsableRoute(request, env, host.hostname, environment);
+    const routePolicy = await readRoutePolicy(env, host.hostname, environment);
+    const trustedPublic = routePolicy.ok && routePolicy.route.schemaVersion === 3 && routePolicy.route.exposure === 'public';
+    const ipDecision = trustedPublic ? null : enforceIPAllowlist(request, env);
+    if (ipDecision) return ipDecision;
+    if (!routePolicy.ok) return routePolicyErrorResponse(request, host.hostname, routePolicy.code);
+
+    const routeResult = validateUsableRoute(request, routePolicy.route);
     if (!routeResult.ok) return routeResult.response;
     const route = routeResult.route;
+
+    if (url.pathname === SITE_AUTH_CALLBACK_PATH) return handleSiteAuthCallback(request, env, route);
 
     const identity = await readSiteIdentity(request, env, route);
     if (identity && requiresFreshIdentity(route) && !siteSessionIsFresh(identity, env)) {
@@ -106,27 +106,52 @@ export default {
   },
 };
 
-async function readUsableRoute(request, env, hostname, environment) {
+async function readRoutePolicy(env, hostname, environment) {
   let route;
   try {
     route = await readRouteSnapshot(env, hostname, environment);
   } catch {
-    return { ok: false, response: siteErrorResponse(request, 'ROUTE_SNAPSHOT_INVALID', { hostname }) };
+    return { ok: false, code: 'ROUTE_SNAPSHOT_INVALID' };
   }
-  if (!route) {
-    return { ok: false, response: siteErrorResponse(request, 'ROUTE_NOT_FOUND', { hostname }) };
+  if (!route) return { ok: false, code: 'ROUTE_NOT_FOUND' };
+  if (route.environment !== environment || route.hostname !== hostname) return { ok: false, code: 'ROUTE_ENV_MISMATCH' };
+  try {
+    return { ok: true, route: normalizeRoutePolicy(route) };
+  } catch (error) {
+    return { ok: false, code: error?.message === 'SITE_POLICY_INVALID' ? 'SITE_POLICY_INVALID' : 'ROUTE_SNAPSHOT_INVALID' };
   }
-  if (route.environment !== environment || route.hostname !== hostname) {
-    return { ok: false, response: siteErrorResponse(request, 'ROUTE_ENV_MISMATCH', { hostname }) };
-  }
+}
+
+function validateUsableRoute(request, route) {
   if (route.routeStatus !== 'active' || !routeRuntimeIsActive(route.runtime)) {
-    return { ok: false, response: siteErrorResponse(request, 'ROUTE_INACTIVE', { hostname }) };
+    return { ok: false, response: siteErrorResponse(request, 'ROUTE_INACTIVE', { hostname: route.hostname }) };
   }
-  if (!isValidRouteWorkerName(route.workerName, environment)) {
-    return { ok: false, response: siteErrorResponse(request, 'ROUTE_WORKER_INVALID', { hostname }) };
+  if (!isValidRouteWorkerName(route.workerName, route.environment)) {
+    return { ok: false, response: siteErrorResponse(request, 'ROUTE_WORKER_INVALID', { hostname: route.hostname }) };
   }
 
   return { ok: true, route };
+}
+
+function routePolicyErrorResponse(request, hostname, code) {
+  if (code === 'ROUTE_NOT_FOUND') return siteErrorResponse(request, code, { hostname });
+  if (code === 'ROUTE_ENV_MISMATCH') return siteErrorResponse(request, code, { hostname });
+  return siteErrorResponse(request, code, { hostname });
+}
+
+function normalizeRoutePolicy(route) {
+  const schemaVersion = route.schemaVersion == null ? 2 : route.schemaVersion;
+  if (schemaVersion === 2) {
+    const accessMode = accessModeFromVisibility(route.visibility);
+    if (!accessMode) throw new Error('SITE_POLICY_INVALID');
+    return { ...route, schemaVersion: 2, exposure: 'internal', accessMode, visibility: route.visibility };
+  }
+  if (schemaVersion !== 3) throw new Error('ROUTE_SNAPSHOT_SCHEMA_INVALID');
+  const exposure = route.exposure === 'public' ? 'public' : 'internal';
+  if (!isValidAccessMode(route.accessMode)) throw new Error('SITE_POLICY_INVALID');
+  const visibility = visibilityFromAccessMode(route.accessMode);
+  if (route.visibility !== visibility) throw new Error('SITE_POLICY_INVALID');
+  return { ...route, schemaVersion: 3, exposure, accessMode: route.accessMode, visibility };
 }
 
 function routeRuntimeIsActive(runtime) {
@@ -187,6 +212,8 @@ async function readKvRouteSnapshot(routeSnapshots, hostname, environment) {
   if (
     pointer.hostname !== hostname ||
     pointer.environment !== environment ||
+    !Number.isInteger(pointer.routeGeneration) ||
+    !Number.isInteger(pointer.policyVersion) ||
     typeof pointer.snapshotKey !== 'string' ||
     pointer.snapshotKey === ''
   ) {
@@ -197,6 +224,7 @@ async function readKvRouteSnapshot(routeSnapshots, hostname, environment) {
   if (!snapshot) return null;
   if (
     snapshot.hostname !== hostname ||
+    snapshot.environment !== environment ||
     snapshot.routeGeneration !== pointer.routeGeneration ||
     snapshot.policyVersion !== pointer.policyVersion
   ) {
@@ -675,7 +703,7 @@ function readSiteSessionFreshnessTtlSeconds(env) {
 }
 
 function requiresFreshIdentity(route) {
-  return route?.visibility === 'org' || route?.visibility === 'acl' || route?.visibility === 'owner';
+  return route?.accessMode === 'org' || route?.accessMode === 'acl' || route?.accessMode === 'owner';
 }
 
 function siteSessionIsFresh(identity, env) {

@@ -27,7 +27,10 @@ const coolToneFragments = [
 
 test('fails closed before route lookup when IP allowlist is missing', async () => {
   const env = routeEnv({ ROUTER_IP_ALLOWLIST_CIDRS: undefined });
-  const response = await worker.fetch(new Request('https://demo.pages.xd.team/'), env);
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/', { headers: { 'CF-Connecting-IP': '10.1.2.3' } }),
+    env,
+  );
 
   assert.equal(response.status, 403);
   assert.equal((await response.json()).error.code, 'IP_DENIED');
@@ -56,6 +59,102 @@ test('fails closed before route lookup when PAGES_ENV is missing', async () => {
   assert.equal((await response.json()).error.code, 'ROUTER_ENV_INVALID');
   assert.equal(env.lookupCount, 0);
   assert.equal(env.dispatchGetCount, 0);
+  assert.equal(env.dispatchCount, 0);
+});
+
+test('trusted v3 public anonymous routes can bypass the IP allowlist', async () => {
+  const env = routeEnv({
+    ROUTER_IP_ALLOWLIST_CIDRS: undefined,
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({
+        schemaVersion: 3,
+        exposure: 'public',
+        accessMode: 'anonymous',
+        visibility: 'internal',
+      }),
+    },
+  });
+  const response = await worker.fetch(new Request('https://demo.pages.xd.team/'), env);
+
+  assert.equal(response.status, 200);
+  assert.equal(env.dispatchCount, 1);
+});
+
+test('v3 internal routes still require the IP allowlist before dispatch', async () => {
+  const env = routeEnv({
+    ROUTER_IP_ALLOWLIST_CIDRS: undefined,
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({
+        schemaVersion: 3,
+        exposure: 'internal',
+        accessMode: 'anonymous',
+        visibility: 'internal',
+      }),
+    },
+  });
+  const response = await worker.fetch(new Request('https://demo.pages.xd.team/'), env);
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, 'IP_DENIED');
+  assert.equal(env.dispatchCount, 0);
+});
+
+test('v3 policy projection mismatches fail closed after the IP gate', async () => {
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({
+        schemaVersion: 3,
+        exposure: 'public',
+        accessMode: 'org',
+        visibility: 'internal',
+      }),
+    },
+  });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/', { headers: { 'CF-Connecting-IP': '10.1.2.3' } }),
+    env,
+  );
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, 'SITE_POLICY_INVALID');
+  assert.equal(env.dispatchCount, 0);
+});
+
+test('legacy v2 snapshots with public exposure still require the IP allowlist', async () => {
+  const env = routeEnv({
+    ROUTER_IP_ALLOWLIST_CIDRS: undefined,
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({
+        exposure: 'public',
+        visibility: 'internal',
+      }),
+    },
+  });
+  const response = await worker.fetch(new Request('https://demo.pages.xd.team/'), env);
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, 'IP_DENIED');
+  assert.equal(env.dispatchCount, 0);
+});
+
+test('v3 public snapshots require a complete access policy projection', async () => {
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({
+        schemaVersion: 3,
+        exposure: 'public',
+        accessMode: 'anonymous',
+        visibility: undefined,
+      }),
+    },
+  });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/', { headers: { 'CF-Connecting-IP': '10.1.2.3' } }),
+    env,
+  );
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, 'SITE_POLICY_INVALID');
   assert.equal(env.dispatchCount, 0);
 });
 
@@ -784,6 +883,33 @@ test('fails closed when KV route pointer environment does not match router envir
   const response = await worker.fetch(
     new Request('https://demo.pages.xd.team/', { headers: { 'CF-Connecting-IP': '10.1.2.3' } }),
     env
+  );
+
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error.code, 'ROUTE_SNAPSHOT_INVALID');
+  assert.equal(env.dispatchCount, 0);
+});
+
+test('fails closed when KV route pointer versions are not integers', async () => {
+  const env = routeEnv({
+    lookupRoute: undefined,
+    ROUTE_SNAPSHOTS: kvRouteSnapshots({
+      'production:route_pointer:demo.pages.xd.team': {
+        hostname: 'demo.pages.xd.team',
+        environment: 'production',
+        routeGeneration: '4',
+        policyVersion: '2',
+        snapshotKey: 'production:route_snapshot:demo.pages.xd.team:4:2',
+      },
+      'production:route_snapshot:demo.pages.xd.team:4:2': routeSnapshot({
+        routeGeneration: '4',
+        policyVersion: '2',
+      }),
+    }),
+  });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/', { headers: { 'CF-Connecting-IP': '10.1.2.3' } }),
+    env,
   );
 
   assert.equal(response.status, 503);
