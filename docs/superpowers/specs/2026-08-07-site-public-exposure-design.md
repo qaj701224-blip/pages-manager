@@ -96,7 +96,7 @@ interface SiteAccessPolicy {
 
 - 现有路径、请求体、visibility 枚举、状态码和 CLI flag 不变。
 - 现有站点响应中的 `defaultVisibility`、`route.visibility` 和 access visibility 继续按反向映射返回。
-- 用户提交的 exposure 字段不得绑定到规范模型；可以忽略未知字段，或在明确读取该字段的接口返回禁止越权的错误，但绝不能提升 exposure。
+- 所有普通用户 handler 在请求体显式出现 exposure 时统一返回 `SITE_EXPOSURE_ADMIN_REQUIRED`；合法旧请求不受影响，且任何用户输入都不能提升 exposure。
 - 新建站点始终创建为 `exposure=internal`。
 - 用户修改 visibility 或 ACL 时只更新 accessMode/ACL，不更新 exposure；因此当前 exposure 为 public 时继续保持 public。
 - Admin Console 和 Console BFF 可以返回 exposure 供 UI 展示和治理，但不把 exposure 加入公开 CLI-managed API 合约。
@@ -147,16 +147,17 @@ site_routes.exposure TEXT NOT NULL DEFAULT 'internal'
 site_routes.access_mode TEXT
 ```
 
-迁移规则：
+`0019` 先进入兼容期，避免旧 pages-api binary 在 migration 后继续创建或更新 visibility-only 数据时产生双真相源：
 
 1. 所有现有 exposure 回填为 `internal`。
-2. 旧 `internal` visibility 回填为 `anonymous` accessMode。
-3. `org|acl|owner|disabled` 一一映射。
-4. 未知历史 visibility 不映射为 anonymous，继续作为非法策略 fail closed。
-5. 迁移与回滚窗口内保留 `sites.default_visibility` 和 `site_routes.visibility` 作为兼容投影。
-6. 规范字段是新代码的权威来源；兼容 visibility 在同一次 D1 batch 中双写为投影。
-7. `deployments.visibility` 保留为历史请求/审计词汇，不作为 route 策略真相源。
-8. 回滚窗口结束后再通过独立清理迁移移除兼容投影，不在本次功能中直接 drop/rename 旧列。
+2. 合法旧 visibility 回填 accessMode：`internal -> anonymous`，其余合法值一一映射。
+3. 未知历史 visibility 不映射为 anonymous，继续作为非法策略 fail closed。
+4. 兼容期内 legacy visibility 暂时仍是 accessMode 的读取权威；`access_mode` 是目标规范字段和一致性投影。新代码所有写路径必须在同一 batch 双写两者。
+5. 旧 binary 新建记录留下的 null accessMode，或只更新 visibility 造成的不一致，由新 reader 按合法 visibility 派生并修复；非法 visibility 不生成 public snapshot，并触发告警。
+6. exposure 从 `0019` 起即是独立权威字段；旧 binary 不认识该字段，INSERT 使用数据库默认 internal，UPDATE 必须保留已有 exposure。
+7. 旧 binary 写出的 v2 snapshot 会使新 Router 安全降级为 internal，可能暂时关闭公网，但不能扩大访问。
+8. 旧 binary 全部退出且回滚窗口结束后，执行独立收口 migration：全量校验/修复一致性，将 accessMode 切为读取权威并收紧为 NOT NULL/CHECK。完成该切换后，不得单独回滚到 visibility-only binary。
+9. `deployments.visibility` 保留为历史请求/审计词汇，不作为 route 策略真相源；兼容 visibility 列的最终删除另行实施。
 
 站点和 route 的兼容投影：
 
@@ -173,12 +174,12 @@ accessMode=anonymous -> visibility=internal
 
 - 用户 mutation 只写 accessMode/ACL，字段级保留 exposure。
 - Admin exposure mutation 只写 exposure，字段级保留 accessMode/ACL。
-- accessMode、ACL、规范字段、兼容投影、updatedAt、cache tier、审计事件和一次 policyVersion bump 进入同一 D1 batch。
+- accessMode、ACL、规范字段、兼容投影、updatedAt、cache tier、`policy_committed/pending_activation` 审计和一次 policyVersion bump 进入同一 D1 batch。
 - 同一次请求最多 bump 一次 policyVersion。
 - mutation 完成后重新读取完整 route 和 ACL，再构建 snapshot；不得使用 ACL 更新前的旧 route 对象。
 - 使用 expected policyVersion/CAS guard 或有界内部重试，避免并发 Admin exposure 与用户 access mutation 相互覆盖。
 - Admin public 与用户 anonymous 并发时，最终合法合并结果是 `public + anonymous`，提交顺序不应造成字段丢失。
-- Same-value mutation 保持幂等；没有实际策略变化时不 bump policyVersion、不写 snapshot。是否记录 no-op 审计由治理需求决定，默认不记录。
+- Same-value mutation 仅在 D1 与已确认 pointer 完全收敛时才是 no-op；若策略值相同但 pointer 缺失、落后或不一致，必须执行可重入 snapshot/pointer repair，且无需额外 bump policyVersion。
 
 这同时修复当前 Console access 更新中 visibility 和 ACL 分两个 batch、可能产生两次 policyVersion 且 snapshot 使用旧 route 的问题。
 
@@ -218,23 +219,22 @@ Content-Type: application/json
 ### 开启 Public
 
 1. 校验 Console BFF 和 platform admin。
-2. 读取站点、active route、active version 和当前 policy。
-3. 要求非空 reason。
-4. 如果当前是 WFP `worker-only` 或 `worker-with-assets`，进入 OfficeNet 移除流程。
-5. OfficeNet 移除并验证成功后，调用统一策略 mutation，将 exposure 设为 public。
-6. 写成功审计。
-7. 写 public snapshot 并切换 pointer。
-8. 返回最新 Admin site/access 投影。
+2. 要求非空 reason，生成 operationId，并在任何外部副作用前持久化 attempted 审计。
+3. 获取站点级 policy/route commit lease，确认 D1 与当前 pointer 已收敛，再读取 active route、version 和 policy。
+4. 如果当前是 WFP `worker-only` 或 `worker-with-assets`，在 lease 内移除并验证当前 active Worker 的 OfficeNet。
+5. 使用完整 route tuple 和 lease fencing token 做 CAS，将 exposure 提交为 public；同一 D1 batch 写 `policy_committed/pending_activation` 审计。
+6. 从提交后的完整策略写 snapshot、切换 pointer，并读回确认精确 tuple。
+7. 只有确认 Router-effective exposure 为 public 后，写 `effective_success` 审计并返回成功。
 
-同值 public 请求幂等，不重复移除 binding 或 bump policyVersion。
+同值 public 请求只有在 pointer 已收敛且 active Worker 已确认无 OfficeNet 时才直接幂等返回；否则进入 repair/verification，不重复 bump policyVersion。
 
 ### 关闭 Public
 
 1. 校验 platform admin。
-2. 将 exposure 设为 internal，保留 accessMode/ACL。
-3. 写审计、snapshot 和 pointer。
-4. 不自动恢复 `XD_OFFICE_NET`；站点继续以当前无 OfficeNet Worker 服务。
-5. 后续完整 internal 部署按默认规则重新注入 OfficeNet。
+2. 生成 operationId、写 attempted 审计并获取同一站点级 lease。
+3. 将 authority exposure 提交为 internal，保留 accessMode/ACL，并写 pending activation 审计。
+4. 写 internal snapshot、切换 pointer，并读回确认后才记录关闭成功。
+5. 不自动恢复 `XD_OFFICE_NET`；后续完整 internal 部署只有在 D1/pointer 已确认同为 internal 时才按默认规则重新注入。
 
 关闭 public 不要求 recent login，且不能因理由缺失而阻塞紧急止损。
 
@@ -264,12 +264,16 @@ Admin 承担“移除 OfficeNet 可能使站点业务功能返回 `OFFICE_NET_UN
 
 ### 部署与回滚
 
-- 完整部署读取站点当前 exposure。
-- exposure 为 public 时，WFP provider 不注入 `XD_OFFICE_NET`。
-- exposure 为 internal 时，保持当前默认注入逻辑。
-- Public 站点回滚到旧 WFP Worker 前，必须移除并验证目标 Worker 的 `XD_OFFICE_NET`；失败则拒绝切换 route。
+- Worker 上传可以在 lease 外执行，但 route activation 必须与 Admin exposure、rollback 和 pointer repair 共用 `(environment, siteId)` commit lease。
+- Activation 在 lease 内重新读取 exposure、activeVersionId、routeGeneration、policyVersion、runtimeConfigGeneration 和 pointer，不得使用上传前的 exposure。
+- exposure 为 public 时，激活候选 Worker 前移除并现场验证其 `XD_OFFICE_NET`；本设计不新增版本级 capability 记录。
+- exposure 为 internal 且 D1/pointer 已确认收敛时保持默认注入逻辑；状态分叉时阻断 activation，不得引入 OfficeNet。
+- route activation CAS 必须匹配上述完整 tuple 和 lease fencing token；丢锁或冲突后重新读取，不能继续写 snapshot。
+- Public 回滚同样在 lease 内移除并验证目标 Worker binding，失败则拒绝切换 route。
 - Public 站点的 runtime var/secret 更新不得重新引入 OfficeNet。
 - 关闭 public 后不会立即恢复 binding，只有后续完整 internal 部署才重新注入。
+
+Lease 必须续租并使用 fencing token。锁顺序固定为 site commit lease，再进入 route pointer 串行器；任何平台路径都不得反向获取。外部系统仍可绕过平台改 Worker settings，因此运维权限和漂移检测继续作为防线，但不在 D1 记录版本级 binding 状态。
 
 ### 跨系统失败
 
@@ -283,7 +287,9 @@ OfficeNet 与 D1/KV 无法形成单一原子事务，使用安全优先顺序：
 
 - OfficeNet 移除失败：public 不生效，返回可操作错误。
 - OfficeNet 移除成功但 D1 mutation 失败：站点仍 internal，但暂时失去 OfficeNet；返回部分失败并写审计。
-- D1 public 成功但 snapshot/pointer 失败：对 D1 做条件补偿或写更高 policyVersion 的 internal 补偿 snapshot；在无法确认 Router 已收敛前不能返回成功。
+- D1 public 成功但 snapshot/pointer 失败：以更高 policyVersion 条件提交 internal 补偿，再确认 internal pointer；无法确认时 effective exposure 记为 unknown，告警并走紧急 kill switch/WAF 路径。
+- D1 已 internal 但 pointer 仍 public 时，authority 与 effective 状态分叉。此时关闭尚未成功，所有 deploy/rollback 和会引入 OfficeNet 的操作必须阻断，先以当前或更高版本重建并确认 internal pointer。
+- Pointer repair 是独立的可重入发布步骤；即使 D1 策略值未变化也必须执行。若 pointer tuple 高于 D1，不得写低版本覆盖，须先提交更高版本的 internal repair policy。
 - 绝不能先让 Router 生效 public，再尝试移除 OfficeNet。
 
 ## Route Snapshot v3
@@ -303,9 +309,10 @@ Snapshot 升级为 schema version 3，新增：
 兼容策略：
 
 - 新 Router 同时读取 v2 和 v3。
-- v2 snapshot 固定视为 exposure=internal，并从合法 visibility 映射 accessMode。
-- v3 exposure 缺失/非法按 internal；绝不能绕过 IP。
-- v3 accessMode 缺失或非法时拒绝；只有迁移期合法 visibility 可作为显式 fallback。
+- v2 只接受合法 visibility，固定映射为 exposure=internal 和对应 accessMode；v2 永远不能绕过 IP。
+- v3 exposure 缺失/非法按 internal；只有 `schemaVersion === 3 && exposure === public` 才能绕过 IP。
+- v3 accessMode 必须合法，不从 visibility fallback；visibility 兼容投影也必须合法并与 accessMode 反向映射一致，否则 snapshot 无效。
+- 未知 schemaVersion fail closed。
 - Snapshot key 继续使用 routeGeneration + policyVersion。
 - Pointer 的单调规则不变，旧 policyVersion 不能覆盖新策略。
 - 迁移期 v3 保留 visibility 投影，使旧 Router 即使读取新 snapshot 也继续执行全局 IP 门禁，形成安全降级。
@@ -447,29 +454,35 @@ Workspace 站点详情建议只读展示 exposure，避免用户看到 `visibili
 
 ## 审计与可观测性
 
+每个 Admin exposure 请求生成不可变 operationId；同一 operationId 下的 stage 事件必须幂等。事件区分 D1 authority 与 Router-effective 状态，只有读回确认 pointer 的精确 hostname、routeGeneration、policyVersion 和 snapshot key 后才能记录 `effective_success`。
+
+事件阶段至少包含：`attempted`、`office_net_removed_verified`、`policy_committed/pending_activation`、`effective_success`、`partial_failed`、`compensated_failure`、`compensation_failed` 和 `reconciled`。其中 policy committed 事件与 D1 policy mutation 同 batch；其它事件用于包围外部 OfficeNet/KV 副作用。关闭 public 未确认 pointer 时只能记录 partial failure，不能宣称已关闭。
+
 Admin exposure 事件 metadata 至少包含：
 
 ```text
+operationId
 siteId
 siteSlug
 previousExposure
-exposure
+requestedExposure
+authorityExposure
+effectiveExposure=internal|public|unknown
+activationState
 accessMode
 reason
 source=console-admin
 officeNetBindingRemoved
-policyVersion
+officeNetBindingVerified
+policyVersionBefore
+policyVersionCommitted
+compensationPolicyVersion
+pointerConfirmed
+failureStage
+errorCode
 ```
 
-需要区分：
-
-- 尝试。
-- 成功。
-- OfficeNet 移除失败。
-- D1 mutation 失败。
-- Snapshot/pointer 失败。
-- 已执行安全补偿。
-- 关闭 public 未能确认生效。
+OfficeNet 已移除但 D1 失败属于 partial failure；public commit 后成功确认更高版本 internal pointer 属于 compensated failure；补偿未确认时 effectiveExposure 必须是 unknown 或实测值。后置审计写失败必须进入 durable retry/reconciliation 并告警，不能覆盖或改写既有事件历史。
 
 建议指标：
 
@@ -485,32 +498,34 @@ policyVersion
 
 ## 并发与补偿
 
-D1 是策略真相源，KV pointer 是 Router 生效提交点。两者无法形成单一事务。
+D1 是 authority/desired 策略真相源，KV pointer 指向的可信 snapshot 是 Router-effective 策略。两者无法形成单一事务，API 和 UI 不得只根据 D1 宣称公网已开启或关闭。
 
 规则：
 
+- Admin exposure、deploy/rollback activation 和 pointer repair 共用站点级 lease；外部上传在锁外，最终 revalidation、D1 CAS、snapshot/pointer 与必要补偿在锁内。
 - 每次 policy mutation 获得唯一递增 policyVersion。
 - Snapshot 内容必须与该 policyVersion 的完整策略一致。
 - Pointer 单调规则拒绝旧 policyVersion 覆盖新策略。
 - 条件回滚只在当前 route 仍等于本次预期提交时执行。
 - 如果更晚 writer 已提交，旧 writer 不得恢复旧策略。
 - 如果 public pointer 可能已经生效，不能尝试写更低 policyVersion 的旧 internal pointer；必须以更高 policyVersion 写 internal 补偿提交。
-- 关闭 public 写 snapshot 失败时，旧 public pointer 可能继续有效。API 不得宣称关闭成功，必须重试、告警，并保留紧急平台 kill switch/WAF 操作路径。
+- D1/pointer 分叉期间站点处于 publication pending/degraded；同值请求必须 repair，且完整部署、回滚和 OfficeNet 恢复均被阻断。
+- 关闭 public 写 snapshot 失败时，旧 public pointer 可能继续有效。API 不得宣称关闭成功，必须持续 repair、告警，并保留紧急平台 kill switch/WAF 操作路径。
 
 ## 发布顺序
 
 必须按以下顺序发布，production 继续由 GitHub Actions 手动触发：
 
-1. Router 上线双读能力：支持旧 visibility 和新 accessMode；旧 snapshot 固定 internal exposure。
-2. 上线 D1 additive migration、store 规范字段和兼容双写。
-3. Pages API 开始写 snapshot v3，但保留 legacy visibility 投影。
+1. 单独先发布 Router 双读能力：支持 v2/v3；旧 snapshot 固定 internal exposure，Admin public 开关保持关闭。
+2. 上线 D1 additive migration、兼容期 reader 和全写路径双写。
+3. Pages API 开始写严格 snapshot v3，但保留 legacy visibility 投影。
 4. 刷新存量 active route snapshot，仍全部为 internal exposure。
 5. 上线 public runtime 同源防护和 OfficeNet 受控移除能力。
 6. 上线 Admin exposure API 与 UI，但先在 staging 验证。
 7. 在 staging 覆盖 anonymous/org/acl/owner/disabled、runtime、OfficeNet、rollback 和补偿路径。
 8. 手动发布 production。
 
-绝不能先开放 Admin public mutation，再部署识别 exposure 的 Router。
+绝不能先开放 Admin public mutation，再部署识别 exposure 的 Router。若现有 workflow 固定先部署 pages-api 后部署 Router，实施必须调整顺序或拆成两个受控发布阶段，不能依赖单次旧顺序滚动完成。
 
 Staging 和 production 的 D1、KV、route、Worker 前缀、domain 和 OfficeNet 环境配置继续严格隔离。
 
@@ -520,12 +535,15 @@ Staging 和 production 的 D1、KV、route、Worker 前缀、domain 和 OfficeNe
 
 - 0019 migration backfill。
 - 规范字段与 visibility 投影一致。
+- 兼容期旧 binary 新建/更新 visibility-only 数据可被新 reader 安全归一化。
+- 收口 migration 前后及 binary rollback 边界。
 - 旧非法 visibility 不映射为 anonymous。
 - User mutation 保留 public exposure。
 - Admin mutation 保留 accessMode/ACL。
 - accessMode + ACL 单 batch、单 policyVersion。
 - 并发 exposure/accessMode mutation 不丢字段。
 - 条件回滚不覆盖后续 writer。
+- Same-value policy 的 pointer repair 不额外 bump policyVersion。
 
 ### API
 
@@ -557,6 +575,8 @@ Staging 和 production 的 D1、KV、route、Worker 前缀、domain 和 OfficeNe
 - Internal 完整部署维持默认注入。
 - Public rollback 先移除目标 Worker binding。
 - Public var/secret 更新不重新引入 binding。
+- Admin enable 与 deploy/rollback 交错时由 lease、完整 tuple CAS 和现场重验阻止带 OfficeNet Worker 生效。
+- D1 internal / pointer public 时阻断 activation，并可重入修复到 confirmed internal。
 
 ### UI
 
