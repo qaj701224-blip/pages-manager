@@ -2341,6 +2341,42 @@ async function updateAdminSiteExposure(request, env, config, store, session, sit
           exposure,
           signal: lease.signal,
         });
+        try {
+          await store.recordAuditEvent({
+            id: `${operationId}:office_net_removed_verified`,
+            environment: config.environment,
+            traceId: operationId,
+            eventType: 'admin.site.exposure',
+            actorUserId: session.userId,
+            actorType: 'platform_admin',
+            siteId: currentSite.id,
+            routeId: currentRoute.id,
+            versionId: activeVersion.id,
+            decision: 'allow',
+            statusCode: 200,
+            metadata: {
+              ...auditMetadata,
+              previousExposure: currentExposure,
+              authorityExposure: currentExposure,
+              effectiveExposure: null,
+              officeNetBindingRemoved: true,
+              officeNetBindingVerified: true,
+              stage: 'office_net_removed_verified',
+            },
+            createdAt: now,
+          });
+        } catch (cause) {
+          globalThis.console?.warn?.(
+            'SITE_EXPOSURE_STAGE_AUDIT_UNCONFIRMED',
+            JSON.stringify({
+              operationId,
+              siteId: currentSite.id,
+              environment: config.environment,
+              stage: 'office_net_removed_verified',
+              errorCode: safeAdminExposureAuditWarningCode(cause),
+            })
+          );
+        }
       }
 
       const mutation = await store.updateSiteAccessPolicy({
@@ -2373,6 +2409,7 @@ async function updateAdminSiteExposure(request, env, config, store, session, sit
             previousExposure: currentExposure,
             authorityExposure: exposure,
             accessMode: currentAccessMode,
+            activationState: 'pending_activation',
             stage: 'policy_committed',
           },
           createdAt: now,

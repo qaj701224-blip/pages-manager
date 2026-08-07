@@ -3355,6 +3355,16 @@ test('platform admin can enable public exposure while preserving visibility and 
   assert.equal(snapshot.exposure, 'public');
   const audits = await store.listAuditEvents({ environment: 'production', siteId: 'site_public' });
   assert.ok(audits.some((event) => event.eventType === 'admin.site.exposure' && event.metadata?.reason === 'staging 公网验收'));
+  const operationId = audits.find((event) => event.metadata?.stage === 'attempted')?.metadata?.operationId;
+  const operationAudits = audits.filter((event) => event.metadata?.operationId === operationId);
+  assert.ok(operationAudits.some((event) => event.metadata?.stage === 'office_net_removed_verified'));
+  const policyCommitted = operationAudits.find((event) => event.metadata?.stage === 'policy_committed');
+  assert.equal(policyCommitted?.metadata?.activationState, 'pending_activation');
+  assert.equal(
+    operationAudits.find((event) => event.metadata?.stage === 'office_net_removed_verified')?.metadata?.officeNetBindingVerified,
+    true
+  );
+  assert.ok(operationAudits.some((event) => event.metadata?.stage === 'effective_success'));
 });
 
 test('platform admin can disable public exposure without changing visibility or restoring OfficeNet', async () => {
