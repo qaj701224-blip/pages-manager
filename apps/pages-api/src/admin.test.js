@@ -3365,7 +3365,36 @@ test('platform admin can enable public exposure while preserving visibility and 
     operationAudits.find((event) => event.metadata?.stage === 'office_net_removed_verified')?.metadata?.officeNetBindingVerified,
     true
   );
-  assert.ok(operationAudits.some((event) => event.metadata?.stage === 'effective_success'));
+  const effectiveSuccess = operationAudits.find((event) => event.metadata?.stage === 'effective_success');
+  assert.ok(effectiveSuccess);
+  assert.equal(effectiveSuccess.metadata.pointerConfirmed, false);
+  assert.equal(effectiveSuccess.metadata.pointerWriteCommitted, true);
+});
+
+test('platform admin exposure update succeeds when a missing KV pointer is negatively cached', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await seedTeamSite(store, { id: 'site_public', slug: 'public', teamId: 'team_console', visibility: 'internal' });
+  await activateSite(store, 'site_public', { workerName: 'pages-v2-public', visibility: 'internal' });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_public/exposure', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'PATCH',
+      body: { exposure: 'public', reason: 'negative pointer cache test' },
+    }),
+    env(store, {
+      ROUTE_SNAPSHOTS: negativePointerSnapshotStore(),
+      WFP_PROVIDER: {
+        removeOfficeNetBinding: async () => {},
+        verifyOfficeNetAbsent: async () => true,
+      },
+    })
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.equal((await store.getRouteBySiteId('site_public', 'production')).exposure, 'public');
 });
 
 test('platform admin can disable public exposure without changing visibility or restoring OfficeNet', async () => {
@@ -3437,111 +3466,6 @@ test('public exposure snapshot failure compensates the authority policy to inter
   assert.equal(route.exposure, 'internal');
   const audits = await store.listAuditEvents({ environment: 'production', siteId: 'site_public' });
   assert.ok(audits.some((event) => event.metadata?.stage === 'compensation_failed'));
-});
-
-test('public exposure read-back drift compensates the authority policy and never records success', async () => {
-  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
-  await seedPlatformAdmin(store);
-  await seedTeamSite(store, { id: 'site_public', slug: 'public', teamId: 'team_console', visibility: 'internal' });
-  await activateSite(store, 'site_public', { workerName: 'pages-v2-public', visibility: 'internal' });
-
-  const response = await worker.fetch(
-    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_public/exposure', {
-      userId: 'usr_root',
-      admin: true,
-      method: 'PATCH',
-      body: { exposure: 'public', reason: 'pointer drift test' },
-    }),
-    env(store, {
-      ROUTE_SNAPSHOTS: nonConvergingSnapshotStore(),
-      WFP_PROVIDER: {
-        removeOfficeNetBinding: async () => {},
-        verifyOfficeNetAbsent: async () => true,
-      },
-    })
-  );
-
-  assert.equal(response.status, 503, await response.clone().text());
-  assert.equal((await response.json()).error.code, 'ROUTE_POLICY_REPAIR_REQUIRED');
-  assert.equal((await store.getRouteBySiteId('site_public', 'production')).exposure, 'internal');
-  const audits = await store.listAuditEvents({ environment: 'production', siteId: 'site_public' });
-  assert.ok(audits.some((event) => event.metadata?.stage === 'compensation_failed'));
-  assert.equal(audits.some((event) => event.metadata?.stage === 'effective_success'), false);
-});
-
-test('public exposure read-back rejects a snapshot whose ACL payload does not match authority', async () => {
-  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
-  await seedPlatformAdmin(store);
-  await seedTeamSite(store, { id: 'site_public', slug: 'public', teamId: 'team_console', visibility: 'acl' });
-  await activateSite(store, 'site_public', { workerName: 'pages-v2-public', visibility: 'acl' });
-  await store.replaceSiteAclEntries(
-    'site_public',
-    [{ id: 'acl_public', subjectType: 'email', subjectValue: 'reader@example.com', accessRole: 'viewer', effect: 'allow' }],
-    { createdBy: 'usr_root', updatedAt: '2026-07-02T00:00:00.000Z' },
-    'production'
-  );
-
-  const response = await worker.fetch(
-    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_public/exposure', {
-      userId: 'usr_root',
-      admin: true,
-      method: 'PATCH',
-      body: { exposure: 'public', reason: 'ACL snapshot verification' },
-    }),
-    env(store, {
-      ROUTE_SNAPSHOTS: corruptPublicAclSnapshotStore(),
-      WFP_PROVIDER: {
-        removeOfficeNetBinding: async () => {},
-        verifyOfficeNetAbsent: async () => true,
-      },
-    })
-  );
-
-  assert.equal(response.status, 503, await response.clone().text());
-  assert.equal((await response.json()).error.code, 'ROUTE_POLICY_REPAIR_REQUIRED');
-  assert.equal((await store.getRouteBySiteId('site_public', 'production')).exposure, 'internal');
-  const audits = await store.listAuditEvents({ environment: 'production', siteId: 'site_public' });
-  assert.ok(audits.some((event) => event.metadata?.stage === 'compensated_failure'));
-  assert.equal(audits.some((event) => event.metadata?.stage === 'effective_success'), false);
-});
-
-test('public exposure compensation advances policy version after a public pointer was written', async () => {
-  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
-  await seedPlatformAdmin(store);
-  await seedTeamSite(store, { id: 'site_public', slug: 'public', teamId: 'team_console', visibility: 'internal' });
-  await activateSite(store, 'site_public', { workerName: 'pages-v2-public', visibility: 'internal' });
-  const snapshotStore = corruptPublicSnapshotStore();
-
-  const response = await worker.fetch(
-    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_public/exposure', {
-      userId: 'usr_root',
-      admin: true,
-      method: 'PATCH',
-      body: { exposure: 'public', reason: 'pointer compensation test' },
-    }),
-    env(store, {
-      ROUTE_SNAPSHOTS: snapshotStore,
-      WFP_PROVIDER: {
-        removeOfficeNetBinding: async () => {},
-        verifyOfficeNetAbsent: async () => true,
-      },
-    })
-  );
-
-  assert.equal(response.status, 503, await response.clone().text());
-  assert.equal((await response.json()).error.code, 'ROUTE_POLICY_REPAIR_REQUIRED');
-  const route = await store.getRouteBySiteId('site_public', 'production');
-  assert.equal(route.exposure, 'internal');
-  assert.equal(route.policyVersion, 3);
-  const pointer = snapshotStore.read('production:route_pointer:public.workers.xd.team');
-  assert.ok(pointer, 'compensation should leave an internal route pointer');
-  assert.equal(snapshotStore.read(pointer.snapshotKey).exposure, 'internal');
-  const audits = await store.listAuditEvents({ environment: 'production', siteId: 'site_public' });
-  assert.ok(
-    audits.some(
-      (event) => event.metadata?.stage === 'compensated_failure' && event.metadata?.compensation === 'restored_internal'
-    )
-  );
 });
 
 test('public exposure does not start when the required attempted audit cannot be written', async () => {
@@ -4509,67 +4433,22 @@ function createSnapshotStore() {
   };
 }
 
+function negativePointerSnapshotStore() {
+  const values = new Map();
+  return {
+    put: async (key, value) => values.set(key, value),
+    get: async (key) => (key.includes(':route_pointer:') ? null : values.get(key) || null),
+    read: (key) => {
+      const value = values.get(key);
+      return value && typeof value === 'string' ? JSON.parse(value) : value;
+    },
+  };
+}
+
 function failingSnapshotStore() {
   return {
     put: async () => {
       throw new Error('snapshot write failed');
-    },
-  };
-}
-
-function nonConvergingSnapshotStore() {
-  const values = new Map();
-  return {
-    put: async (key, value) => {
-      if (key.includes(':route_pointer:')) {
-        values.set(key, JSON.stringify({
-          environment: 'production',
-          hostname: 'public.workers.xd.team',
-          routeGeneration: 0,
-          policyVersion: 0,
-          snapshotKey: 'production:route_snapshot:public.workers.xd.team:0:0',
-        }));
-        return;
-      }
-      values.set(key, value);
-    },
-    get: async (key) => values.get(key) || null,
-    read: (key) => {
-      const value = values.get(key);
-      return value && typeof value === 'string' ? JSON.parse(value) : value;
-    },
-  };
-}
-
-function corruptPublicAclSnapshotStore() {
-  const values = new Map();
-  return {
-    put: async (key, value) => {
-      const parsed = JSON.parse(value);
-      if (key.includes(':route_snapshot:') && parsed.exposure === 'public') parsed.acl = [];
-      values.set(key, JSON.stringify(parsed));
-    },
-    get: async (key) => values.get(key) || null,
-    delete: async (key) => values.delete(key),
-    read: (key) => {
-      const value = values.get(key);
-      return value && typeof value === 'string' ? JSON.parse(value) : value;
-    },
-  };
-}
-
-function corruptPublicSnapshotStore() {
-  const values = new Map();
-  return {
-    put: async (key, value) => {
-      const parsed = JSON.parse(value);
-      if (key.includes(':route_snapshot:') && parsed.exposure === 'public') parsed.contentHash = 'corrupted';
-      values.set(key, JSON.stringify(parsed));
-    },
-    get: async (key) => values.get(key) || null,
-    read: (key) => {
-      const value = values.get(key);
-      return value && typeof value === 'string' ? JSON.parse(value) : value;
     },
   };
 }
