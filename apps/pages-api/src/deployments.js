@@ -22,7 +22,6 @@ import { newHexId, newId } from './id.js';
 import {
   buildRouteSnapshot,
   clearRoutePointerIfCurrent,
-  readRouteSnapshotState,
   routeSnapshotKey,
   writeRouteSnapshot,
 } from './route-snapshot.js';
@@ -771,7 +770,7 @@ async function createDeployment(request, env, config, store, actor, ctx) {
         const latestRoute = await store.getRouteBySiteId(siteId, config.environment);
         if (!latestRoute) throw deploymentOperationError('ROUTE_ACTIVATION_CONFLICT');
         previousRoute = latestRoute;
-        await assertRouteSnapshotConverged(env, store, site, latestRoute, config.environment);
+        await assertRouteSnapshotConverged(env, store, latestRoute, config.environment);
         const activationExposure = normalizeExposureForDeployment(latestRoute.exposure);
         if (activationExposure !== uploadExposure) {
           throw deploymentOperationError('ROUTE_ACTIVATION_CONFLICT', {
@@ -1329,7 +1328,7 @@ async function rollbackVersion(request, env, config, store, actor, versionId) {
   let route;
   let rollbackProvider;
   try {
-    await assertRouteSnapshotConverged(env, store, site, currentRoute, config.environment);
+    await assertRouteSnapshotConverged(env, store, currentRoute, config.environment);
     rollbackProvider = createDeploymentProvider(env, config, store, site);
     const rollbackExposure = normalizeExposureForDeployment(currentRoute.exposure);
     assertCommitLeaseHealthy(rollbackLease);
@@ -2020,10 +2019,6 @@ async function writeSnapshot(env, store, input) {
   const site = await store.getSite(input.site.id);
   const snapshot = buildRouteSnapshot({ ...input, site, aclEntries });
   await writeRouteSnapshot(env, snapshot);
-  if (env?.ROUTE_SNAPSHOTS && typeof env.ROUTE_SNAPSHOTS.get === 'function') {
-    const state = await readRouteSnapshotState(env, snapshot);
-    if (state.state !== 'exact') throw new Error('ROUTE_SNAPSHOT_NOT_CONFIRMED');
-  }
   return snapshot;
 }
 
@@ -2501,7 +2496,7 @@ function normalizeExposureForDeployment(value) {
   return value === 'public' ? 'public' : 'internal';
 }
 
-async function assertRouteSnapshotConverged(env, store, site, route, environment) {
+async function assertRouteSnapshotConverged(env, store, route, environment) {
   if (!env?.ROUTE_SNAPSHOTS || typeof env.ROUTE_SNAPSHOTS.get !== 'function') return;
   const version = route.activeVersionId
     ? await store.getSiteVersion(route.activeVersionId, environment)
@@ -2511,17 +2506,9 @@ async function assertRouteSnapshotConverged(env, store, site, route, environment
       message: 'The active route version could not be verified before activation.',
     });
   }
-  const aclEntries = await store.listSiteAclEntries(site.id);
-  const latestSite = (await store.getSite(site.id)) || site;
-  const snapshot = buildRouteSnapshot({ site: latestSite, route, version, aclEntries });
-  const state = await readRouteSnapshotState(env, snapshot);
-  if (!route.activeVersionId && route.routeStatus !== 'active' && state.state === 'missing' && !state.pointer) return;
-  if (state.state !== 'exact') {
-    throw deploymentOperationError('ROUTE_ACTIVATION_CONFLICT', {
-      message: 'Route snapshot state is not converged for activation.',
-      action: 'Repair the route snapshot and retry with a new Idempotency-Key.',
-    });
-  }
+  // KV is eventually consistent. The site commit lock and the RoutePointerDO
+  // stale-pointer check protect this activation; an exact KV read here would
+  // turn a cached old/null pointer into a false activation conflict.
 }
 
 export async function ensurePublicWorkerOfficeNetAbsent(

@@ -81,6 +81,81 @@ test('creates deployment, immutable version, active route, and route snapshot', 
   ]);
 });
 
+test('does not fail a deployment when the KV pointer read remains on the previous snapshot', async () => {
+  const store = await createSeededStore();
+  const snapshots = createSnapshotStore();
+  const env = testEnv(store, snapshots);
+
+  const first = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload(),
+      { 'Idempotency-Key': 'stale_pointer_first' }
+    ),
+    env
+  );
+  assert.equal(first.status, 201, await first.clone().text());
+
+  env.ROUTE_SNAPSHOTS = stalePointerSnapshotStore(snapshots);
+  const second = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ moduleContent: 'export default { fetch() { return new Response("v2"); } };' }),
+      { 'Idempotency-Key': 'stale_pointer_second' }
+    ),
+    env
+  );
+
+  assert.equal(second.status, 201, await second.clone().text());
+  assert.equal((await store.getDeployment('dep_2')).status, 'succeeded');
+  assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, 'ver_2');
+});
+
+test('does not fail an assets-only internal deployment when a missing KV pointer is negatively cached', async () => {
+  const store = await createSeededStore();
+  await store.updateSiteVisibility(
+    'site_1',
+    { visibility: 'internal', updatedAt: '2026-06-15T00:00:01.000Z' },
+    'production'
+  );
+  const snapshots = createSnapshotStore();
+  const env = testEnv(store, negativePointerSnapshotStore(snapshots));
+
+  const response = await worker.fetch(
+    publishPlanMultipartRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      {
+        siteId: 'site_1',
+        requestedFallback: 'auto',
+        source: 'cli',
+        publishPlan: {
+          deploymentShape: 'assets-only',
+          requestedFallback: 'auto',
+          resolvedFallback: 'index',
+          routingMode: 'assets-only',
+          workerEntry: null,
+          assetsConfig: { notFoundHandling: 'single-page-application' },
+        },
+        assetManifest: [
+          {
+            path: '/index.html',
+            partName: 'asset-file-0',
+            size: 5,
+            contentType: 'text/html; charset=utf-8',
+          },
+        ],
+        files: [{ field: 'asset-file-0', filename: 'index.html', content: 'hello', type: 'text/html; charset=utf-8' }],
+      },
+      { 'Idempotency-Key': 'negative_pointer_assets_only' }
+    ),
+    env
+  );
+
+  assert.equal(response.status, 201, await response.clone().text());
+  assert.equal((await store.getDeployment('dep_1')).status, 'succeeded');
+  assert.equal((await store.getRouteBySiteId('site_1')).visibility, 'internal');
+});
+
 test('successful deployments deliver site.deployed webhooks for matching subscriptions', async () => {
   const store = await createSeededStore();
   await seedPlatformAdmin(store);
@@ -6666,6 +6741,27 @@ function createSnapshotStore() {
     get: async (key) => (values.has(key) ? JSON.stringify(values.get(key)) : null),
     delete: async (key) => values.delete(key),
     read: (key) => values.get(key),
+  };
+}
+
+function stalePointerSnapshotStore(snapshots) {
+  const pointerKey = 'production:route_pointer:guide.pages.xd.team';
+  const cachedPointer = snapshots.read(pointerKey);
+  return {
+    put: snapshots.put,
+    get: async (key) => (key === pointerKey ? JSON.stringify(cachedPointer) : snapshots.get(key)),
+    delete: snapshots.delete,
+    read: snapshots.read,
+  };
+}
+
+function negativePointerSnapshotStore(snapshots) {
+  const pointerKey = 'production:route_pointer:guide.pages.xd.team';
+  return {
+    put: snapshots.put,
+    get: async (key) => (key === pointerKey ? null : snapshots.get(key)),
+    delete: snapshots.delete,
+    read: snapshots.read,
   };
 }
 
