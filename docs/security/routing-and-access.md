@@ -203,16 +203,14 @@ admin 操作不通过 access key 暴露。
 
 ### Router IP Allowlist
 
-站点网络范围由 route snapshot 的 `exposure` 决定：`internal` 继续受公司网络 IP allowlist 保护，只有可信的 schema v3 snapshot 显式声明 `exposure=public` 时才允许从公网继续访问。旧 v2 snapshot、字段缺失或非法 exposure 一律按 `internal` 处理，不能绕过 IP 门禁。
+第一版 `pages-router` 和 `pages-router-staging` 必须先做公司网络 IP allowlist，再进入 visibility、SSO、ACL 和 dispatch 判断。默认策略是：**子站只能从公司内网、VPN、办公出口或明确允许的公司代理出口访问**。
 
 执行顺序：
 
 ```text
-1. 校验 environment、hostname 和平台保留路径。
-2. 读取并验证 route pointer / snapshot，只解析决定网络范围所需的可信策略。
-3. schema v3 且 exposure=public：跳过公司网络 IP allowlist；其它情况必须命中当前环境 allowlist。
-4. 通过网络范围判断后，再校验 route 可用性、accessMode、SSO/ACL 和 dispatch target。
-5. snapshot 缺失、损坏、版本未知或 accessMode 非法时 fail closed，不 dispatch 到 User Worker。
+1. 校验 request IP 是否命中当前环境 allowlist。
+2. 不命中：直接 403，不读取站点 ACL，不跳 SSO，不 dispatch 到 User Worker。
+3. 命中：继续 hostname/env 校验、route snapshot、visibility、SSO/ACL。
 ```
 
 IP allowlist 规则：
@@ -221,42 +219,32 @@ IP allowlist 规则：
 - allowlist 来源应是 Worker runtime `vars` 或配置快照，例如 `ROUTER_IP_ALLOWLIST_CIDRS`，不能由用户站点或 `--config` 控制。
 - 需要正确解析 Cloudflare 提供的客户端 IP；如果请求不经过 Cloudflare 标准链路或无法可信取得客户端 IP，必须 fail closed。
 - allowlist 变更属于高风险操作，需要审计、配置校验和快速回滚。
-- legacy `visibility=internal` 表示匿名/免登录 access mode，不再承担网络范围语义；互联网是否可达只看 Admin 管理的 exposure。
-- Platform Admin 开启 public 时必须填写理由并确认，平台先移除并验证当前 Worker 不含 `XD_OFFICE_NET`，再提交 D1 policy 和 route snapshot。
-- 当前阶段 Admin exposure 变更不要求 recent login；关闭 public 只恢复 Router IP 门禁，不立即恢复 `XD_OFFICE_NET`，后续 internal 完整部署才会重新注入。
+- 第一版的 `internal` 表示“公司网络内免登录访问”，不表示互联网公开。
+
+如果未来需要真正公网能力，应扩展为显式的两层模型，例如 `{ "exposure": "public", "access": "acl" }`，并单独评审 WAF、滥用防护、缓存、审计和法务/合规要求；不要复用第一版 `internal`。
 
 ### 子站访问门禁
 
 子站访问由 `pages-router` 根据 route snapshot 和必要的 strict check 决策：
 
-| exposure | 网络范围 |
-| -------- | -------- |
-| `internal` | 仅公司内网、VPN、办公出口或明确允许的公司代理出口可达 |
-| `public` | 互联网可达；仍继续执行 accessMode、SSO、ACL 和 disabled 判断 |
+| visibility | router 行为                                                             |
+| ---------- | ----------------------------------------------------------------------- |
+| `internal` | 命中 router IP allowlist 后可免登录访问，仍记录访问审计或采样审计       |
+| `org`      | 需要有效 `site_session`，且用户 employee status 为 active；没有时走 SSO |
+| `acl`      | 需要有效 `site_session`，并命中任意一条 allow-only 邮箱 ACL；active owner 隐式可访问 |
+| `owner`    | 需要 active owner 身份                                                  |
+| `disabled` | 直接拒绝，不 dispatch 到 User Worker                                    |
 
-外部 CLI/API 继续使用 visibility，Router 内部按以下兼容映射执行 accessMode：
-
-| visibility | accessMode | router 行为 |
-| ---------- | ---------- | ----------- |
-| `internal` | `anonymous` | 在允许的网络范围内免登录访问 |
-| `org` | `org` | 需要有效 `site_session`，且用户 employee status 为 active；没有时走 SSO |
-| `acl` | `acl` | 需要有效 `site_session`，并命中 allow-only 邮箱或部门 ACL；active owner 隐式可访问 |
-| `owner` | `owner` | 需要 active owner 身份 |
-| `disabled` | `disabled` | 直接拒绝，不 dispatch 到 User Worker |
-
-router 必须先处理网络范围和身份门禁，再 dispatch 到 User Worker。User Worker 不能自行决定是否绕过平台门禁。未知 visibility，包括旧的 public，必须 fail closed；schema v3 accessMode 缺失、非法或与 visibility 投影不一致也必须 fail closed。
+router 必须先处理门禁，再 dispatch 到 User Worker。User Worker 不能自行决定是否绕过平台门禁。未知 visibility，包括旧的 public，必须 fail closed。
 
 推荐判定顺序：
 
 ```text
-if exposure != public and request IP not in allowlist:
+if visibility == disabled:
   deny
 
-if accessMode == disabled:
-  deny
-
-if accessMode == anonymous:
-  allow anonymous
+if visibility == internal:
+  allow anonymous after IP allowlist
 
 require site_session
 require employeeStatus == active
@@ -264,13 +252,13 @@ require employeeStatus == active
 if userId == ownerUserId:
   allow
 
-if accessMode == org:
+if visibility == org:
   allow
 
-if accessMode == owner:
+if visibility == owner:
   deny non-owner
 
-if accessMode == acl:
+if visibility == acl:
   allow if any ACL email or department path entry matches
 
 otherwise:

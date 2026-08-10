@@ -9,7 +9,6 @@
 - `apps/pages-api` 不公开 `/openapi.json` 或 `/.xd-pages/api/openapi.json`。
 - `apps/pages-api/src/openapi.js` 是开发期 API 合约源码，只服务实现、测试和受控内部集成。
 - 受控集成可使用经过认证的站点级 vars/secrets mutation API；普通用户和 agent 仍通过 `xd-cell` 操作，OpenAPI 不因此成为公开入口。
-- 站点 `visibility` 继续是 CLI/API 兼容字段，其中 `internal` 映射为匿名 access mode；网络 `exposure` 是独立的 Platform Admin 能力，普通用户 visibility、ACL、deploy 和 rollback 请求不得修改它。
 - API 文档不复刻不完整 endpoint 清单；需要改 API 行为时，以 handler、`apps/pages-api/src/openapi.js` 和 focused `node:test` 一起更新为准。
 - 用户可见发布、状态、访问控制和回滚流程以 CLI help 与 `apps/pages-skill/skill/SKILL.md` 为准。
 - v1 `apps/server` 已进入墓碑模式；除精确的 `GET/HEAD /health` 外，`/deploy`、`/list`、`/site/:name`、`/openapi.json`、Markdown 路由和未知路径都返回 `410 LEGACY_API_RETIRED`，不再提供旧 OpenAPI 或管理能力。

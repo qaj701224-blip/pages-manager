@@ -155,11 +155,8 @@ export function listConsoleUsers({ query, ...options } = {}) {
   return fetchJson(`/api/console/users${qs ? `?${qs}` : ''}`, options);
 }
 
-export function listAdminSites({ exposure, ...options } = {}) {
-  const search = new URLSearchParams();
-  if (exposure) search.set('exposure', exposure);
-  const query = search.toString();
-  return fetchJson(`/api/console/admin/sites${query ? `?${query}` : ''}`, options);
+export function listAdminSites(options = {}) {
+  return fetchJson('/api/console/admin/sites', options);
 }
 
 export function getAdminSite(siteId, options = {}) {
@@ -172,18 +169,6 @@ export function getAdminSiteAccess(siteId, options = {}) {
 
 export function updateAdminSiteAccess(siteId, body, options = {}) {
   return fetchJson(`/api/console/admin/sites/${encodeURIComponent(siteId)}/access`, {
-    ...options,
-    method: 'PATCH',
-    body,
-  });
-}
-
-export function getAdminSiteExposure(siteId, options = {}) {
-  return fetchJson(`/api/console/admin/sites/${encodeURIComponent(siteId)}/exposure`, options);
-}
-
-export function updateAdminSiteExposure(siteId, body, options = {}) {
-  return fetchJson(`/api/console/admin/sites/${encodeURIComponent(siteId)}/exposure`, {
     ...options,
     method: 'PATCH',
     body,

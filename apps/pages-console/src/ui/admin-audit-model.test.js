@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { auditActorView, auditMetadataSummary, filterAuditEvents } from './admin-audit-model.js';
+import { auditActorView, filterAuditEvents } from './admin-audit-model.js';
 
 test('audit actor view prefers SSO realname over generic user label', () => {
   assert.deepEqual(
@@ -42,16 +42,4 @@ test('audit filtering searches actor display name and email', () => {
 
   assert.deepEqual(filterAuditEvents(events, { query: '徐天麒', decision: 'all' }), events);
   assert.deepEqual(filterAuditEvents(events, { query: 'actor@example.com', decision: 'all' }), events);
-});
-
-test('audit metadata summary distinguishes stages from the same operation', () => {
-  assert.equal(
-    auditMetadataSummary({
-      operationId: 'op_public',
-      siteSlug: 'public',
-      reason: 'staging verification',
-      stage: 'policy_committed',
-    }),
-    'stage: policy_committed · siteSlug: public'
-  );
 });

@@ -47,7 +47,7 @@ export function auditMetadataSummary(metadata) {
   if (!metadata || typeof metadata !== 'object') return '无附加信息';
   const keys = Object.keys(metadata);
   if (!keys.length) return '无附加信息';
-  const preferred = ['stage', 'failureCode', 'siteSlug', 'siteId', 'teamId', 'targetTeamId', 'userId', 'action', 'reason'];
+  const preferred = ['siteSlug', 'siteId', 'teamId', 'targetTeamId', 'userId', 'action', 'reason'];
   const parts = preferred.filter((key) => metadata[key]).map((key) => `${key}: ${metadata[key]}`);
   if (parts.length) return parts.slice(0, 2).join(' · ');
   return `${keys.length} 个字段`;

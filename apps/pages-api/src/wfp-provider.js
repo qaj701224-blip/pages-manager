@@ -19,7 +19,7 @@ export function createDeploymentProvider(env, config) {
         tags: ['pages-v2', config.environment, input.site.slug],
         bindings: [
           kvGatewayServiceBinding(config.environment),
-          ...userWorkerVpcNetworkBindings(env, input.decision, input.exposure),
+          ...userWorkerVpcNetworkBindings(env, input.decision),
           ...runtimeBindingsForProvider(input.runtimeBindings),
         ],
       });
@@ -39,12 +39,6 @@ export function createDeploymentProvider(env, config) {
     async deleteSecret(input) {
       return client.deleteUserWorkerSecret(input.workerName, input.name, { signal: input.signal });
     },
-    async removeOfficeNetBinding(input) {
-      return client.removeOfficeNetBinding(input.workerName, { signal: input.signal });
-    },
-    async verifyOfficeNetAbsent(input) {
-      return client.verifyOfficeNetAbsent(input.workerName, { signal: input.signal });
-    },
     async replacePlainTextBindings(input) {
       return client.updateUserWorkerBindings(input.workerName, {
         bindings: runtimeBindingsForProvider({ vars: input.vars || {} }),
@@ -62,9 +56,8 @@ export function kvGatewayServiceBinding(environment) {
   };
 }
 
-function userWorkerVpcNetworkBindings(env, decision, exposure = 'internal') {
+function userWorkerVpcNetworkBindings(env, decision) {
   if (!decisionUsesUserWorker(decision)) return [];
-  if (exposure === 'public') return [];
   const tunnelId = String(env.PAGES_USER_WORKER_VPC_TUNNEL_ID || '').trim();
   if (!tunnelId) return [];
   return [
@@ -106,12 +99,6 @@ function withWfpMetadata(provider) {
     },
     async deleteSecret(input) {
       return provider.deleteSecret?.(input);
-    },
-    async removeOfficeNetBinding(input) {
-      return provider.removeOfficeNetBinding?.(input);
-    },
-    async verifyOfficeNetAbsent(input) {
-      return provider.verifyOfficeNetAbsent?.(input);
     },
     async replacePlainTextBindings(input) {
       return provider.replacePlainTextBindings?.(input);

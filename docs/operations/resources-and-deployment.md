@@ -364,11 +364,11 @@ secrets:
 
 `CF_ACCOUNT_ID` 和 `CF_API_TOKEN` 是 `pages-api` 运行时调用 Cloudflare API / Workers for Platforms API 或 ordinary Worker deploy API 的配置，只能注入 `pages-api`。`CF_API_TOKEN` 不得注入 router、auth、user Worker、CLI、`--config` 文件或公开文档。`CLOUDFLARE_API_TOKEN` 只用于 Wrangler / GitHub Actions 部署，不能作为 Worker runtime secret 注入。
 
-`pages-api` 的 API 路由不按来源 IP 限制，所有 API 请求都必须使用 HTTPS，并由各 handler 执行 token、access key、session、scope 和 owner/team 校验。`IP_ALLOWLIST` 仍由现有模板注入 `pages-api` 作为兼容配置，部署期间继续要求提供，但 Worker 不读取它，也不把它作为请求门禁。子站默认/internal exposure 的 IP 门禁由 `pages-router` 的 `ROUTER_IP_ALLOWLIST_CIDRS` 执行；只有可信 schema v3 public snapshot 绕过该门禁。`pages-console` 继续读取 `IP_ALLOWLIST`，在 session、管理员权限和 CSRF 校验之外先限制公司网络来源。
+`pages-api` 的 API 路由不按来源 IP 限制，所有 API 请求都必须使用 HTTPS，并由各 handler 执行 token、access key、session、scope 和 owner/team 校验。`IP_ALLOWLIST` 仍由现有模板注入 `pages-api` 作为兼容配置，部署期间继续要求提供，但 Worker 不读取它，也不把它作为请求门禁。子站访问的 IP 门禁仍由 `pages-router` 的 `ROUTER_IP_ALLOWLIST_CIDRS` 执行；`pages-console` 继续读取 `IP_ALLOWLIST`，在 session、管理员权限和 CSRF 校验之外先限制公司网络来源。内部 service binding host 继续由 internal host 校验保护。
 
 `WFP_DISPATCH_NAMESPACE` 必须与 `PAGES_ENV` 强绑定：production 只能是 `xd-cell-workers-production`，staging 只能是 `xd-cell-workers-staging`。`packages/wfp-client` 的 `readWfpConfig` 会在运行时做这层校验，部署脚本也应做静态校验。`WFP_COMPATIBILITY_DATE` 当前在 wrangler template 中固定为 `2026-06-15`，保证 Worker 模块语义可复现；需要升级时走 PR 修改模板。`CF_API_BASE_URL` 默认是 `https://api.cloudflare.com/client/v4`；production / staging 即使配置该值，也必须保持 host 为 `api.cloudflare.com`，避免把 `CF_API_TOKEN` 发往非 Cloudflare API host。local/test 才允许使用其它 HTTPS host 做 mock。
 
-`PAGES_USER_WORKER_VPC_TUNNEL_ID` 是可选的办公网 Tunnel ID。部署 workflow 从 GitHub Environment Variable `vars.PAGES_USER_WORKER_VPC_TUNNEL_ID` 注入，wrangler template 只保留 `__PAGES_USER_WORKER_VPC_TUNNEL_ID__` 占位符，不在 Git 中提交具体 Cloudflare resource id。为空时不向 WFP User Worker 注入 VPC Network binding；非空时仅 internal exposure 的 `worker-only` 和 `worker-with-assets` 发布会获得固定 binding `XD_OFFICE_NET`，`assets-only` 不绑定。Public Worker 不注入该 binding；Admin 开启 public 时会先移除并读回确认当前 active Worker 已无 `XD_OFFICE_NET`。关闭 public 不立即恢复 binding，后续 internal 完整部署才按配置重新注入。
+`PAGES_USER_WORKER_VPC_TUNNEL_ID` 是可选的办公网 Tunnel ID。部署 workflow 从 GitHub Environment Variable `vars.PAGES_USER_WORKER_VPC_TUNNEL_ID` 注入，wrangler template 只保留 `__PAGES_USER_WORKER_VPC_TUNNEL_ID__` 占位符，不在 Git 中提交具体 Cloudflare resource id。为空时不向 WFP User Worker 注入 VPC Network binding；非空时仅 `worker-only` 和 `worker-with-assets` 发布会获得固定 binding `XD_OFFICE_NET`，`assets-only` 发布不绑定。未来开放 `public` 站点时，public 站点必须继续跳过该绑定。
 
 同一个 `PAGES_USER_WORKER_VPC_TUNNEL_ID` 也用于给 `pages-api` 和 `pages-auth` 自身渲染 `XD_OFFICE_NET` VPC Network binding。两个 Worker 调用 XDS / OA `list-by-email` 时都必须使用 `env.XD_OFFICE_NET.fetch(...)`；如果 `XDS_OPENAI_TOKEN` 或 `XD_OFFICE_NET` binding 缺失，部门 hydration 返回 `unavailable`，登录和控制台会话继续完成，但不会更新用户部门路径或部门团队关系。SSO profile 明确提供的完整 `departments` 路径数组与已落库路径会合并作为当前登录的回退；XDS hydration 成功时以最新目录路径为准。原始部门 ID 不参与 ACL，没有可信完整路径时部门 ACL 继续 fail closed。不得 fallback 到全局公网 `fetch` 调用 XDS。
 
@@ -447,7 +447,7 @@ secrets:
   PAGES_CAP_JWT_SECRET_*
 ```
 
-router 不需要 Cloudflare API token。router 只能 dispatch 到当前环境的 WFP namespace 或当前环境预绑定的 slot service binding。`ROUTER_IP_ALLOWLIST_CIDRS` 仍是 internal/default 路径的强制配置；缺失或格式错误时非 public 请求必须 fail closed，可信 public snapshot 不依赖该 allowlist 放行。当前实现用统一的 `PAGES_SESSION_JWT_*` registry 签发和校验 `site_session` 与 `internal_worker_jwt`，通过 `PAGES_SESSION_JWT_ISSUER`、`purpose`、`aud`、`kid` 和 `env` 区分用途。
+router 不需要 Cloudflare API token。router 只能 dispatch 到当前环境的 WFP namespace 或当前环境预绑定的 slot service binding。`ROUTER_IP_ALLOWLIST_CIDRS` 是第一版强制配置；缺失或格式错误时 router 必须 fail closed。当前实现用统一的 `PAGES_SESSION_JWT_*` registry 签发和校验 `site_session` 与 `internal_worker_jwt`，通过 `PAGES_SESSION_JWT_ISSUER`、`purpose`、`aud`、`kid` 和 `env` 区分用途；不要再配置独立的 `INTERNAL_JWT_*` 或 `SESSION_SIGNING_*` 名称，避免文档和 wrangler template 串线。
 
 router wrangler template 静态声明当前环境的 `PAGES_DISPATCH` dispatch namespace。渲染阶段从部署脚本输出读取 `PAGES_NORMAL_WORKER_SLOT_BINDINGS_JSON` 来生成旧 active slot route 所需的稀疏 `SITE_SLOT_*` service binding。空闲 Worker 不参与 router binding；管理员删除空闲 Worker 后不需要立即触发 router deploy，下一次手动 router deploy 会自然移除已经不再 active 的 binding。
 
@@ -607,7 +607,7 @@ v2 runtime secret 注入使用 `scripts/put-pages-v2-secrets.sh <app>`。它会�
 - `pages-api` API 请求必须使用 HTTPS；不得再把 `IP_ALLOWLIST` 作为 API 请求门禁。
 - `pages-console` 仍必须配置有效的 `IP_ALLOWLIST`，并在读取 session、调用 service binding 或返回静态资源前执行公司网络门禁。
 - Cindy connection 断言按请求经 JWKS 验签,不新增专用 IP allowlist;受信 issuer 白名单先于取键。
-- `ROUTER_IP_ALLOWLIST_CIDRS` 必须存在、可解析、只包含公司批准的内网/VPN/办公出口 CIDR；缺失时 internal/default 子站访问必须 fail closed。
+- `ROUTER_IP_ALLOWLIST_CIDRS` 必须存在、可解析、只包含公司批准的内网/VPN/办公出口 CIDR；缺失时部署或启动必须 fail closed。
 - `CF_API_TOKEN` 只能注入 `pages-api` runtime；`CLOUDFLARE_API_TOKEN` 只能出现在 GitHub Actions / Wrangler 部署环境。
 - `pages-router` 和 `pages-router-staging` 的 wrangler 配置不能同时出现两套环境 binding 或两套 signing key。
 - slot service binding 必须与当前环境一致，例如 production router 只能绑定 `pages-v2-production-slot-*`，staging router 只能绑定 `pages-v2-staging-slot-*`。
@@ -640,7 +640,7 @@ staging 首次部署前必须完成：
 9. `xd-cell login --env staging` 能完成 SSO、device code 手动确认和 CLI token 保存。
 10. `xd-cell deploy --env staging` 至少验证 static、SPA 和 custom `.js/.mjs` Worker 三类 artifact；`.ts` Worker 入口在未接入 bundler 前必须 fail closed。
 11. 验证 `xd-cell secrets put/delete <site> <name>`、带 `vars` 的 Worker deploy、后续不传 `vars` 的 Worker deploy 沿用站点级 vars、显式空 `vars` 的 Worker deploy 会清空站点级 vars；后续不传 secret 的 deploy 仍能注入站点级 enabled secrets，删除 secret 后下一次 Worker deploy 不再注入。
-12. staging 子站访问验证 internal/public exposure × `internal`(anonymous)、`org`、`acl`、`owner`、`disabled`；确认只有可信 public snapshot 绕过 IP，public runtime 跨源请求被拒绝，Public Worker 无 `XD_OFFICE_NET`，关闭 public 不即时恢复 binding，后续 internal deploy 才恢复。
+12. staging 子站访问验证 IP allowlist、`internal`、`org`、`acl`、`owner`、`disabled`、header/cookie 清洗、`site_session` freshness 和 rollback。
 13. v1 `api.workers.xd.team`、旧 exact route、旧 skill 和旧发布 workflow 不受 staging v2 部署影响；v2 `*.workers.xd.team/*` wildcard 不抢占 v1 exact route。
 
 ### Cindy Connections 断言鉴权联调附加清单

@@ -15,29 +15,8 @@ export function formatSiteActionError(error) {
   if (code === 'SITE_PUBLISHER_REQUIRED') return '当前账号没有发布权限，需要站点归属用户或团队 publisher/admin 操作。';
   if (code === 'SITE_ADMIN_REQUIRED') return '当前账号没有管理员权限，需要站点归属用户或团队 admin 操作。';
   if (code === 'SITE_NOT_FOUND') return '当前账号无权访问该站点，或站点已经不存在。';
-  if (code === 'SITE_EXPOSURE_AUDIT_REQUIRED') return '审计记录当前不可用，公网访问操作尚未开始，请稍后重试。';
-  if (code === 'SITE_EXPOSURE_AUDIT_FAILED') return '公网访问已经生效，但最终审计记录未确认，请刷新站点状态并核对审计日志。';
   if (error?.message && error?.action) return `${error.message} ${error.action}`;
   return error?.message || code || '操作失败，请稍后重试。';
-}
-
-export function siteExposureAuditWarning(exposure) {
-  return exposure === 'public'
-    ? '公网访问已经生效，但最终审计记录未确认，请刷新站点状态并核对审计日志。'
-    : '公网访问已关闭，但最终审计记录未确认，请刷新站点状态并核对审计日志。';
-}
-
-export function siteAccessEffectLabel({ exposure, accessMode, visibility } = {}) {
-  const normalizedExposure = exposure === 'public' ? 'public' : 'internal';
-  const normalizedAccessMode = accessMode || (visibility === 'internal' ? 'anonymous' : visibility);
-  const labels = {
-    anonymous: normalizedExposure === 'public' ? '互联网匿名访问' : '公司网络内免登录访问',
-    org: normalizedExposure === 'public' ? '公网可达，需企业成员登录' : '公司网络内需企业成员登录',
-    acl: normalizedExposure === 'public' ? '公网可达，需通过 ACL' : '公司网络内需通过 ACL',
-    owner: normalizedExposure === 'public' ? '公网可达，仅归属方登录' : '公司网络内仅归属方登录',
-    disabled: '站点已停用',
-  };
-  return labels[normalizedAccessMode] || '访问策略无效';
 }
 
 const ACL_SUBJECT_TYPES = new Set(['email', 'department']);

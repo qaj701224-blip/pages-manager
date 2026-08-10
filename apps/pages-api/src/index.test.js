@@ -409,16 +409,13 @@ test('every OpenAPI management operation reaches API authentication outside the 
 
   for (const [pathTemplate, pathItem] of Object.entries(openApi.paths)) {
     const pathname = pathTemplate.replace('{id}', 'resource_1').replace('{site}', 'guide');
-    const isConsoleBffPath = pathTemplate.startsWith('/.xd-pages/api/console/');
     for (const method of methods) {
       if (!pathItem[method]) continue;
       await t.test(`${method.toUpperCase()} ${pathTemplate}`, async () => {
-        const headers = { 'CF-Connecting-IP': '203.0.113.8' };
-        if (isConsoleBffPath) headers['X-Console-BFF'] = 'pages-console';
         const response = await worker.fetch(
-          new Request(`${isConsoleBffPath ? 'https://pages-api.internal' : 'https://api.pages.xd.team'}${pathname}`, {
+          new Request(`https://api.pages.xd.team${pathname}`, {
             method: method.toUpperCase(),
-            headers,
+            headers: { 'CF-Connecting-IP': '203.0.113.8' },
           }),
           {
             PAGES_ENV: 'production',
@@ -428,10 +425,7 @@ test('every OpenAPI management operation reaches API authentication outside the 
         );
 
         assert.equal(response.status, 401, `${method.toUpperCase()} ${pathname}`);
-        assert.equal(
-          (await response.json()).error.code,
-          isConsoleBffPath ? 'CONSOLE_AUTH_REQUIRED' : 'PAGES_AUTH_REQUIRED'
-        );
+        assert.equal((await response.json()).error.code, 'PAGES_AUTH_REQUIRED');
       });
     }
   }

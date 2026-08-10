@@ -13,7 +13,6 @@
   "dependencies": {
     "@xd/browser-pages": "workspace:*",
     "@xd/ip-guard": "workspace:*",
-    "@xd/pages-access-policy": "workspace:*",
     "@xd/pages-runtime-protocol": "workspace:*",
     "@xd/session-kit": "workspace:*",
     "@xd/worker-kit": "workspace:*"
