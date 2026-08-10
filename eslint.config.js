@@ -1,5 +1,6 @@
 import js from '@eslint/js';
 import prettier from 'eslint-config-prettier';
+import noDirectNextId from './scripts/eslint-rules/no-direct-next-id.js';
 
 // minimatch 不用 ** 匹配 .. 段，跨 app / 跨包相对路径必须按 src 下最大嵌套深度逐级列出字面前缀（各留一级余量）。
 const crossAppSrcImports = {
@@ -97,6 +98,17 @@ export default [
     files: ['apps/*/src/**/*.test.js', 'packages/*/src/**/*.test.js'],
     rules: {
       'no-restricted-imports': ['error', { patterns: [crossAppSrcImports, relativePackagesImports] }],
+    },
+  },
+
+  {
+    files: ['apps/pages-api/src/**/*.js'],
+    ignores: ['apps/pages-api/src/id.js', 'apps/pages-api/src/**/*.test.js'],
+    plugins: {
+      'pages-api': { rules: { 'no-direct-next-id': noDirectNextId } },
+    },
+    rules: {
+      'pages-api/no-direct-next-id': 'error',
     },
   },
 

@@ -18,7 +18,7 @@ import {
 } from './deployment-plan.js';
 import { isMultipartRequest, readMultipartDeploymentBody, validateAssetFiles } from './deployment-upload.js';
 import { jsonError, jsonOk } from './http.js';
-import { newHexId, newId } from './id.js';
+import { newHexId, nextId } from './id.js';
 import {
   buildRouteSnapshot,
   clearRoutePointerIfCurrent,
@@ -2719,11 +2719,6 @@ function validateDeployableSiteSlug(siteSlug, environment) {
 
 function siteNotFound(action) {
   return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, action);
-}
-
-function nextId(env, prefix) {
-  if (typeof env?.nextId === 'function') return env.nextId(prefix);
-  return newId(prefix);
 }
 
 function nextSiteUuid(env) {

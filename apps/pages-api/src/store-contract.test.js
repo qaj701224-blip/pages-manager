@@ -320,6 +320,98 @@ test('site stores reject stale v1 claim snapshots without partial takeover state
 });
 
 for (const backend of storeBackends) {
+  test(`${backend.name} contract: resolves the current public exposure reason from successful operations`, async () => {
+    const fixture = await backend.create();
+    try {
+      await createSite(fixture.store);
+      await fixture.store.recordAuditEvent(
+        exposureReasonAudit(
+          'op_old:effective_success',
+          'effective_success',
+          '旧理由',
+          '2026-08-10T01:00:00.000Z',
+          { effectiveExposure: 'public' }
+        )
+      );
+      await fixture.store.recordAuditEvent(
+        exposureReasonAudit(
+          'op_fallback:policy_committed',
+          'policy_committed',
+          'fallback 理由',
+          '2026-08-10T02:00:00.000Z'
+        )
+      );
+      await fixture.store.recordAuditEvent(
+        exposureReasonAudit('op_failed:attempted', 'attempted', '失败尝试', '2026-08-10T03:00:00.000Z')
+      );
+      await fixture.store.recordAuditEvent(
+        exposureReasonAudit('op_failed:failed', 'failed', '失败尝试', '2026-08-10T03:00:01.000Z', {
+          decision: 'deny',
+          statusCode: 503,
+        })
+      );
+      await fixture.store.recordAuditEvent(
+        exposureReasonAudit(
+          'op_compensated:policy_committed',
+          'policy_committed',
+          '补偿尝试',
+          '2026-08-10T04:00:00.000Z'
+        )
+      );
+      await fixture.store.recordAuditEvent(
+        exposureReasonAudit(
+          'op_compensated:compensated_failure',
+          'compensated_failure',
+          '补偿尝试',
+          '2026-08-10T04:00:01.000Z',
+          {
+            decision: 'deny',
+            statusCode: 503,
+          }
+        )
+      );
+
+      assert.deepEqual(
+        await fixture.store.getLatestAdminSitePublicExposureReason({
+          environment: 'production',
+          siteId: 'site_1',
+          currentExposure: 'public',
+        }),
+        { text: 'fallback 理由', changedAt: '2026-08-10T02:00:00.000Z' }
+      );
+
+      await fixture.store.recordAuditEvent(
+        exposureReasonAudit('op_tie_a:effective_success', 'effective_success', '并列 A', '2026-08-10T05:00:00.000Z', {
+          effectiveExposure: 'public',
+        })
+      );
+      await fixture.store.recordAuditEvent(
+        exposureReasonAudit('op_tie_z:effective_success', 'effective_success', '并列 Z', '2026-08-10T05:00:00.000Z', {
+          effectiveExposure: 'public',
+        })
+      );
+      assert.deepEqual(
+        await fixture.store.getLatestAdminSitePublicExposureReason({
+          environment: 'production',
+          siteId: 'site_1',
+          currentExposure: 'public',
+        }),
+        { text: '并列 Z', changedAt: '2026-08-10T05:00:00.000Z' }
+      );
+
+      assert.equal(
+        await fixture.store.getLatestAdminSitePublicExposureReason({
+          environment: 'production',
+          siteId: 'site_1',
+          currentExposure: 'internal',
+        }),
+        null
+      );
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   test(`${backend.name} contract: sites enforce environment-scoped slugs and create owner authority`, async () => {
     const fixture = await backend.create();
     try {
@@ -1132,6 +1224,27 @@ async function createSite(store) {
     routeId: 'route_1',
     hostname: 'docs.pages.xd.team',
   });
+}
+
+function exposureReasonAudit(id, stage, reason, createdAt, overrides = {}) {
+  return {
+    id,
+    environment: 'production',
+    eventType: 'admin.site.exposure',
+    siteId: 'site_1',
+    actorType: 'platform_admin',
+    decision: overrides.decision || 'allow',
+    statusCode: overrides.statusCode || (stage === 'attempted' ? 202 : 200),
+    metadata: {
+      operationId: id.split(':')[0],
+      requestedExposure: 'public',
+      authorityExposure: stage === 'policy_committed' ? 'public' : null,
+      effectiveExposure: overrides.effectiveExposure || null,
+      stage,
+      reason,
+    },
+    createdAt,
+  };
 }
 
 function deploymentInput() {

@@ -4,7 +4,7 @@ import { accessModeFromVisibility } from '@xd/pages-access-policy';
 import { isWfpWorkerResource } from './admin-resource-governance.js';
 import { authenticateApiRequest } from './auth.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
-import { newHexId, newId } from './id.js';
+import { newHexId, nextId } from './id.js';
 import {
   MAX_SITE_SECRET_VALUE_BYTES,
   normalizeRuntimeSecretName,
@@ -1833,14 +1833,6 @@ function matchSiteTransfer(pathname) {
 function matchSiteId(pathname) {
   const match = pathname.match(/^\/\.xd-pages\/api\/sites\/([^/]+)$/);
   return match ? match[1] : null;
-}
-
-function nextId(env, prefix) {
-  if (typeof env?.nextId === 'function') {
-    const id = env.nextId(prefix);
-    if (id) return id;
-  }
-  return newId(prefix);
 }
 
 function nextSiteUuid(env) {

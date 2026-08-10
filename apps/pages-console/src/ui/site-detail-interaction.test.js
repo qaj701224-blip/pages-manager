@@ -72,6 +72,22 @@ test('admin exposure audit warnings remain visible after a successful update', (
   assert.match(panelSource, /siteExposureAuditWarning\(nextExposure\)/);
 });
 
+test('admin exposure panel shows the current public reason as escaped React text', () => {
+  const panelSource = siteDetailSource.slice(
+    siteDetailSource.indexOf('function AdminExposurePanel'),
+    siteDetailSource.indexOf('function AclEntryDialog')
+  );
+
+  assert.match(panelSource, /exposure === 'public' && access\.exposureReason\?\.text/);
+  assert.match(panelSource, /aria-label="最近开启公网理由"/);
+  assert.match(panelSource, /\{access\.exposureReason\.text\}/);
+  assert.match(panelSource, /开启时间：\{formatDate\(access\.exposureReason\.changedAt\)\}/);
+  assert.doesNotMatch(panelSource, /dangerouslySetInnerHTML/);
+  assert.match(stylesSource, /\.exposure-policy-reason\s*\{[\s\S]*?display:\s*grid;/);
+  assert.match(stylesSource, /\.exposure-policy-reason strong\s*\{[\s\S]*?overflow-wrap:\s*anywhere;/);
+  assert.match(stylesSource, /:root\[data-theme='dark'\] \.exposure-policy-reason/);
+});
+
 test('runtime config uses add dialogs instead of inline creation forms', () => {
   assert.match(siteDetailSource, /<RuntimeVarDialog/);
   assert.match(siteDetailSource, /<RuntimeSecretDialog/);

@@ -50,6 +50,8 @@ test('admin site management exposes network exposure controls without changing v
   assert.match(siteDetailSource, /updateAdminSiteExposure/);
   assert.match(siteDetailSource, /AdminExposurePanel/);
   assert.match(siteDetailSource, /公网访问理由/);
+  assert.match(siteDetailSource, /最近开启理由/);
+  assert.match(siteDetailSource, /开启时间/);
   assert.match(siteDetailSource, /移除 XD_OFFICE_NET/);
   assert.match(siteDetailSource, /互联网匿名访问/);
   assert.match(siteDetailSource, /不会立即恢复 XD_OFFICE_NET/);

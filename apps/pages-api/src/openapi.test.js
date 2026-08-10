@@ -30,6 +30,14 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
   assert.match(body.components.schemas.SiteVisibility.description, /internal.*anonymous/);
   assert.match(body.components.schemas.SiteVisibility.description, /exposure/);
   assert.ok(body.components.schemas.AdminSiteExposureRequest);
+  assert.deepEqual(body.components.schemas.AdminSiteExposureReason.required, ['text', 'changedAt']);
+  assert.deepEqual(body.components.schemas.AdminSiteAccess.required, [
+    'exposure',
+    'accessMode',
+    'visibility',
+    'aclEntries',
+    'exposureReason',
+  ]);
   assert.deepEqual(body.paths['/.xd-pages/api/sites/{id}'].patch['x-error-codes'], [
     'SITE_VISIBILITY_INVALID',
     'SITE_EXPOSURE_ADMIN_REQUIRED',
@@ -38,6 +46,14 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
     'ROUTE_POLICY_REPAIR_REQUIRED',
   ]);
   assert.ok(body.paths['/.xd-pages/api/console/admin/sites/{id}/exposure'].patch);
+  assert.equal(
+    body.paths['/.xd-pages/api/console/admin/sites/{id}/access'].get.responses[200].content['application/json'].schema.$ref,
+    '#/components/schemas/AdminSiteAccessResponse'
+  );
+  assert.equal(
+    body.paths['/.xd-pages/api/console/admin/sites/{id}/exposure'].patch.responses[200].content['application/json'].schema.$ref,
+    '#/components/schemas/AdminSiteExposureUpdateResponse'
+  );
   assert.equal(
     body.paths['/.xd-pages/api/console/admin/sites/{id}/exposure'].patch['x-error-codes'].includes('SITE_EXPOSURE_AUDIT_FAILED'),
     false
