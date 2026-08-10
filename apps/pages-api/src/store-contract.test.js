@@ -324,23 +324,51 @@ for (const backend of storeBackends) {
     const fixture = await backend.create();
     try {
       await createSite(fixture.store);
-      await fixture.store.recordAuditEvent(exposureReasonAudit('op_old:effective_success', 'effective_success', '旧理由', '2026-08-10T01:00:00.000Z', {
-        effectiveExposure: 'public',
-      }));
-      await fixture.store.recordAuditEvent(exposureReasonAudit('op_fallback:policy_committed', 'policy_committed', 'fallback 理由', '2026-08-10T02:00:00.000Z'));
-      await fixture.store.recordAuditEvent(exposureReasonAudit('op_failed:attempted', 'attempted', '失败尝试', '2026-08-10T03:00:00.000Z'));
+      await fixture.store.recordAuditEvent(
+        exposureReasonAudit(
+          'op_old:effective_success',
+          'effective_success',
+          '旧理由',
+          '2026-08-10T01:00:00.000Z',
+          { effectiveExposure: 'public' }
+        )
+      );
+      await fixture.store.recordAuditEvent(
+        exposureReasonAudit(
+          'op_fallback:policy_committed',
+          'policy_committed',
+          'fallback 理由',
+          '2026-08-10T02:00:00.000Z'
+        )
+      );
+      await fixture.store.recordAuditEvent(
+        exposureReasonAudit('op_failed:attempted', 'attempted', '失败尝试', '2026-08-10T03:00:00.000Z')
+      );
       await fixture.store.recordAuditEvent(
         exposureReasonAudit('op_failed:failed', 'failed', '失败尝试', '2026-08-10T03:00:01.000Z', {
           decision: 'deny',
           statusCode: 503,
         })
       );
-      await fixture.store.recordAuditEvent(exposureReasonAudit('op_compensated:policy_committed', 'policy_committed', '补偿尝试', '2026-08-10T04:00:00.000Z'));
       await fixture.store.recordAuditEvent(
-        exposureReasonAudit('op_compensated:compensated_failure', 'compensated_failure', '补偿尝试', '2026-08-10T04:00:01.000Z', {
-          decision: 'deny',
-          statusCode: 503,
-        })
+        exposureReasonAudit(
+          'op_compensated:policy_committed',
+          'policy_committed',
+          '补偿尝试',
+          '2026-08-10T04:00:00.000Z'
+        )
+      );
+      await fixture.store.recordAuditEvent(
+        exposureReasonAudit(
+          'op_compensated:compensated_failure',
+          'compensated_failure',
+          '补偿尝试',
+          '2026-08-10T04:00:01.000Z',
+          {
+            decision: 'deny',
+            statusCode: 503,
+          }
+        )
       );
 
       assert.deepEqual(
