@@ -3365,7 +3365,10 @@ test('platform admin can enable public exposure while preserving visibility and 
     operationAudits.find((event) => event.metadata?.stage === 'office_net_removed_verified')?.metadata?.officeNetBindingVerified,
     true
   );
-  assert.ok(operationAudits.some((event) => event.metadata?.stage === 'effective_success'));
+  const effectiveSuccess = operationAudits.find((event) => event.metadata?.stage === 'effective_success');
+  assert.ok(effectiveSuccess);
+  assert.equal(effectiveSuccess.metadata.pointerConfirmed, false);
+  assert.equal(effectiveSuccess.metadata.pointerWriteCommitted, true);
 });
 
 test('platform admin exposure update succeeds when a missing KV pointer is negatively cached', async () => {
