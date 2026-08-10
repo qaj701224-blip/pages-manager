@@ -3489,6 +3489,48 @@ test('admin site access returns the latest successful public exposure reason', a
   });
 });
 
+test('admin site access hides policy-committed reason while the exposure transaction is locked', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await seedTeamSite(store, { id: 'site_public', slug: 'public', teamId: 'team_console', visibility: 'acl' });
+  const route = await activateSite(store, 'site_public', { workerName: 'pages-v2-public', visibility: 'acl' });
+  store.routes.get(route.id).exposure = 'public';
+  store.sites.get('site_public').defaultExposure = 'public';
+  await store.recordAuditEvent({
+    id: 'op_pending:policy_committed',
+    environment: 'production',
+    eventType: 'admin.site.exposure',
+    actorUserId: 'usr_root',
+    actorType: 'platform_admin',
+    siteId: 'site_public',
+    routeId: route.id,
+    decision: 'allow',
+    statusCode: 200,
+    metadata: {
+      operationId: 'op_pending',
+      requestedExposure: 'public',
+      authorityExposure: 'public',
+      stage: 'policy_committed',
+      reason: '快照仍在写入',
+    },
+    createdAt: '2026-07-02T00:00:00.000Z',
+  });
+  assert.ok(await store.acquireSiteCommitLock('production', 'site_public', { lockId: 'pendinglock' }));
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_public/access', {
+      userId: 'usr_root',
+      admin: true,
+    }),
+    env(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const access = (await response.json()).access;
+  assert.equal(access.exposure, 'public');
+  assert.equal(access.exposureReason, null);
+});
+
 test('admin site access hides the reason for internal exposure without querying audit history', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
   await seedPlatformAdmin(store);

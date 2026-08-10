@@ -177,7 +177,7 @@ export async function handleConsoleAdminApi(request, env, config, store) {
     if (request.method !== 'GET') return methodNotAllowed();
     const aclEntries = typeof store.listSiteAclEntries === 'function' ? await store.listSiteAclEntries(site.id) : [];
     const exposure = site.route?.exposure || site.defaultExposure || 'internal';
-    const exposureReason = await readAdminSitePublicExposureReason(store, config, site, exposure);
+    const exposureReason = await readAdminSitePublicExposureReason(env, store, config, site, exposure);
     return jsonOk({
       access: {
         exposure,
@@ -2645,14 +2645,19 @@ function safeAdminExposureAuditWarningCode(error) {
   return error?.code === 'AUDIT_WRITE_FAILED' ? 'AUDIT_WRITE_FAILED' : 'UNKNOWN';
 }
 
-async function readAdminSitePublicExposureReason(store, config, site, exposure) {
+async function readAdminSitePublicExposureReason(env, store, config, site, exposure) {
   if (exposure !== 'public' || typeof store.getLatestAdminSitePublicExposureReason !== 'function') return null;
   try {
-    return await store.getLatestAdminSitePublicExposureReason({
+    const lockBefore = await readAdminSiteCommitLock(store, config, site);
+    if (isActiveAdminSiteCommitLock(lockBefore, readNow(env))) return null;
+    const reason = await store.getLatestAdminSitePublicExposureReason({
       environment: config.environment,
       siteId: site.id,
       currentExposure: exposure,
     });
+    const lockAfter = await readAdminSiteCommitLock(store, config, site);
+    if (isActiveAdminSiteCommitLock(lockAfter, readNow(env)) || adminSiteCommitLockChanged(lockBefore, lockAfter)) return null;
+    return reason;
   } catch (error) {
     globalThis.console?.warn?.(
       'SITE_EXPOSURE_REASON_READ_UNCONFIRMED',
@@ -2664,6 +2669,23 @@ async function readAdminSitePublicExposureReason(store, config, site, exposure) 
     );
     return null;
   }
+}
+
+async function readAdminSiteCommitLock(store, config, site) {
+  if (typeof store.getSiteCommitLock !== 'function') return null;
+  return store.getSiteCommitLock(config.environment, site.id);
+}
+
+function isActiveAdminSiteCommitLock(lock, now) {
+  return Date.parse(lock?.expiresAt || '') > Date.parse(now);
+}
+
+function adminSiteCommitLockChanged(before, after) {
+  return (
+    (before?.lockId || null) !== (after?.lockId || null) ||
+    Number(before?.fencingToken || 0) !== Number(after?.fencingToken || 0) ||
+    (before?.updatedAt || null) !== (after?.updatedAt || null)
+  );
 }
 
 function adminExposureErrorResponse(error) {
