@@ -909,7 +909,7 @@ async function createDeployment(request, env, config, store, actor, ctx) {
         }
         return activatedRoute;
       },
-      { lockId: nextId(env, 'deploy_lock'), bestEffortRelease: true }
+      { lockId: nextId(env, 'deploylock'), bestEffortRelease: true }
     );
   } catch (error) {
     await cleanupUploadedWorker(provider, uploaded);
@@ -1247,7 +1247,7 @@ async function rollbackVersion(request, env, config, store, actor, versionId) {
     rollbackLease =
       typeof store.acquireSiteCommitLock === 'function'
         ? await acquireRenewableSiteCommitLease(store, config.environment, site.id, {
-            lockId: nextId(env, 'rollback_lock'),
+            lockId: nextId(env, 'rollbacklock'),
             ...(Number.isFinite(env?.SITE_COMMIT_LOCK_RENEW_INTERVAL_MS)
               ? { renewIntervalMs: env.SITE_COMMIT_LOCK_RENEW_INTERVAL_MS }
               : {}),

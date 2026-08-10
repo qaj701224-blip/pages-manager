@@ -81,6 +81,67 @@ test('creates deployment, immutable version, active route, and route snapshot', 
   ]);
 });
 
+test('creates a deployment with production ID generation when env.nextId is unavailable', async () => {
+  const store = await createSeededStore();
+  const snapshots = createSnapshotStore();
+  const env = testEnv(store, snapshots);
+  delete env.nextId;
+
+  const response = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'production_id_generation_deploy',
+    }),
+    env
+  );
+
+  assert.equal(response.status, 201, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.deployment.status, 'succeeded');
+  assert.match(body.deployment.id, /^dep_[a-f0-9]{32}$/);
+  assert.match(body.deployment.versionId, /^ver_[a-f0-9]{32}$/);
+  assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, body.deployment.versionId);
+});
+
+test('rolls back with production ID generation when env.nextId is unavailable', async () => {
+  const store = await createSeededStore();
+  const snapshots = createSnapshotStore();
+  const env = testEnv(store, snapshots);
+
+  const first = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'production_id_generation_rollback_1',
+    }),
+    env
+  );
+  const second = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ moduleContent: 'export default { fetch() { return new Response("second"); } };' }),
+      { 'Idempotency-Key': 'production_id_generation_rollback_2' }
+    ),
+    env
+  );
+  assert.equal(first.status, 201, await first.clone().text());
+  assert.equal(second.status, 201, await second.clone().text());
+  const firstBody = await first.json();
+  delete env.nextId;
+
+  const rollback = await worker.fetch(
+    jsonRequest(
+      `https://api.pages.xd.team/.xd-pages/api/versions/${firstBody.deployment.versionId}/rollback`,
+      {},
+      { 'Idempotency-Key': 'production_id_generation_rollback' }
+    ),
+    env
+  );
+
+  assert.equal(rollback.status, 201, await rollback.clone().text());
+  const body = await rollback.json();
+  assert.equal(body.deployment.status, 'succeeded');
+  assert.equal(body.route.activeVersionId, firstBody.deployment.versionId);
+  assert.match(body.deployment.id, /^dep_[a-f0-9]{32}$/);
+});
+
 test('does not fail a deployment when the KV pointer read remains on the previous snapshot', async () => {
   const store = await createSeededStore();
   const snapshots = createSnapshotStore();
