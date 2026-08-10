@@ -192,6 +192,50 @@ test('D1 store filters audit events by environment', async () => {
   ]);
 });
 
+test('D1 store reads the latest public exposure reason with site and environment filters', async () => {
+  let capturedSql = '';
+  let capturedArgs = [];
+  const db = {
+    prepare(sql) {
+      capturedSql = sql;
+      return {
+        bind(...args) {
+          capturedArgs = args;
+          return {
+            all: async () => ({
+              results: [
+                {
+                  id: 'op_public:effective_success',
+                  event_type: 'admin.site.exposure',
+                  metadata_json: JSON.stringify({
+                    operationId: 'op_public',
+                    requestedExposure: 'public',
+                    effectiveExposure: 'public',
+                    stage: 'effective_success',
+                    reason: 'staging 公网验收',
+                  }),
+                  created_at: '2026-08-10T01:00:00.000Z',
+                },
+              ],
+            }),
+          };
+        },
+      };
+    },
+  };
+  const store = new D1PagesStore(db);
+
+  const reason = await store.getLatestAdminSitePublicExposureReason({
+    environment: 'staging',
+    siteId: 'site_public',
+    currentExposure: 'public',
+  });
+
+  assert.match(capturedSql, /WHERE environment = \? AND site_id = \? AND event_type = \?/);
+  assert.deepEqual(capturedArgs, ['staging', 'site_public', 'admin.site.exposure']);
+  assert.deepEqual(reason, { text: 'staging 公网验收', changedAt: '2026-08-10T01:00:00.000Z' });
+});
+
 test('D1 store admin and route lookups avoid unjoined team member aliases', async () => {
   const capturedSql = [];
   const db = {

@@ -13,6 +13,7 @@ import {
   createOwnerMember,
   deploymentIdempotencyScope,
   hostnameFamilyForHostname,
+  resolveLatestAdminSitePublicExposureReason,
 } from './store.js';
 import { departmentTeamDisplayName, deriveDepartmentTeamIdentity, normalizeDepartmentPath } from './department-path.js';
 import { MAX_RUNTIME_VARS, runtimeVarObjectsEqual, runtimeVarsObject, validateRuntimeBindingQuotas } from './runtime-config.js';
@@ -2302,6 +2303,19 @@ class TestPagesStore {
   async listAuditEvents({ environment } = {}) {
     const events = environment ? this.auditEvents.filter((event) => event.environment === environment) : this.auditEvents;
     return cloneRecord(events.map((event) => this.decorateAuditEvent(event)));
+  }
+
+  async getLatestAdminSitePublicExposureReason({ environment, siteId, currentExposure } = {}) {
+    if (currentExposure !== 'public') return null;
+    return resolveLatestAdminSitePublicExposureReason(
+      this.auditEvents.filter(
+        (event) =>
+          event.environment === environment &&
+          event.siteId === siteId &&
+          event.eventType === 'admin.site.exposure'
+      ),
+      { currentExposure }
+    );
   }
 
   decorateAuditEvent(event) {

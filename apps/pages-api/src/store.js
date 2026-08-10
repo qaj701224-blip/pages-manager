@@ -15,6 +15,8 @@ const RUNTIME_CONFIG_PROVIDER_TIMEOUT_MS = 15 * 1000;
 const SITE_COMMIT_LOCK_LEASE_MS = 60 * 1000;
 const SITE_COMMIT_LOCK_RENEW_MS = 20 * 1000;
 const SITE_COMMIT_TIMEOUT_MS = 45 * 1000;
+const ADMIN_EXPOSURE_EVENT_TYPE = 'admin.site.exposure';
+const ADMIN_EXPOSURE_TERMINAL_FAILURE_STAGES = new Set(['failed', 'compensated_failure', 'compensation_failed']);
 
 export function createPagesStore(env = {}) {
   if (env.PAGES_STORE) return env.PAGES_STORE;
@@ -1375,6 +1377,28 @@ export class D1PagesStore {
           )
           .all();
     return (result.results || []).map(mapAuditEvent);
+  }
+
+  async getLatestAdminSitePublicExposureReason({ environment, siteId, currentExposure } = {}) {
+    if (currentExposure !== 'public') return null;
+    const result = await this.db
+      .prepare(
+        `SELECT id, event_type, metadata_json, created_at
+        FROM audit_events
+        WHERE environment = ? AND site_id = ? AND event_type = ?
+        ORDER BY created_at DESC, id DESC`
+      )
+      .bind(environment, siteId, ADMIN_EXPOSURE_EVENT_TYPE)
+      .all();
+    return resolveLatestAdminSitePublicExposureReason(
+      (result.results || []).map((row) => ({
+        id: row.id,
+        eventType: row.event_type,
+        metadata: parseJsonColumn(row.metadata_json),
+        createdAt: row.created_at,
+      })),
+      { currentExposure }
+    );
   }
 
   async updateUserDepartmentFromDirectory({ userId, departmentPath, departmentCheckedAt }) {
@@ -5525,6 +5549,69 @@ export function hostnameFamilyForHostname(hostname) {
 
 export function cloneRecord(record) {
   return record == null ? null : JSON.parse(JSON.stringify(record));
+}
+
+export function resolveLatestAdminSitePublicExposureReason(events, { currentExposure } = {}) {
+  if (currentExposure !== 'public') return null;
+  const operations = new Map();
+  for (const event of events || []) {
+    const metadata = event?.metadata;
+    if (
+      event?.eventType !== ADMIN_EXPOSURE_EVENT_TYPE ||
+      metadata?.requestedExposure !== 'public' ||
+      !metadata?.operationId ||
+      !String(metadata.reason || '').trim()
+    ) {
+      continue;
+    }
+    const operationId = String(metadata.operationId);
+    const operation = operations.get(operationId) || [];
+    operation.push(event);
+    operations.set(operationId, operation);
+  }
+
+  const orderedOperations = [...operations.values()].sort((left, right) =>
+    compareExposureAuditEvents(latestExposureAuditEvent(right), latestExposureAuditEvent(left))
+  );
+  for (const operationEvents of orderedOperations) {
+    const terminalFailure = operationEvents.some((event) => ADMIN_EXPOSURE_TERMINAL_FAILURE_STAGES.has(event.metadata?.stage));
+    if (terminalFailure) continue;
+    const effectiveSuccess = operationEvents
+      .filter(
+        (event) =>
+          event.metadata?.stage === 'effective_success' &&
+          event.metadata?.effectiveExposure === 'public'
+      )
+      .sort((left, right) => compareExposureAuditEvents(right, left))[0];
+    if (effectiveSuccess) return exposureReasonFromAuditEvent(effectiveSuccess);
+    const policyCommitted = operationEvents
+      .filter(
+        (event) =>
+          event.metadata?.stage === 'policy_committed' &&
+          event.metadata?.authorityExposure === 'public'
+      )
+      .sort((left, right) => compareExposureAuditEvents(right, left))[0];
+    if (policyCommitted) return exposureReasonFromAuditEvent(policyCommitted);
+  }
+  return null;
+}
+
+function latestExposureAuditEvent(events) {
+  return [...events].sort((left, right) => compareExposureAuditEvents(right, left))[0];
+}
+
+function compareExposureAuditEvents(left, right) {
+  const leftTime = Date.parse(left?.createdAt || '');
+  const rightTime = Date.parse(right?.createdAt || '');
+  if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) return leftTime - rightTime;
+  return String(left?.id || '').localeCompare(String(right?.id || ''));
+}
+
+function exposureReasonFromAuditEvent(event) {
+  return {
+    text: String(event.metadata.reason).trim(),
+    changedAt: event.createdAt,
+  };
 }
 
 function stringifyJsonColumn(value) {
