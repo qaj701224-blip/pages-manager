@@ -326,19 +326,27 @@ for (const backend of storeBackends) {
       await createSite(fixture.store);
       await fixture.store.recordAuditEvent(
         exposureReasonAudit(
+          'op_fallback:policy_committed',
+          'policy_committed',
+          'fallback 理由',
+          '2026-08-10T02:00:00.000Z'
+        )
+      );
+      assert.equal(
+        await fixture.store.getLatestAdminSitePublicExposureReason({
+          environment: 'production',
+          siteId: 'site_1',
+          currentExposure: 'public',
+        }),
+        null
+      );
+      await fixture.store.recordAuditEvent(
+        exposureReasonAudit(
           'op_old:effective_success',
           'effective_success',
           '旧理由',
           '2026-08-10T01:00:00.000Z',
           { effectiveExposure: 'public' }
-        )
-      );
-      await fixture.store.recordAuditEvent(
-        exposureReasonAudit(
-          'op_fallback:policy_committed',
-          'policy_committed',
-          'fallback 理由',
-          '2026-08-10T02:00:00.000Z'
         )
       );
       await fixture.store.recordAuditEvent(
@@ -377,7 +385,7 @@ for (const backend of storeBackends) {
           siteId: 'site_1',
           currentExposure: 'public',
         }),
-        { text: 'fallback 理由', changedAt: '2026-08-10T02:00:00.000Z' }
+        { text: '旧理由', changedAt: '2026-08-10T01:00:00.000Z' }
       );
 
       await fixture.store.recordAuditEvent(

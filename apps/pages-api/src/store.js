@@ -5584,14 +5584,6 @@ export function resolveLatestAdminSitePublicExposureReason(events, { currentExpo
       )
       .sort((left, right) => compareExposureAuditEvents(right, left))[0];
     if (effectiveSuccess) return exposureReasonFromAuditEvent(effectiveSuccess);
-    const policyCommitted = operationEvents
-      .filter(
-        (event) =>
-          event.metadata?.stage === 'policy_committed' &&
-          event.metadata?.authorityExposure === 'public'
-      )
-      .sort((left, right) => compareExposureAuditEvents(right, left))[0];
-    if (policyCommitted) return exposureReasonFromAuditEvent(policyCommitted);
   }
   return null;
 }
