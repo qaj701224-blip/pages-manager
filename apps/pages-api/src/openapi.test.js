@@ -27,6 +27,27 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
   assert.ok(body.paths['/.xd-pages/api/sites/{id}/acl'].put);
   assert.ok(body.paths['/.xd-pages/api/sites/{id}/acl/entries'].post);
   assert.ok(body.paths['/.xd-pages/api/sites/{id}/acl/entries'].delete);
+  assert.match(body.components.schemas.SiteVisibility.description, /internal.*anonymous/);
+  assert.match(body.components.schemas.SiteVisibility.description, /exposure/);
+  assert.ok(body.components.schemas.AdminSiteExposureRequest);
+  assert.deepEqual(body.paths['/.xd-pages/api/sites/{id}'].patch['x-error-codes'], [
+    'SITE_VISIBILITY_INVALID',
+    'SITE_EXPOSURE_ADMIN_REQUIRED',
+    'SITE_POLICY_FORBIDDEN',
+    'SITE_POLICY_CONFLICT',
+    'ROUTE_POLICY_REPAIR_REQUIRED',
+  ]);
+  assert.ok(body.paths['/.xd-pages/api/console/admin/sites/{id}/exposure'].patch);
+  assert.equal(
+    body.paths['/.xd-pages/api/console/admin/sites/{id}/exposure'].patch['x-error-codes'].includes('SITE_EXPOSURE_AUDIT_FAILED'),
+    false
+  );
+  assert.ok(
+    body.paths['/.xd-pages/api/console/admin/sites/{id}/exposure'].patch['x-error-codes'].includes('SITE_EXPOSURE_AUDIT_REQUIRED')
+  );
+  assert.ok(
+    body.paths['/.xd-pages/api/console/admin/sites/{id}/exposure'].patch['x-error-codes'].includes('SITE_PUBLIC_ROUTE_INACTIVE')
+  );
   assert.ok(body.paths['/.xd-pages/api/sites/{site}/secrets'].put);
   assert.ok(body.paths['/.xd-pages/api/sites/{site}/secrets'].delete);
   assert.ok(body.paths['/.xd-pages/api/sites/{site}/vars'].put);
@@ -126,6 +147,11 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
     'DEPLOYMENT_VERIFY_FAILED',
     'DEPLOYMENT_STATE_WRITE_FAILED',
     'DEPLOYMENT_CAPACITY_EXHAUSTED',
+    'SITE_POLICY_LOCKED',
+    'SITE_POLICY_CONFLICT',
+    'ROUTE_ACTIVATION_CONFLICT',
+    'SITE_PUBLIC_OFFICE_NET_REMOVE_FAILED',
+    'SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED',
     'RUNTIME_VARS_INVALID',
     'RUNTIME_BINDING_NAME_CONFLICT',
     'RUNTIME_BINDINGS_LIMIT_EXCEEDED',
@@ -135,6 +161,9 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
     'ROUTE_SNAPSHOT_WRITE_FAILED',
     'IDEMPOTENCY_CONFLICT',
   ]);
+  assert.ok(
+    body.paths['/.xd-pages/api/versions/{id}/rollback'].post['x-error-codes'].includes('ROLLBACK_ACTIVATION_FAILED')
+  );
   assert.deepEqual(body.paths['/.xd-pages/api/sites'].post['x-error-codes'], [
     'SITE_SLUG_CONFLICT',
     'HOSTNAME_CLAIM_CONFLICT',

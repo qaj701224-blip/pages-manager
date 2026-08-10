@@ -1,4 +1,11 @@
 import {
+  accessModeFromVisibility,
+  isValidAccessMode,
+  normalizeExposure,
+  visibilityFromAccessMode,
+} from '@xd/pages-access-policy';
+
+import {
   cacheTierForVisibility,
   cloneRecord,
   createHostnameClaim,
@@ -33,6 +40,7 @@ class TestPagesStore {
     this.siteVars = new Map();
     this.siteVarHistory = new Map();
     this.runtimeConfigQueues = new Map();
+    this.sitePolicyLocks = new Map();
     this.workerSlots = new Map();
     this.deploymentResourceCleanupTasks = new Map();
     this.accessKeys = new Map();
@@ -617,7 +625,7 @@ class TestPagesStore {
     );
   }
 
-  async listAdminSites({ environment, limit = 200 }) {
+  async listAdminSites({ environment, limit = 200, exposure } = {}) {
     const normalizedLimit = Math.max(1, Math.min(Number(limit) || 200, 500));
     return cloneRecord(
       [...this.sites.values()]
@@ -625,6 +633,7 @@ class TestPagesStore {
         .filter((site) => !environment || site.environment === environment)
         .map((site) => this.decorateAdminSite(this.siteWithRoute(site.id)))
         .filter(Boolean)
+        .filter((site) => !exposure || (site.route?.exposure || site.defaultExposure || 'internal') === exposure)
         .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
         .slice(0, normalizedLimit)
     );
@@ -1178,6 +1187,8 @@ class TestPagesStore {
       ownerId: input.ownerId || input.ownerUserId,
       ownerUserId: input.ownerUserId,
       defaultVisibility: input.defaultVisibility,
+      defaultExposure: 'internal',
+      defaultAccessMode: accessModeFromVisibility(input.defaultVisibility),
       executionModeOverride: input.executionModeOverride || null,
       siteUuid: input.siteUuid,
       createdAt: now,
@@ -1259,6 +1270,8 @@ class TestPagesStore {
       ownerId: input.ownerId || input.ownerUserId,
       ownerUserId: input.ownerUserId,
       defaultVisibility: input.defaultVisibility,
+      defaultExposure: 'internal',
+      defaultAccessMode: accessModeFromVisibility(input.defaultVisibility),
       executionModeOverride: input.executionModeOverride || null,
       siteUuid: input.siteUuid,
       createdAt: now,
@@ -1372,7 +1385,14 @@ class TestPagesStore {
   }
 
   async getSite(id) {
-    return cloneRecord(this.sites.get(id) || null);
+    const site = this.sites.get(id) || null;
+    return site
+      ? cloneRecord({
+          ...site,
+          defaultExposure: normalizeExposure(site.defaultExposure),
+          defaultAccessMode: accessModeFromVisibility(site.defaultVisibility),
+        })
+      : null;
   }
 
   async listSitesForUser(userId, actor = {}, environment) {
@@ -1591,7 +1611,193 @@ class TestPagesStore {
   async getRouteBySiteId(siteId, environment) {
     const route = this.routes.get(this.routeBySiteId.get(siteId)) || null;
     if (environment && route?.environment !== environment) return null;
-    return cloneRecord(route);
+    return route
+      ? cloneRecord({
+          ...route,
+          exposure: normalizeExposure(route.exposure),
+          accessMode: accessModeFromVisibility(route.visibility),
+        })
+      : null;
+  }
+
+  async getSiteCommitLock(environment, siteId) {
+    return cloneRecord(this.sitePolicyLocks.get(`${environment}:${siteId}`) || null);
+  }
+
+  async acquireSiteCommitLock(environment, siteId, options = {}) {
+    const route = this.routes.get(this.routeBySiteId.get(siteId));
+    if (!route || route.environment !== environment) return null;
+
+    const acquiredAt = this.now();
+    const key = `${environment}:${siteId}`;
+    const existing = this.sitePolicyLocks.get(key) || null;
+    if (existing && existing.expiresAt > acquiredAt) return null;
+    const lock = {
+      environment,
+      siteId,
+      lockId: options.lockId || randomStoreId('policy_lock'),
+      fencingToken: Number(existing?.fencingToken || 0) + 1,
+      acquiredAt,
+      expiresAt: siteCommitLockExpiry(acquiredAt, options.leaseMs),
+      updatedAt: acquiredAt,
+    };
+    this.sitePolicyLocks.set(key, lock);
+    return cloneRecord(lock);
+  }
+
+  async renewSiteCommitLock(environment, siteId, lockId, options = {}) {
+    const renewedAt = this.now();
+    const lock = this.sitePolicyLocks.get(`${environment}:${siteId}`) || null;
+    if (
+      !lock ||
+      lock.lockId !== lockId ||
+      lock.expiresAt <= renewedAt ||
+      (options.fencingToken != null && lock.fencingToken !== options.fencingToken)
+    ) {
+      return null;
+    }
+    lock.expiresAt = siteCommitLockExpiry(renewedAt, options.leaseMs);
+    lock.updatedAt = renewedAt;
+    return cloneRecord(lock);
+  }
+
+  async releaseSiteCommitLock(environment, siteId, lockId) {
+    const releasedAt = this.now();
+    const lock = this.sitePolicyLocks.get(`${environment}:${siteId}`) || null;
+    if (!lock || lock.lockId !== lockId || lock.expiresAt <= releasedAt) return false;
+    lock.expiresAt = releasedAt;
+    lock.updatedAt = releasedAt;
+    return true;
+  }
+
+  async withSiteCommitLock(environment, siteId, callback, options = {}) {
+    let lock = await this.acquireSiteCommitLock(environment, siteId, options);
+    const waitForLockMs = Number(options.waitForLockMs || 0);
+    if (!lock && waitForLockMs > 0) {
+      const deadline = Date.now() + waitForLockMs;
+      while (!lock && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, Math.min(25, Math.max(1, deadline - Date.now()))));
+        lock = await this.acquireSiteCommitLock(environment, siteId, options);
+      }
+    }
+    if (!lock) throw sitePolicyError('SITE_POLICY_LOCKED');
+
+    let result;
+    let failure;
+    let currentLock = lock;
+    const abortController = new globalThis.AbortController();
+    const timeout = globalThis.setTimeout(() => {
+      abortController.abort(sitePolicyError('SITE_COMMIT_TIMEOUT'));
+    }, options.timeoutMs || 45 * 1000);
+    let renewal = Promise.resolve();
+    const renew = () => {
+      renewal = renewal
+        .then(async () => {
+          const renewed = await this.renewSiteCommitLock(environment, siteId, currentLock.lockId, {
+            fencingToken: currentLock.fencingToken,
+            leaseMs: options.leaseMs,
+          });
+          if (!renewed) throw sitePolicyError('SITE_POLICY_LOCKED');
+          currentLock = renewed;
+        })
+        .catch((error) => {
+          abortController.abort(error);
+          throw error;
+        });
+      renewal.catch(() => {});
+    };
+    const timer = globalThis.setInterval(renew, options.renewIntervalMs || 20 * 1000);
+    try {
+      result = await callback({ ...currentLock, signal: abortController.signal });
+    } catch (error) {
+      failure = error;
+    }
+    globalThis.clearInterval(timer);
+    globalThis.clearTimeout(timeout);
+    try {
+      await renewal;
+    } catch (error) {
+      if (!failure) failure = error;
+    }
+    try {
+      const released = await this.releaseSiteCommitLock(environment, siteId, currentLock.lockId);
+      if (!released && !failure && !options.bestEffortRelease) failure = sitePolicyError('SITE_POLICY_LOCKED');
+    } catch (error) {
+      if (!failure && !options.bestEffortRelease) failure = error;
+    }
+    if (failure) throw failure;
+    return result;
+  }
+
+  async updateSiteAccessPolicy(input) {
+    const commitNow = this.now();
+    const now = input.updatedAt || commitNow;
+    const site = this.sites.get(input.siteId) || null;
+    const route = this.routes.get(this.routeBySiteId.get(input.siteId)) || null;
+    if (!site || !route || site.environment !== input.environment || route.environment !== input.environment) {
+      throw sitePolicyError('SITE_POLICY_NOT_FOUND');
+    }
+    assertSitePolicyExpected(route, input.expected);
+    this.assertSitePolicyLease(input.environment, input.siteId, input.lease, commitNow);
+
+    const nextExposure = resolveNextExposure(route.exposure, input);
+    const nextAccessMode = resolveNextAccessMode(accessModeFromVisibility(route.visibility), input);
+    const nextVisibility = visibilityFromAccessMode(nextAccessMode);
+    if (!nextVisibility) throw sitePolicyError('SITE_POLICY_INVALID');
+
+    const currentAclEntries = this.siteAclEntries.get(input.siteId) || [];
+    const nextAclEntries = Object.hasOwn(input, 'aclEntries')
+      ? normalizeSitePolicyAclEntries(input.aclEntries, input.siteId, input.actorUserId, now)
+      : currentAclEntries;
+    const aclChanged = !sitePolicyAclEntriesEqual(currentAclEntries, nextAclEntries);
+    const policyChanged =
+      nextExposure !== normalizeExposure(route.exposure) ||
+      nextAccessMode !== accessModeFromVisibility(route.visibility) ||
+      nextVisibility !== route.visibility;
+
+    if (!policyChanged && !aclChanged) {
+      return {
+        changed: false,
+        site: await this.getSite(input.siteId),
+        route: await this.getRouteBySiteId(input.siteId, input.environment),
+        aclEntries: cloneRecord(currentAclEntries),
+      };
+    }
+    if (input.auditEvent && this.failAuditWrites) throw new Error('AUDIT_WRITE_FAILED');
+
+    site.defaultExposure = nextExposure;
+    site.defaultAccessMode = nextAccessMode;
+    site.defaultVisibility = nextVisibility;
+    site.updatedAt = now;
+    route.exposure = nextExposure;
+    route.accessMode = nextAccessMode;
+    route.visibility = nextVisibility;
+    route.cacheTier = cacheTierForVisibility(nextVisibility);
+    route.policyVersion += 1;
+    route.updatedAt = now;
+    if (Object.hasOwn(input, 'aclEntries')) this.siteAclEntries.set(input.siteId, nextAclEntries);
+    if (input.auditEvent) await this.recordAuditEvent(input.auditEvent);
+
+    return {
+      changed: true,
+      site: await this.getSite(input.siteId),
+      route: await this.getRouteBySiteId(input.siteId, input.environment),
+      aclEntries: await this.listSiteAclEntries(input.siteId),
+    };
+  }
+
+  assertSitePolicyLease(environment, siteId, leaseInput, now = this.now()) {
+    const lease = normalizeSitePolicyLease(leaseInput);
+    const current = this.sitePolicyLocks.get(`${environment}:${siteId}`) || null;
+    if (
+      !current ||
+      current.lockId !== lease.lockId ||
+      current.fencingToken !== lease.fencingToken ||
+      current.expiresAt <= now
+    ) {
+      throw sitePolicyError('SITE_POLICY_CONFLICT');
+    }
+    return current;
   }
 
   async updateSiteVisibility(siteId, { visibility, updatedAt }, environment) {
@@ -1601,8 +1807,10 @@ class TestPagesStore {
     if (environment && route.environment !== environment) return null;
 
     site.defaultVisibility = visibility;
+    site.defaultAccessMode = accessModeFromVisibility(visibility);
     site.updatedAt = updatedAt || this.now();
     route.visibility = visibility;
+    route.accessMode = accessModeFromVisibility(visibility);
     route.policyVersion += 1;
     route.cacheTier = cacheTierForVisibility(visibility);
     route.updatedAt = updatedAt || this.now();
@@ -1656,7 +1864,10 @@ class TestPagesStore {
     site.ownerType = ownerType || 'user';
     site.ownerId = ownerId;
     site.ownerUserId = ownerUserId;
-    if (defaultVisibility) site.defaultVisibility = defaultVisibility;
+    if (defaultVisibility) {
+      site.defaultVisibility = defaultVisibility;
+      site.defaultAccessMode = accessModeFromVisibility(defaultVisibility);
+    }
     site.updatedAt = now;
 
     if (site.ownerType === 'user') {
@@ -1686,8 +1897,10 @@ class TestPagesStore {
     if (expectedRoute && !routesMatchIgnoringRuntimeConfigGeneration(route, expectedRoute)) return cloneRecord(route);
 
     site.defaultVisibility = previousSite.defaultVisibility;
+    site.defaultExposure = normalizeExposure(previousSite.defaultExposure);
+    site.defaultAccessMode = accessModeFromVisibility(previousSite.defaultVisibility);
     site.updatedAt = previousSite.updatedAt;
-    Object.assign(route, routeWithLatestRuntimeConfig(cloneRecord(previousRoute), route));
+    Object.assign(route, routeRestoredAsNewPolicyCommit(cloneRecord(previousRoute), route));
     return cloneRecord(route);
   }
 
@@ -2117,6 +2330,7 @@ class TestPagesStore {
       visibility,
       requiredArtifactAvailability = null,
       updatedAt,
+      lease = null,
     },
     environment,
     expectedRoute = null
@@ -2126,6 +2340,7 @@ class TestPagesStore {
     if (!route) return null;
     if (environment && route.environment !== environment) return null;
     if (expectedRoute && !routeActivationMatches(route, expectedRoute)) return null;
+    if (lease) this.assertSitePolicyLease(environment, siteId, lease, this.now());
     if (requiredArtifactAvailability) {
       const version = this.siteVersions.get(activeVersionId);
       if (!version || version.siteId !== siteId || version.artifactAvailability !== requiredArtifactAvailability) return null;
@@ -2133,6 +2348,8 @@ class TestPagesStore {
     route.activeVersionId = activeVersionId;
     route.workerName = workerName;
     route.visibility = visibility;
+    route.accessMode = accessModeFromVisibility(visibility);
+    route.cacheTier = cacheTierForVisibility(visibility);
     route.runtime = runtime;
     route.executionProvider = executionProvider;
     route.dispatchType = dispatchType;
@@ -2150,6 +2367,8 @@ class TestPagesStore {
     if (!route || !previousRoute) return null;
     if (environment && route.environment !== environment) return null;
     Object.assign(route, cloneRecord(previousRoute));
+    route.exposure = normalizeExposure(route.exposure);
+    route.accessMode = accessModeFromVisibility(route.visibility);
     return cloneRecord(route);
   }
 
@@ -2553,8 +2772,16 @@ class TestPagesStore {
     const version = route?.activeVersionId ? this.siteVersions.get(route.activeVersionId) : null;
     return {
       ...site,
+      defaultExposure: normalizeExposure(site.defaultExposure),
+      defaultAccessMode: accessModeFromVisibility(site.defaultVisibility),
       deploymentShape: version?.siteId === site.id ? (version.deploymentShape ?? null) : null,
-      route,
+      route: route
+        ? {
+            ...route,
+            exposure: normalizeExposure(route.exposure),
+            accessMode: accessModeFromVisibility(route.visibility),
+          }
+        : null,
     };
   }
 
@@ -2993,6 +3220,92 @@ function routesMatch(actual, expected) {
   );
 }
 
+function siteCommitLockExpiry(updatedAt, leaseMs = 60 * 1000) {
+  const timestamp = Date.parse(updatedAt);
+  if (!Number.isFinite(timestamp)) throw sitePolicyError('SITE_POLICY_LOCK_TIME_INVALID');
+  const duration = Number.isFinite(leaseMs) && leaseMs > 0 ? leaseMs : 60 * 1000;
+  return new Date(timestamp + duration).toISOString();
+}
+
+function resolveNextExposure(currentExposure, input) {
+  if (!Object.hasOwn(input, 'exposure')) return normalizeExposure(currentExposure);
+  if (input.exposure !== 'internal' && input.exposure !== 'public') throw sitePolicyError('SITE_EXPOSURE_INVALID');
+  return input.exposure;
+}
+
+function resolveNextAccessMode(currentAccessMode, input) {
+  const value = Object.hasOwn(input, 'accessMode') ? input.accessMode : currentAccessMode;
+  if (!isValidAccessMode(value)) throw sitePolicyError('SITE_POLICY_INVALID');
+  return value;
+}
+
+function normalizeSitePolicyExpected(expected) {
+  if (!expected || !Number.isInteger(expected.policyVersion) || !Number.isInteger(expected.routeGeneration)) {
+    throw sitePolicyError('SITE_POLICY_CONFLICT');
+  }
+  return {
+    policyVersion: expected.policyVersion,
+    routeGeneration: expected.routeGeneration,
+    activeVersionId: expected.activeVersionId || null,
+    runtimeConfigGeneration: Number(expected.runtimeConfigGeneration || 0),
+  };
+}
+
+function assertSitePolicyExpected(route, expectedInput) {
+  const expected = normalizeSitePolicyExpected(expectedInput);
+  if (
+    route.policyVersion !== expected.policyVersion ||
+    route.routeGeneration !== expected.routeGeneration ||
+    (route.activeVersionId || null) !== expected.activeVersionId ||
+    Number(route.runtimeConfigGeneration || 0) !== expected.runtimeConfigGeneration
+  ) {
+    throw sitePolicyError('SITE_POLICY_CONFLICT');
+  }
+  return expected;
+}
+
+function normalizeSitePolicyLease(lease) {
+  if (!lease?.lockId || !Number.isInteger(lease.fencingToken) || lease.fencingToken < 1) {
+    throw sitePolicyError('SITE_POLICY_CONFLICT');
+  }
+  return { lockId: lease.lockId, fencingToken: lease.fencingToken };
+}
+
+function normalizeSitePolicyAclEntries(entries, siteId, actorUserId, createdAt) {
+  if (!Array.isArray(entries)) throw sitePolicyError('SITE_POLICY_INVALID');
+  const byKey = new Map();
+  for (const entry of entries) {
+    if (!entry?.subjectType || !entry?.subjectValue || !entry?.accessRole || !entry?.effect) {
+      throw sitePolicyError('SITE_POLICY_INVALID');
+    }
+    const normalized = {
+      id: entry.id || randomStoreId('acl'),
+      siteId,
+      subjectType: entry.subjectType,
+      subjectValue: entry.subjectValue,
+      accessRole: entry.accessRole,
+      effect: entry.effect,
+      createdBy: entry.createdBy || actorUserId,
+      createdAt: entry.createdAt || createdAt,
+    };
+    byKey.set(siteAclEntryKey(normalized), normalized);
+  }
+  return [...byKey.values()];
+}
+
+function sitePolicyAclEntriesEqual(left, right) {
+  if (left.length !== right.length) return false;
+  const leftKeys = left.map(siteAclEntryKey).sort();
+  const rightKeys = right.map(siteAclEntryKey).sort();
+  return leftKeys.every((key, index) => key === rightKeys[index]);
+}
+
+function sitePolicyError(code) {
+  const error = new Error(code);
+  error.code = code;
+  return error;
+}
+
 function routesMatchIgnoringRuntimeConfigGeneration(actual, expected) {
   if (!actual || !expected) return false;
   return routesMatch(
@@ -3033,10 +3346,28 @@ function routeRestoredAsNewCommit(previousRoute, currentRoute) {
   return {
     ...previousRoute,
     visibility: currentRoute.visibility,
+    exposure: normalizeExposure(currentRoute.exposure),
+    accessMode: accessModeFromVisibility(currentRoute.visibility),
     policyVersion: currentRoute.policyVersion,
     cacheTier: currentRoute.cacheTier,
     routeGeneration: Math.max(previousRoute.routeGeneration || 0, currentRoute.routeGeneration || 0) + 1,
     runtimeConfigGeneration: currentRoute.runtimeConfigGeneration || 0,
+    updatedAt: currentRoute.updatedAt,
+  };
+}
+
+function routeRestoredAsNewPolicyCommit(previousRoute, currentRoute) {
+  const previousPolicyVersion = previousRoute.policyVersion || 0;
+  const currentPolicyVersion = currentRoute.policyVersion || 0;
+  return {
+    ...previousRoute,
+    exposure: normalizeExposure(previousRoute.exposure),
+    accessMode: accessModeFromVisibility(previousRoute.visibility),
+    policyVersion:
+      Math.max(previousPolicyVersion, currentPolicyVersion) + (currentPolicyVersion > previousPolicyVersion ? 1 : 0),
+    routeGeneration: currentRoute.routeGeneration,
+    runtimeConfigGeneration: currentRoute.runtimeConfigGeneration || 0,
+    cacheTier: cacheTierForVisibility(previousRoute.visibility),
     updatedAt: currentRoute.updatedAt,
   };
 }
@@ -3104,6 +3435,7 @@ function routeActivationMatches(actual, expected) {
     actual.activeVersionId === expected.activeVersionId &&
     actual.routeGeneration === expected.routeGeneration &&
     actual.policyVersion === expected.policyVersion &&
+    (!Object.hasOwn(expected, 'exposure') || normalizeExposure(actual.exposure) === normalizeExposure(expected.exposure)) &&
     (actual.runtimeConfigGeneration || 0) === (expected.runtimeConfigGeneration || 0)
   );
 }

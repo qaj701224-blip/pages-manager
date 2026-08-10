@@ -38,7 +38,22 @@ test('admin site management displays and filters the active deployment shape', (
   assert.match(adminSitesSource, /<th>站点类型<\/th>/);
   assert.match(adminSitesSource, /aria-label="站点类型"/);
   assert.match(adminSitesSource, /siteDeploymentShapeLabel\(site\.deploymentShape\)/);
-  assert.match(adminSitesSource, /filterAdminSites\(state\.sites, \{ query, ownerType, status, deploymentShape \}\)/);
+  assert.match(adminSitesSource, /filterAdminSites\(state\.sites, \{ query, ownerType, status, deploymentShape, exposure \}\)/);
+});
+
+test('admin site management exposes network exposure controls without changing visibility options', () => {
+  assert.match(adminSitesSource, /aria-label="公网范围"/);
+  assert.match(adminSitesSource, /siteExposureLabel\(site\.exposure\)/);
+  assert.match(adminSitesSource, /filterAdminSites\(state\.sites, \{ query, ownerType, status, deploymentShape, exposure \}\)/);
+  assert.match(adminSitesSource, /listAdminSites\(\{ exposure: exposure === 'all' \? undefined : exposure \}\)/);
+  assert.match(adminSitesSource, /\[exposure\]/);
+  assert.match(siteDetailSource, /updateAdminSiteExposure/);
+  assert.match(siteDetailSource, /AdminExposurePanel/);
+  assert.match(siteDetailSource, /公网访问理由/);
+  assert.match(siteDetailSource, /移除 XD_OFFICE_NET/);
+  assert.match(siteDetailSource, /互联网匿名访问/);
+  assert.match(siteDetailSource, /不会立即恢复 XD_OFFICE_NET/);
+  assert.doesNotMatch(siteDetailSource, /VISIBILITY_OPTIONS = \[[^\]]*public/);
 });
 
 test('admin team management exposes a safe team detail action', () => {

@@ -29,7 +29,7 @@ test('schema defines all v2 authority tables', () => {
     'webhook_deliveries',
   ];
 
-  assert.equal(SCHEMA_VERSION, 18);
+  assert.equal(SCHEMA_VERSION, 19);
   for (const table of tables) {
     assert.match(sql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}\\b`));
   }
@@ -49,7 +49,7 @@ test('schema defines the Cindy connection membership identity column', () => {
 test('schema defines XDMaker identity and access-key source columns without S2S guard tables', () => {
   const sql = createSchemaSql().join('\n');
 
-  assert.equal(SCHEMA_VERSION, 18);
+  assert.equal(SCHEMA_VERSION, 19);
   assert.match(sql, /feishu_open_id TEXT/);
   assert.match(sql, /created_source TEXT NOT NULL DEFAULT 'xd_sso'/);
   assert.match(sql, /issued_source TEXT NOT NULL DEFAULT 'legacy'/);
@@ -134,6 +134,12 @@ test('schema includes authority indexes for routing, idempotency, and access key
   assert.match(sql, /runtime_config_generation INTEGER NOT NULL DEFAULT 0/);
   assert.match(sql, /runtime_config_lock_id TEXT/);
   assert.match(sql, /runtime_config_lock_expires_at TEXT/);
+  assert.match(sql, /default_exposure TEXT NOT NULL DEFAULT 'internal'/);
+  assert.match(sql, /default_access_mode TEXT/);
+  assert.match(sql, /exposure TEXT NOT NULL DEFAULT 'internal'/);
+  assert.match(sql, /access_mode TEXT/);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS site_policy_locks/);
+  assert.match(sql, /fencing_token INTEGER NOT NULL/);
   assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_site_secrets_live/);
   assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_site_vars_live/);
   assert.match(sql, /artifact_availability TEXT NOT NULL DEFAULT 'active'/);

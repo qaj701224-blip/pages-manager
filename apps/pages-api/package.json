@@ -11,6 +11,7 @@
     "deploy": "wrangler deploy"
   },
   "dependencies": {
+    "@xd/pages-access-policy": "workspace:*",
     "@xd/pages-runtime-protocol": "workspace:*",
     "@xd/wfp-client": "workspace:*",
     "@xd/worker-kit": "workspace:*"

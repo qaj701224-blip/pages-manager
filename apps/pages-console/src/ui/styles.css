@@ -2064,6 +2064,33 @@ button {
   padding: 16px 18px 18px;
 }
 
+.exposure-policy-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px;
+  border: 1px solid var(--xd-border);
+  border-radius: 8px;
+  background: rgba(255, 253, 248, 0.72);
+}
+
+.exposure-policy-summary > div {
+  display: grid;
+  gap: 4px;
+}
+
+.exposure-policy-summary strong {
+  color: var(--xd-text);
+  font-size: 14px;
+}
+
+.exposure-policy-summary span {
+  color: var(--xd-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .acl-editor {
   display: grid;
   gap: 14px;

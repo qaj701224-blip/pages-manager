@@ -105,7 +105,7 @@ test('siteCardOwnerLabel shows only the concrete owner object name', () => {
 });
 
 test('siteVisibilityLabel maps access policy values to readable copy', () => {
-  assert.equal(siteVisibilityLabel('internal'), '内网可见');
+  assert.equal(siteVisibilityLabel('internal'), '免登录访问');
   assert.equal(siteVisibilityLabel('org'), '企业成员可见');
   assert.equal(siteVisibilityLabel('acl'), '指定成员可见');
   assert.equal(siteVisibilityLabel('owner'), '仅归属方可见');
@@ -177,6 +177,19 @@ test('admin site filters combine deployment shape with existing filters', () => 
     }).length,
     5
   );
+});
+
+test('admin site filters and labels distinguish network exposure from visibility', () => {
+  const sites = [
+    adminSite({ id: 'public', exposure: 'public', visibility: 'internal' }),
+    adminSite({ id: 'internal', exposure: 'internal', visibility: 'org' }),
+  ];
+
+  assert.equal(siteDisplayModel.siteExposureLabel('public'), '公网');
+  assert.equal(siteDisplayModel.siteExposureLabel('internal'), '公司网络');
+  assert.deepEqual(siteDisplayModel.filterAdminSites(sites, { exposure: 'public' }), [sites[0]]);
+  assert.deepEqual(siteDisplayModel.filterAdminSites(sites, { exposure: 'internal' }), [sites[1]]);
+  assert.equal(siteDisplayModel.filterAdminSites(sites, { query: '公网' }).length, 1);
 });
 
 function adminSite(overrides) {

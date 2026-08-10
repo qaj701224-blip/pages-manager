@@ -94,6 +94,10 @@ export default {
       return error(ERROR_CODES.CAPABILITY_INVALID, 'Capability invalid', 401);
     }
 
+    if (route.dataScope === 'user' && claims.anonymous) {
+      return error(ERROR_CODES.USER_REQUIRED, 'User is required for user data access', 401);
+    }
+
     let body;
     try {
       body = await request.json();
@@ -117,10 +121,6 @@ async function handleGet(body, claims, env, route) {
   if (validation.response) return validation.response;
 
   const { key, type } = validation;
-  if (route.dataScope === 'user' && claims.anonymous) {
-    return jsonResponse(buildOkEnvelope({ key, found: false, value: null }));
-  }
-
   const storageKey = resolveStorageKeyForClaims(claims, key, route.dataScope);
   if (storageKey.response) return storageKey.response;
 
@@ -191,10 +191,6 @@ async function handleSet(body, claims, env, route) {
   const validation = validateBody(body, { requireTtl: true });
   if (validation.response) return validation.response;
 
-  if (route.dataScope === 'user' && claims.anonymous) {
-    return error(ERROR_CODES.USER_REQUIRED, 'User is required for user data writes', 401);
-  }
-
   const { key, type, expirationTtl, expiration, metadata } = validation;
   const valueValidation = validateSetValue(body, type);
   if (valueValidation.response) return valueValidation.response;
@@ -238,10 +234,6 @@ async function handleDelete(body, claims, env, route) {
   const validation = validateBody(body);
   if (validation.response) return validation.response;
 
-  if (route.dataScope === 'user' && claims.anonymous) {
-    return error(ERROR_CODES.USER_REQUIRED, 'User is required for user data writes', 401);
-  }
-
   const { key } = validation;
   const storageKey = resolveStorageKeyForClaims(claims, key, route.dataScope);
   if (storageKey.response) return storageKey.response;
@@ -260,9 +252,6 @@ async function handleList(body, claims, env, route) {
   if (shape.response) return shape.response;
   const validation = validateListOptions(body);
   if (!validation.ok) return error(validation.error.code, validation.error.message, 400);
-  if (route.dataScope === 'user' && claims.anonymous) {
-    return jsonResponse(buildOkEnvelope({ keys: [], list_complete: true }));
-  }
 
   const rootPrefix = storageRootPrefixForClaims(claims, route.dataScope);
   const userPrefix = validation.value.prefix || '';

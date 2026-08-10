@@ -2,7 +2,13 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { listAdminSites } from '../api.js';
-import { adminSiteOwnerView, filterAdminSites, siteDeploymentShapeLabel, sitePublicUrl } from '../site-display-model.js';
+import {
+  adminSiteOwnerView,
+  filterAdminSites,
+  siteDeploymentShapeLabel,
+  siteExposureLabel,
+  sitePublicUrl,
+} from '../site-display-model.js';
 import { AdminError, formatDate } from './AdminDashboard.jsx';
 import { SiteDetail } from './SiteDetail.jsx';
 
@@ -12,10 +18,12 @@ export function AdminSites({ siteId, subpage }) {
   const [ownerType, setOwnerType] = useState('all');
   const [status, setStatus] = useState('all');
   const [deploymentShape, setDeploymentShape] = useState('all');
+  const [exposure, setExposure] = useState('all');
 
   useEffect(() => {
     let active = true;
-    listAdminSites()
+    setState((current) => ({ ...current, status: 'loading', error: null }));
+    listAdminSites({ exposure: exposure === 'all' ? undefined : exposure })
       .then((data) => {
         if (active) setState({ status: 'ready', sites: data.sites || [], error: null });
       })
@@ -25,10 +33,10 @@ export function AdminSites({ siteId, subpage }) {
     return () => {
       active = false;
     };
-  }, []);
+  }, [exposure]);
   const visibleSites = useMemo(
-    () => filterAdminSites(state.sites, { query, ownerType, status, deploymentShape }),
-    [state.sites, query, ownerType, status, deploymentShape]
+    () => filterAdminSites(state.sites, { query, ownerType, status, deploymentShape, exposure }),
+    [state.sites, query, ownerType, status, deploymentShape, exposure]
   );
   const selectedSite = useMemo(() => {
     if (!siteId) return null;
@@ -53,7 +61,7 @@ export function AdminSites({ siteId, subpage }) {
       />
     );
   }
-  if (state.sites.length === 0) return <div className="placeholder">暂无站点数据</div>;
+  if (state.sites.length === 0 && exposure === 'all') return <div className="placeholder">暂无站点数据</div>;
 
   return (
     <>
@@ -84,6 +92,17 @@ export function AdminSites({ siteId, subpage }) {
             </button>
           ))}
         </div>
+        <div className="segmented compact-segmented" role="tablist" aria-label="公网范围">
+          {[
+            ['all', '全部网络'],
+            ['public', '仅公网'],
+            ['internal', '仅公司网络'],
+          ].map(([value, label]) => (
+            <button className={exposure === value ? 'active' : ''} key={value} type="button" onClick={() => setExposure(value)}>
+              {label}
+            </button>
+          ))}
+        </div>
         <select
           aria-label="站点类型"
           className="list-search"
@@ -106,6 +125,7 @@ export function AdminSites({ siteId, subpage }) {
                 <th>站点</th>
                 <th>Owner</th>
                 <th>站点类型</th>
+                <th>网络范围</th>
                 <th>可见性</th>
                 <th>状态</th>
                 <th>更新时间</th>
@@ -152,6 +172,9 @@ function AdminSiteRow({ site }) {
       </td>
       <td data-label="站点类型">
         <span className="tag muted">{siteDeploymentShapeLabel(site.deploymentShape)}</span>
+      </td>
+      <td data-label="网络范围">
+        <span className={site.exposure === 'public' ? 'tag' : 'tag muted'}>{siteExposureLabel(site.exposure)}</span>
       </td>
       <td data-label="可见性">
         <span className={site.visibility === 'disabled' ? 'tag tag-disabled' : 'tag'}>{site.visibility}</span>

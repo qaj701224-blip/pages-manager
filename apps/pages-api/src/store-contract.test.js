@@ -19,8 +19,40 @@ const storeBackends = [
   {
     name: 'TestPagesStore',
     async create() {
+      let currentNow = NOW;
+      const store = createTestPagesStore({ now: () => currentNow });
       return {
-        store: createTestPagesStore({ now: () => NOW }),
+        store,
+        setNow(value) {
+          currentNow = value;
+        },
+        async setRawSitePolicy(siteId, { defaultExposure, defaultAccessMode } = {}) {
+          const site = store.sites.get(siteId);
+          if (defaultExposure !== undefined) site.defaultExposure = defaultExposure;
+          if (defaultAccessMode !== undefined) site.defaultAccessMode = defaultAccessMode;
+        },
+        async getRawSitePolicy(siteId) {
+          const site = store.sites.get(siteId);
+          return {
+            defaultVisibility: site.defaultVisibility,
+            defaultExposure: site.defaultExposure,
+            defaultAccessMode: site.defaultAccessMode,
+          };
+        },
+        async setRawRoutePolicy(siteId, { exposure, accessMode, visibility } = {}) {
+          const route = store.routes.get(store.routeBySiteId.get(siteId));
+          if (exposure !== undefined) route.exposure = exposure;
+          if (accessMode !== undefined) route.accessMode = accessMode;
+          if (visibility !== undefined) route.visibility = visibility;
+        },
+        async getRawRoutePolicy(siteId) {
+          const route = store.routes.get(store.routeBySiteId.get(siteId));
+          return {
+            visibility: route.visibility,
+            exposure: route.exposure,
+            accessMode: route.accessMode,
+          };
+        },
         dispose() {},
       };
     },
@@ -28,13 +60,73 @@ const storeBackends = [
   {
     name: 'D1PagesStore',
     async create() {
+      let currentNow = NOW;
       const db = createD1TestDatabase();
       await db.exec(createSchemaSql().join(';\n'));
       return {
         store: new D1PagesStore(db, {
-          now: () => NOW,
+          now: () => currentNow,
           secretEncryptionKey: 'store-contract-test-encryption-key',
         }),
+        setNow(value) {
+          currentNow = value;
+        },
+        async setRawSitePolicy(siteId, { defaultExposure, defaultAccessMode } = {}) {
+          const updates = [];
+          const values = [];
+          if (defaultExposure !== undefined) {
+            updates.push('default_exposure = ?');
+            values.push(defaultExposure);
+          }
+          if (defaultAccessMode !== undefined) {
+            updates.push('default_access_mode = ?');
+            values.push(defaultAccessMode);
+          }
+          if (updates.length > 0) {
+            await db.prepare(`UPDATE sites SET ${updates.join(', ')} WHERE id = ?`).bind(...values, siteId).run();
+          }
+        },
+        async getRawSitePolicy(siteId) {
+          const row = await db
+            .prepare('SELECT default_visibility, default_exposure, default_access_mode FROM sites WHERE id = ?')
+            .bind(siteId)
+            .first();
+          return {
+            defaultVisibility: row.default_visibility,
+            defaultExposure: row.default_exposure,
+            defaultAccessMode: row.default_access_mode,
+          };
+        },
+        async setRawRoutePolicy(siteId, { exposure, accessMode, visibility } = {}) {
+          const updates = [];
+          const values = [];
+          if (exposure !== undefined) {
+            updates.push('exposure = ?');
+            values.push(exposure);
+          }
+          if (accessMode !== undefined) {
+            updates.push('access_mode = ?');
+            values.push(accessMode);
+          }
+          if (visibility !== undefined) {
+            updates.push('visibility = ?');
+            values.push(visibility);
+          }
+          if (updates.length > 0) {
+            await db.prepare(`UPDATE site_routes SET ${updates.join(', ')} WHERE site_id = ?`).bind(...values, siteId).run();
+          }
+        },
+        async getRawRoutePolicy(siteId) {
+          const row = await db
+            .prepare('SELECT visibility, exposure, access_mode FROM site_routes WHERE site_id = ?')
+            .bind(siteId)
+            .first();
+          return {
+            visibility: row.visibility,
+            exposure: row.exposure,
+            accessMode: row.access_mode,
+          };
+        },
         dispose() {
           db.close();
         },
@@ -240,6 +332,8 @@ for (const backend of storeBackends) {
           ownerId: site.ownerId,
           ownerUserId: site.ownerUserId,
           environment: site.environment,
+          defaultExposure: site.defaultExposure,
+          defaultAccessMode: site.defaultAccessMode,
         },
         {
           id: 'site_1',
@@ -247,6 +341,8 @@ for (const backend of storeBackends) {
           ownerId: 'usr_owner',
           ownerUserId: 'usr_owner',
           environment: 'production',
+          defaultExposure: 'internal',
+          defaultAccessMode: 'org',
         },
       );
       assert.deepEqual(
@@ -260,6 +356,8 @@ for (const backend of storeBackends) {
           hostname: 'docs.pages.xd.team',
           runtime: 'disabled',
           visibility: 'org',
+          exposure: 'internal',
+          accessMode: 'org',
           routeStatus: 'disabled',
           runtimeConfigGeneration: 0,
         },
@@ -303,6 +401,375 @@ for (const backend of storeBackends) {
         hostname: 'docs-staging.pages.xd.team',
       });
       assert.equal(stagingSite.environment, 'staging');
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  test(`${backend.name} contract: legacy visibility writes preserve exposure and dual-write canonical access mode`, async () => {
+    const fixture = await backend.create();
+    try {
+      await createSite(fixture.store);
+      await fixture.setRawSitePolicy('site_1', { defaultExposure: 'public' });
+      await fixture.setRawRoutePolicy('site_1', { exposure: 'public' });
+
+      const visibilityRoute = await fixture.store.updateSiteVisibility(
+        'site_1',
+        { visibility: 'internal', updatedAt: '2026-07-28T00:01:00.000Z' },
+        'production',
+      );
+      assert.deepEqual(
+        {
+          visibility: visibilityRoute.visibility,
+          exposure: visibilityRoute.exposure,
+          accessMode: visibilityRoute.accessMode,
+        },
+        { visibility: 'internal', exposure: 'public', accessMode: 'anonymous' },
+      );
+      assert.deepEqual(await fixture.getRawRoutePolicy('site_1'), {
+        visibility: 'internal',
+        exposure: 'public',
+        accessMode: 'anonymous',
+      });
+      assert.deepEqual(
+        {
+          defaultVisibility: (await fixture.store.getSite('site_1')).defaultVisibility,
+          defaultExposure: (await fixture.store.getSite('site_1')).defaultExposure,
+          defaultAccessMode: (await fixture.store.getSite('site_1')).defaultAccessMode,
+        },
+        { defaultVisibility: 'internal', defaultExposure: 'public', defaultAccessMode: 'anonymous' },
+      );
+      assert.deepEqual(await fixture.getRawSitePolicy('site_1'), {
+        defaultVisibility: 'internal',
+        defaultExposure: 'public',
+        defaultAccessMode: 'anonymous',
+      });
+
+      await fixture.store.transferSiteOwner(
+        'site_1',
+        {
+          ownerType: 'user',
+          ownerId: 'usr_next',
+          ownerUserId: 'usr_next',
+          defaultVisibility: 'owner',
+          updatedAt: '2026-07-28T00:02:00.000Z',
+        },
+        'production',
+      );
+      assert.deepEqual(
+        {
+          defaultVisibility: (await fixture.store.getSite('site_1')).defaultVisibility,
+          defaultExposure: (await fixture.store.getSite('site_1')).defaultExposure,
+          defaultAccessMode: (await fixture.store.getSite('site_1')).defaultAccessMode,
+        },
+        { defaultVisibility: 'owner', defaultExposure: 'public', defaultAccessMode: 'owner' },
+      );
+      assert.deepEqual(await fixture.getRawSitePolicy('site_1'), {
+        defaultVisibility: 'owner',
+        defaultExposure: 'public',
+        defaultAccessMode: 'owner',
+      });
+
+      const activated = await fixture.store.activateSiteVersion(
+        'site_1',
+        {
+          activeVersionId: 'ver_1',
+          workerName: 'pages-v2-docs-ver-1',
+          visibility: 'acl',
+          updatedAt: '2026-07-28T00:03:00.000Z',
+        },
+        'production',
+      );
+      assert.deepEqual(
+        {
+          visibility: activated.visibility,
+          exposure: activated.exposure,
+          accessMode: activated.accessMode,
+          cacheTier: activated.cacheTier,
+        },
+        { visibility: 'acl', exposure: 'public', accessMode: 'acl', cacheTier: 'sensitive' },
+      );
+      assert.deepEqual(await fixture.getRawRoutePolicy('site_1'), {
+        visibility: 'acl',
+        exposure: 'public',
+        accessMode: 'acl',
+      });
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  test(`${backend.name} contract: unknown legacy visibility remains fail closed during compatibility reads`, async () => {
+    const fixture = await backend.create();
+    try {
+      await createSite(fixture.store);
+      await fixture.setRawRoutePolicy('site_1', {
+        exposure: 'public',
+        accessMode: 'org',
+        visibility: 'public',
+      });
+
+      const route = await fixture.store.getRouteBySiteId('site_1', 'production');
+      assert.deepEqual(
+        { visibility: route.visibility, exposure: route.exposure, accessMode: route.accessMode },
+        { visibility: 'public', exposure: 'public', accessMode: null },
+      );
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  test(`${backend.name} contract: activation fences exposure drift and expired policy leases`, async () => {
+    const fixture = await backend.create();
+    try {
+      await createSite(fixture.store);
+      const lease = await fixture.store.acquireSiteCommitLock('production', 'site_1', {
+        lockId: 'policy_activation_lock',
+      });
+      const initialRoute = await fixture.store.getRouteBySiteId('site_1', 'production');
+      const expected = {
+        activeVersionId: initialRoute.activeVersionId,
+        policyVersion: initialRoute.policyVersion,
+        routeGeneration: initialRoute.routeGeneration,
+        runtimeConfigGeneration: initialRoute.runtimeConfigGeneration,
+        exposure: initialRoute.exposure,
+      };
+
+      assert.equal(
+        await fixture.store.activateSiteVersion(
+          'site_1',
+          { activeVersionId: 'ver_1', workerName: 'worker_1', visibility: 'org', updatedAt: NOW, lease },
+          'production',
+          { ...expected, exposure: 'public' },
+        ),
+        null,
+      );
+
+      const activated = await fixture.store.activateSiteVersion(
+        'site_1',
+        { activeVersionId: 'ver_1', workerName: 'worker_1', visibility: 'org', updatedAt: NOW, lease },
+        'production',
+        expected,
+      );
+      assert.equal(activated.activeVersionId, 'ver_1');
+
+      await fixture.store.releaseSiteCommitLock('production', 'site_1', lease.lockId);
+      await assert.rejects(
+        () =>
+          fixture.store.activateSiteVersion(
+            'site_1',
+            { activeVersionId: 'ver_2', workerName: 'worker_2', visibility: 'org', updatedAt: NOW, lease },
+            'production',
+            { ...expected, activeVersionId: 'ver_1', routeGeneration: activated.routeGeneration },
+          ),
+        /SITE_POLICY_CONFLICT/,
+      );
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  test(`${backend.name} contract: site commit leases fence stale holders without resetting tokens`, async () => {
+    const fixture = await backend.create();
+    try {
+      await createSite(fixture.store);
+
+      const first = await fixture.store.acquireSiteCommitLock('production', 'site_1', {
+        lockId: 'policy_lock_1',
+      });
+      assert.deepEqual(
+        { lockId: first.lockId, fencingToken: first.fencingToken },
+        { lockId: 'policy_lock_1', fencingToken: 1 },
+      );
+
+      fixture.setNow('2026-07-28T00:00:30.000Z');
+      assert.equal(
+        await fixture.store.acquireSiteCommitLock('production', 'site_1', { lockId: 'policy_lock_blocked' }),
+        null,
+      );
+      const renewed = await fixture.store.renewSiteCommitLock('production', 'site_1', first.lockId, {
+        fencingToken: first.fencingToken,
+      });
+      assert.equal(renewed.fencingToken, first.fencingToken);
+
+      fixture.setNow('2026-07-28T00:01:31.000Z');
+      const second = await fixture.store.acquireSiteCommitLock('production', 'site_1', {
+        lockId: 'policy_lock_2',
+      });
+      assert.deepEqual(
+        { lockId: second.lockId, fencingToken: second.fencingToken },
+        { lockId: 'policy_lock_2', fencingToken: 2 },
+      );
+      assert.equal(
+        await fixture.store.renewSiteCommitLock('production', 'site_1', first.lockId, {
+          fencingToken: first.fencingToken,
+        }),
+        null,
+      );
+      assert.equal(await fixture.store.releaseSiteCommitLock('production', 'site_1', first.lockId), false);
+
+      fixture.setNow('2026-07-28T00:01:32.000Z');
+      const secondRenewal = await fixture.store.renewSiteCommitLock('production', 'site_1', second.lockId, {
+        fencingToken: second.fencingToken,
+      });
+      assert.equal(secondRenewal.fencingToken, 2);
+      assert.equal(await fixture.store.releaseSiteCommitLock('production', 'site_1', second.lockId), true);
+      assert.equal((await fixture.store.getSiteCommitLock('production', 'site_1')).fencingToken, 2);
+
+      const third = await fixture.store.acquireSiteCommitLock('production', 'site_1', {
+        lockId: 'policy_lock_3',
+      });
+      assert.equal(third.fencingToken, 3);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  test(`${backend.name} contract: site commit lock can preserve callback results when release fails`, async () => {
+    const fixture = await backend.create();
+    try {
+      await createSite(fixture.store);
+      const originalRelease = fixture.store.releaseSiteCommitLock.bind(fixture.store);
+      fixture.store.releaseSiteCommitLock = async () => {
+        throw new Error('release failed');
+      };
+
+      const result = await fixture.store.withSiteCommitLock(
+        'production',
+        'site_1',
+        async () => 'committed',
+        { lockId: 'policy_lock_best_effort_release', bestEffortRelease: true }
+      );
+
+      assert.equal(result, 'committed');
+      fixture.store.releaseSiteCommitLock = originalRelease;
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  test(`${backend.name} contract: unified policy mutation preserves independent fields and rejects stale writers`, async () => {
+    const fixture = await backend.create();
+    try {
+      await createSite(fixture.store);
+      const lease = await fixture.store.acquireSiteCommitLock('production', 'site_1', {
+        lockId: 'policy_lock_1',
+      });
+      const initialRoute = await fixture.store.getRouteBySiteId('site_1', 'production');
+
+      const exposed = await fixture.store.updateSiteAccessPolicy({
+        environment: 'production',
+        siteId: 'site_1',
+        actorUserId: 'usr_admin',
+        exposure: 'public',
+        expected: policyExpected(initialRoute),
+        lease,
+        auditEvent: policyAudit('audit_policy_1', 'usr_admin', 'public'),
+        updatedAt: '2026-07-28T00:00:10.000Z',
+      });
+      assert.equal(exposed.changed, true);
+      assert.deepEqual(
+        {
+          exposure: exposed.route.exposure,
+          accessMode: exposed.route.accessMode,
+          visibility: exposed.route.visibility,
+          policyVersion: exposed.route.policyVersion,
+        },
+        { exposure: 'public', accessMode: 'org', visibility: 'org', policyVersion: 2 },
+      );
+
+      const aclEntries = [
+        {
+          id: 'acl_1',
+          subjectType: 'email',
+          subjectValue: 'reader@example.com',
+          accessRole: 'viewer',
+          effect: 'allow',
+        },
+      ];
+      const anonymous = await fixture.store.updateSiteAccessPolicy({
+        environment: 'production',
+        siteId: 'site_1',
+        actorUserId: 'usr_owner',
+        accessMode: 'anonymous',
+        aclEntries,
+        expected: policyExpected(exposed.route),
+        lease,
+        auditEvent: policyAudit('audit_policy_2', 'usr_owner', 'public'),
+        updatedAt: '2026-07-28T00:00:20.000Z',
+      });
+      assert.deepEqual(
+        {
+          exposure: anonymous.route.exposure,
+          accessMode: anonymous.route.accessMode,
+          visibility: anonymous.route.visibility,
+          policyVersion: anonymous.route.policyVersion,
+          acl: anonymous.aclEntries.map(({ subjectType, subjectValue }) => ({ subjectType, subjectValue })),
+        },
+        {
+          exposure: 'public',
+          accessMode: 'anonymous',
+          visibility: 'internal',
+          policyVersion: 3,
+          acl: [{ subjectType: 'email', subjectValue: 'reader@example.com' }],
+        },
+      );
+      assert.deepEqual(await fixture.getRawSitePolicy('site_1'), {
+        defaultVisibility: 'internal',
+        defaultExposure: 'public',
+        defaultAccessMode: 'anonymous',
+      });
+      assert.deepEqual(await fixture.getRawRoutePolicy('site_1'), {
+        visibility: 'internal',
+        exposure: 'public',
+        accessMode: 'anonymous',
+      });
+
+      await assert.rejects(
+        fixture.store.updateSiteAccessPolicy({
+          environment: 'production',
+          siteId: 'site_1',
+          actorUserId: 'usr_owner',
+          accessMode: 'owner',
+          expected: policyExpected(initialRoute),
+          lease,
+          updatedAt: '2026-07-28T00:00:30.000Z',
+        }),
+        /SITE_POLICY_CONFLICT/,
+      );
+
+      assert.equal(await fixture.store.releaseSiteCommitLock('production', 'site_1', lease.lockId), true);
+      fixture.setNow('2026-07-28T00:00:31.000Z');
+      const nextLease = await fixture.store.acquireSiteCommitLock('production', 'site_1', {
+        lockId: 'policy_lock_2',
+      });
+      await assert.rejects(
+        fixture.store.updateSiteAccessPolicy({
+          environment: 'production',
+          siteId: 'site_1',
+          actorUserId: 'usr_owner',
+          accessMode: 'owner',
+          expected: policyExpected(anonymous.route),
+          lease,
+          updatedAt: '2026-07-28T00:00:31.000Z',
+        }),
+        /SITE_POLICY_CONFLICT/,
+      );
+
+      const sameValue = await fixture.store.updateSiteAccessPolicy({
+        environment: 'production',
+        siteId: 'site_1',
+        actorUserId: 'usr_owner',
+        exposure: 'public',
+        accessMode: 'anonymous',
+        aclEntries,
+        expected: policyExpected(anonymous.route),
+        lease: nextLease,
+        updatedAt: '2026-07-28T00:00:31.000Z',
+      });
+      assert.equal(sameValue.changed, false);
+      assert.equal(sameValue.route.policyVersion, 3);
+      assert.equal((await fixture.store.listAuditEvents({ environment: 'production' })).length, 2);
     } finally {
       fixture.dispose();
     }
@@ -684,12 +1151,47 @@ function deploymentInput() {
   };
 }
 
+function policyExpected(route) {
+  return {
+    policyVersion: route.policyVersion,
+    routeGeneration: route.routeGeneration,
+    activeVersionId: route.activeVersionId,
+    runtimeConfigGeneration: route.runtimeConfigGeneration,
+  };
+}
+
+function policyAudit(id, actorUserId, requestedExposure) {
+  return {
+    id,
+    environment: 'production',
+    eventType: 'site.policy_committed',
+    actorUserId,
+    actorType: 'user',
+    siteId: 'site_1',
+    routeId: 'route_1',
+    versionId: null,
+    decision: 'allow',
+    statusCode: 200,
+    traceId: null,
+    ipHash: null,
+    userAgentHash: null,
+    metadata: {
+      stage: 'policy_committed',
+      activationState: 'pending_activation',
+      requestedExposure,
+    },
+    createdAt: NOW,
+  };
+}
+
 function pickRoute(route) {
   return {
     id: route.id,
     hostname: route.hostname,
     runtime: route.runtime,
     visibility: route.visibility,
+    exposure: route.exposure,
+    accessMode: route.accessMode,
     routeStatus: route.routeStatus,
     runtimeConfigGeneration: route.runtimeConfigGeneration,
   };

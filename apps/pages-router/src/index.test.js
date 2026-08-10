@@ -27,7 +27,10 @@ const coolToneFragments = [
 
 test('fails closed before route lookup when IP allowlist is missing', async () => {
   const env = routeEnv({ ROUTER_IP_ALLOWLIST_CIDRS: undefined });
-  const response = await worker.fetch(new Request('https://demo.pages.xd.team/'), env);
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/', { headers: { 'CF-Connecting-IP': '10.1.2.3' } }),
+    env,
+  );
 
   assert.equal(response.status, 403);
   assert.equal((await response.json()).error.code, 'IP_DENIED');
@@ -56,6 +59,102 @@ test('fails closed before route lookup when PAGES_ENV is missing', async () => {
   assert.equal((await response.json()).error.code, 'ROUTER_ENV_INVALID');
   assert.equal(env.lookupCount, 0);
   assert.equal(env.dispatchGetCount, 0);
+  assert.equal(env.dispatchCount, 0);
+});
+
+test('trusted v3 public anonymous routes can bypass the IP allowlist', async () => {
+  const env = routeEnv({
+    ROUTER_IP_ALLOWLIST_CIDRS: undefined,
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({
+        schemaVersion: 3,
+        exposure: 'public',
+        accessMode: 'anonymous',
+        visibility: 'internal',
+      }),
+    },
+  });
+  const response = await worker.fetch(new Request('https://demo.pages.xd.team/'), env);
+
+  assert.equal(response.status, 200);
+  assert.equal(env.dispatchCount, 1);
+});
+
+test('v3 internal routes still require the IP allowlist before dispatch', async () => {
+  const env = routeEnv({
+    ROUTER_IP_ALLOWLIST_CIDRS: undefined,
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({
+        schemaVersion: 3,
+        exposure: 'internal',
+        accessMode: 'anonymous',
+        visibility: 'internal',
+      }),
+    },
+  });
+  const response = await worker.fetch(new Request('https://demo.pages.xd.team/'), env);
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, 'IP_DENIED');
+  assert.equal(env.dispatchCount, 0);
+});
+
+test('v3 policy projection mismatches fail closed after the IP gate', async () => {
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({
+        schemaVersion: 3,
+        exposure: 'public',
+        accessMode: 'org',
+        visibility: 'internal',
+      }),
+    },
+  });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/', { headers: { 'CF-Connecting-IP': '10.1.2.3' } }),
+    env,
+  );
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, 'SITE_POLICY_INVALID');
+  assert.equal(env.dispatchCount, 0);
+});
+
+test('legacy v2 snapshots with public exposure still require the IP allowlist', async () => {
+  const env = routeEnv({
+    ROUTER_IP_ALLOWLIST_CIDRS: undefined,
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({
+        exposure: 'public',
+        visibility: 'internal',
+      }),
+    },
+  });
+  const response = await worker.fetch(new Request('https://demo.pages.xd.team/'), env);
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, 'IP_DENIED');
+  assert.equal(env.dispatchCount, 0);
+});
+
+test('v3 public snapshots require a complete access policy projection', async () => {
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({
+        schemaVersion: 3,
+        exposure: 'public',
+        accessMode: 'anonymous',
+        visibility: undefined,
+      }),
+    },
+  });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/', { headers: { 'CF-Connecting-IP': '10.1.2.3' } }),
+    env,
+  );
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, 'SITE_POLICY_INVALID');
   assert.equal(env.dispatchCount, 0);
 });
 
@@ -464,7 +563,7 @@ test('browser data write requests do not receive write scope from read-only rout
   );
 });
 
-test('anonymous browser user data writes return USER_REQUIRED through gateway', async () => {
+test('anonymous browser user data writes return USER_REQUIRED before gateway', async () => {
   const env = routeEnv({
     nowSeconds: () => Math.floor(Date.now() / 1000),
     routes: {
@@ -473,8 +572,8 @@ test('anonymous browser user data writes return USER_REQUIRED through gateway', 
       }),
     },
     XD_PAGES_KV_GATEWAY: {
-      async fetch(request) {
-        return kvGatewayWorker.fetch(request, gatewayEnv());
+      async fetch() {
+        throw new Error('gateway should not be called');
       },
     },
   });
@@ -526,6 +625,230 @@ test('rejects browser runtime KV requests with cross-site origin', async () => {
 
   assert.equal(response.status, 403);
   assert.equal((await response.json()).error.code, 'RUNTIME_ORIGIN_DENIED');
+});
+
+test('public runtime accepts same-origin JSON requests without the IP allowlist', async () => {
+  let gatewayRequest;
+  const env = routeEnv({
+    ROUTER_IP_ALLOWLIST_CIDRS: undefined,
+    routes: {
+      'demo.pages.xd.team': publicRouteSnapshot({
+        kv: { enabled: true, scopes: ['kv:get'] },
+      }),
+    },
+    XD_PAGES_KV_GATEWAY: {
+      async fetch(request) {
+        gatewayRequest = request;
+        return Response.json({ ok: true, found: false });
+      },
+    },
+  });
+  const response = await worker.fetch(
+    browserRuntimeRequest({
+      fetchSite: 'same-origin',
+      fetchMode: 'cors',
+      fetchDest: 'empty',
+    }),
+    env,
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true, found: false });
+  assert.equal(gatewayRequest.url, 'https://pages-kv-gateway.local/v1/kv/get');
+  assert.equal(env.dispatchCount, 0);
+});
+
+test('public runtime requires an Origin header', async () => {
+  const env = publicRuntimeEnv();
+  const response = await worker.fetch(browserRuntimeRequest({ origin: undefined }), env);
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, 'RUNTIME_ORIGIN_REQUIRED');
+});
+
+for (const [label, origin] of [
+  ['null origin', 'null'],
+  ['sibling subdomain', 'https://other.pages.xd.team'],
+  ['external origin', 'https://evil.example'],
+  ['malformed origin', 'not a url'],
+]) {
+  test(`public runtime rejects ${label}`, async () => {
+    const env = publicRuntimeEnv();
+    const response = await worker.fetch(browserRuntimeRequest({ origin }), env);
+
+    assert.equal(response.status, 403);
+    assert.equal((await response.json()).error.code, 'RUNTIME_ORIGIN_DENIED');
+  });
+}
+
+for (const testCase of [
+  { label: 'GET requests', method: 'GET', status: 405, code: 'METHOD_NOT_ALLOWED' },
+  { label: 'OPTIONS preflight', method: 'OPTIONS', status: 405, code: 'METHOD_NOT_ALLOWED' },
+  {
+    label: 'non-JSON content',
+    contentType: 'text/plain',
+    status: 415,
+    code: 'RUNTIME_CONTENT_TYPE_INVALID',
+  },
+  {
+    label: 'missing Content-Type',
+    contentType: undefined,
+    status: 415,
+    code: 'RUNTIME_CONTENT_TYPE_INVALID',
+  },
+  {
+    label: 'missing runtime header',
+    runtimeHeader: undefined,
+    status: 403,
+    code: 'RUNTIME_REQUEST_REQUIRED',
+  },
+  {
+    label: 'non-exact runtime header',
+    runtimeHeader: '01',
+    status: 403,
+    code: 'RUNTIME_REQUEST_REQUIRED',
+  },
+  {
+    label: 'cross-site fetch metadata',
+    fetchSite: 'cross-site',
+    status: 403,
+    code: 'RUNTIME_ORIGIN_DENIED',
+  },
+  {
+    label: 'same-site fetch metadata',
+    fetchSite: 'same-site',
+    status: 403,
+    code: 'RUNTIME_ORIGIN_DENIED',
+  },
+  {
+    label: 'navigation fetch mode',
+    fetchMode: 'navigate',
+    status: 403,
+    code: 'RUNTIME_ORIGIN_DENIED',
+  },
+  {
+    label: 'no-cors fetch mode',
+    fetchMode: 'no-cors',
+    status: 403,
+    code: 'RUNTIME_ORIGIN_DENIED',
+  },
+  {
+    label: 'document fetch destination',
+    fetchDest: 'document',
+    status: 403,
+    code: 'RUNTIME_ORIGIN_DENIED',
+  },
+]) {
+  test(`public runtime rejects ${testCase.label}`, async () => {
+    const env = publicRuntimeEnv();
+    const response = await worker.fetch(browserRuntimeRequest(testCase), env);
+
+    assert.equal(response.status, testCase.status);
+    assert.equal((await response.json()).error.code, testCase.code);
+  });
+}
+
+test('internal runtime preserves missing Origin compatibility', async () => {
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({
+        kv: { enabled: true, scopes: ['kv:get'] },
+      }),
+    },
+    XD_PAGES_KV_GATEWAY: {
+      async fetch() {
+        return Response.json({ ok: true, found: false });
+      },
+    },
+  });
+  const response = await worker.fetch(
+    browserRuntimeRequest({ origin: undefined, ip: '10.1.2.3' }),
+    env,
+  );
+
+  assert.equal(response.status, 200);
+});
+
+test('public runtime strips CORS headers from gateway responses', async () => {
+  const env = publicRuntimeEnv({
+    gatewayResponse: Response.json(
+      { ok: true, found: false },
+      {
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Credentials': 'true',
+          'Access-Control-Expose-Headers': 'X-Internal',
+        },
+      },
+    ),
+  });
+  const response = await worker.fetch(browserRuntimeRequest(), env);
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('Access-Control-Allow-Origin'), null);
+  assert.equal(response.headers.get('Access-Control-Allow-Credentials'), null);
+  assert.equal(response.headers.get('Access-Control-Expose-Headers'), null);
+});
+
+test('public protected runtime keeps valid user-scope access', async () => {
+  let gatewayRequest;
+  const session = await siteSession({ audience: 'demo.pages.xd.team', userId: 'usr_1' });
+  const env = routeEnv({
+    ROUTER_IP_ALLOWLIST_CIDRS: undefined,
+    routes: {
+      'demo.pages.xd.team': publicRouteSnapshot({
+        accessMode: 'org',
+        visibility: 'org',
+        kv: { enabled: true, scopes: ['kv:get'] },
+      }),
+    },
+    XD_PAGES_KV_GATEWAY: {
+      async fetch(request) {
+        gatewayRequest = request;
+        return Response.json({ ok: true, found: false });
+      },
+    },
+  });
+  const response = await worker.fetch(
+    browserRuntimeRequest({
+      path: '/.xd-pages/runtime/v1/data/user/get',
+      fetchSite: 'same-origin',
+      fetchMode: 'cors',
+      fetchDest: 'empty',
+      cookie: `__Host-pages_site_session=${session}`,
+    }),
+    env,
+  );
+
+  assert.equal(response.status, 200);
+  const claims = await verifyCapability(gatewayRequest.headers.get('Authorization'), gatewayEnv(), {
+    requiredScope: 'data:user:get',
+    requiredDataScope: 'user',
+    now: 1_700_000_000,
+  });
+  assert.equal(claims.sub, 'usr_1');
+  assert.equal(claims.anonymous, false);
+});
+
+test('public user Worker business routes are not subject to runtime Origin validation', async () => {
+  const env = routeEnv({
+    ROUTER_IP_ALLOWLIST_CIDRS: undefined,
+    routes: {
+      'demo.pages.xd.team': publicRouteSnapshot(),
+    },
+  });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/api/data', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: 'status' }),
+    }),
+    env,
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), 'user worker ok');
+  assert.equal(env.dispatchCount, 1);
 });
 
 test('dispatches an allowed production site with sanitized request headers', async () => {
@@ -584,6 +907,25 @@ test('injects a short-lived KV capability into user worker requests for kv-enabl
   assert.equal(claims.siteId, 'demo');
   assert.equal(claims.env, 'production');
   assert.equal(claims.exp - claims.iat, 60);
+});
+
+test('anonymous user worker requests do not receive a user data capability', async () => {
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({
+        kv: { enabled: true, scopes: ['kv:get', 'kv:set', 'kv:delete'] },
+      }),
+    },
+  });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/', { headers: { 'CF-Connecting-IP': '10.1.2.3' } }),
+    env,
+  );
+
+  assert.equal(response.status, 200);
+  assert.notEqual(env.dispatchedRequest.headers.get('CF-Platform-Data-Site-Capability'), null);
+  assert.equal(env.dispatchedRequest.headers.get('CF-Platform-Data-User-Capability'), null);
+  assert.notEqual(env.dispatchedRequest.headers.get('CF-Platform-KV-Capability'), null);
 });
 
 test('injects separated site and user data capabilities into user worker requests', async () => {
@@ -784,6 +1126,33 @@ test('fails closed when KV route pointer environment does not match router envir
   const response = await worker.fetch(
     new Request('https://demo.pages.xd.team/', { headers: { 'CF-Connecting-IP': '10.1.2.3' } }),
     env
+  );
+
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error.code, 'ROUTE_SNAPSHOT_INVALID');
+  assert.equal(env.dispatchCount, 0);
+});
+
+test('fails closed when KV route pointer versions are not integers', async () => {
+  const env = routeEnv({
+    lookupRoute: undefined,
+    ROUTE_SNAPSHOTS: kvRouteSnapshots({
+      'production:route_pointer:demo.pages.xd.team': {
+        hostname: 'demo.pages.xd.team',
+        environment: 'production',
+        routeGeneration: '4',
+        policyVersion: '2',
+        snapshotKey: 'production:route_snapshot:demo.pages.xd.team:4:2',
+      },
+      'production:route_snapshot:demo.pages.xd.team:4:2': routeSnapshot({
+        routeGeneration: '4',
+        policyVersion: '2',
+      }),
+    }),
+  });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/', { headers: { 'CF-Connecting-IP': '10.1.2.3' } }),
+    env,
   );
 
   assert.equal(response.status, 503);
@@ -1687,6 +2056,54 @@ function routeSnapshot(overrides = {}) {
     activeVersionId: 'ver_demo',
     ...overrides,
   };
+}
+
+function publicRouteSnapshot(overrides = {}) {
+  return routeSnapshot({
+    schemaVersion: 3,
+    exposure: 'public',
+    accessMode: 'anonymous',
+    visibility: 'internal',
+    ...overrides,
+  });
+}
+
+function publicRuntimeEnv({ gatewayResponse = Response.json({ ok: true }) } = {}) {
+  return routeEnv({
+    ROUTER_IP_ALLOWLIST_CIDRS: undefined,
+    routes: {
+      'demo.pages.xd.team': publicRouteSnapshot({
+        kv: { enabled: true, scopes: ['kv:get', 'kv:set', 'kv:delete'] },
+      }),
+    },
+    XD_PAGES_KV_GATEWAY: {
+      async fetch() {
+        return gatewayResponse;
+      },
+    },
+  });
+}
+
+function browserRuntimeRequest(options = {}) {
+  const path = options.path ?? '/.xd-pages/runtime/v1/kv/get';
+  const method = options.method ?? 'POST';
+  const origin = Object.hasOwn(options, 'origin') ? options.origin : 'https://demo.pages.xd.team';
+  const contentType = Object.hasOwn(options, 'contentType')
+    ? options.contentType
+    : 'application/json; charset=utf-8';
+  const runtimeHeader = Object.hasOwn(options, 'runtimeHeader') ? options.runtimeHeader : '1';
+  const headers = new Headers();
+  if (origin !== undefined) headers.set('Origin', origin);
+  if (contentType !== undefined) headers.set('Content-Type', contentType);
+  if (runtimeHeader !== undefined) headers.set('X-XD-Pages-Runtime', runtimeHeader);
+  if (options.fetchSite !== undefined) headers.set('Sec-Fetch-Site', options.fetchSite);
+  if (options.fetchMode !== undefined) headers.set('Sec-Fetch-Mode', options.fetchMode);
+  if (options.fetchDest !== undefined) headers.set('Sec-Fetch-Dest', options.fetchDest);
+  if (options.ip !== undefined) headers.set('CF-Connecting-IP', options.ip);
+  if (options.cookie !== undefined) headers.set('Cookie', options.cookie);
+  const init = { method, headers };
+  if (method !== 'GET' && method !== 'HEAD') init.body = JSON.stringify({ key: 'app/config' });
+  return new Request(`https://demo.pages.xd.team${path}`, init);
 }
 
 function routeEnv(overrides = {}) {

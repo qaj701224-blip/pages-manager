@@ -1028,6 +1028,104 @@ test('updates site visibility and bumps policy version for active routes', async
   assert.equal(snapshots.read('production:route_pointer:guide.pages.xd.team').routeGeneration, 1);
 });
 
+test('regular visibility update uses the site lease and preserves an existing public exposure', async () => {
+  const store = await createSeededStore();
+  const site = await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  const initialRoute = await activateSite(store, site.id, { visibility: 'org' });
+  store.routes.get(initialRoute.id).exposure = 'public';
+  store.sites.get(site.id).defaultExposure = 'public';
+  const originalWithSiteCommitLock = store.withSiteCommitLock.bind(store);
+  let lockCalls = 0;
+  store.withSiteCommitLock = async (...args) => {
+    lockCalls += 1;
+    return originalWithSiteCommitLock(...args);
+  };
+  const snapshots = createSnapshotStore();
+
+  const response = await worker.fetch(
+    patchJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1', { visibility: 'internal' }),
+    testEnv(store, { ROUTE_SNAPSHOTS: snapshots })
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.equal(JSON.stringify(body).includes('exposure'), false);
+  assert.equal(lockCalls, 1);
+  const route = await store.getRouteBySiteId(site.id, 'production');
+  assert.equal(route.policyVersion, initialRoute.policyVersion + 1);
+  assert.equal(route.exposure, 'public');
+  assert.equal(route.accessMode, 'anonymous');
+  const pointer = snapshots.read('production:route_pointer:guide.pages.xd.team');
+  assert.equal(pointer.policyVersion, route.policyVersion);
+  assert.equal(snapshots.read(pointer.snapshotKey).exposure, 'public');
+  assert.equal(snapshots.read(pointer.snapshotKey).accessMode, 'anonymous');
+});
+
+test('regular visibility update returns a stable conflict while the site lease is held', async () => {
+  const store = await createSeededStore();
+  const site = await store.createSite({
+    id: 'site_lease_conflict',
+    slug: 'lease-conflict',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_lease_conflict',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_lease_conflict',
+    hostname: 'lease-conflict.pages.xd.team',
+  });
+  await activateSite(store, site.id, { visibility: 'org' });
+  const lease = await store.acquireSiteCommitLock('production', site.id, { lockId: 'held_by_other_writer' });
+  assert.ok(lease);
+
+  const response = await worker.fetch(
+    patchJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_lease_conflict', { visibility: 'acl' }),
+    testEnv(store, { ROUTE_SNAPSHOTS: createSnapshotStore() })
+  );
+
+  assert.equal(response.status, 409, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'SITE_POLICY_CONFLICT');
+  assert.equal((await store.getRouteBySiteId(site.id)).visibility, 'org');
+  await store.releaseSiteCommitLock('production', site.id, lease.lockId);
+});
+
+test('regular site visibility API rejects explicit exposure changes', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  const route = await activateSite(store, 'site_1', { visibility: 'org' });
+  store.routes.get(route.id).exposure = 'public';
+  const snapshots = createSnapshotStore();
+
+  const response = await worker.fetch(
+    patchJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1', {
+      visibility: 'acl',
+      exposure: 'internal',
+    }),
+    testEnv(store, { ROUTE_SNAPSHOTS: snapshots })
+  );
+
+  assert.equal(response.status, 403, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'SITE_EXPOSURE_ADMIN_REQUIRED');
+  assert.equal((await store.getRouteBySiteId('site_1')).exposure, 'public');
+});
+
 test('rolls back visibility changes when active route snapshot write fails', async () => {
   const store = await createSeededStore();
   const site = await store.createSite({
@@ -1048,10 +1146,10 @@ test('rolls back visibility changes when active route snapshot write fails', asy
   );
 
   assert.equal(response.status, 503);
-  assert.equal((await response.json()).error.code, 'ROUTE_SNAPSHOT_WRITE_FAILED');
+  assert.equal((await response.json()).error.code, 'ROUTE_POLICY_REPAIR_REQUIRED');
   assert.equal((await store.getSite('site_1')).defaultVisibility, 'org');
   assert.equal((await store.getRouteBySiteId('site_1')).visibility, 'org');
-  assert.equal((await store.getRouteBySiteId('site_1')).policyVersion, 1);
+  assert.equal((await store.getRouteBySiteId('site_1')).policyVersion, 3);
 });
 
 test('rolls back active site deletes when route snapshot write fails', async () => {
@@ -1095,21 +1193,25 @@ test('rolls back visibility changes when snapshot write fails after runtime conf
   });
   await activateSite(store, site.id);
   const previousRoute = await store.getRouteBySiteId('site_1', 'production');
+  let injectedRuntimeChange = false;
 
   const response = await worker.fetch(
     patchJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1', { visibility: 'disabled' }),
     testEnv(store, {
       ROUTE_SNAPSHOTS: {
         put: async () => {
-          await store.putSiteSecret({
-            id: 'sec_1',
-            environment: 'production',
-            siteId: 'site_1',
-            name: 'API_TOKEN',
-            value: 'changed-during-policy-update',
-            actorId: 'usr_1',
-            updatedAt: '2026-06-15T00:00:02.000Z',
-          });
+          if (!injectedRuntimeChange) {
+            injectedRuntimeChange = true;
+            await store.putSiteSecret({
+              id: 'sec_1',
+              environment: 'production',
+              siteId: 'site_1',
+              name: 'API_TOKEN',
+              value: 'changed-during-policy-update',
+              actorId: 'usr_1',
+              updatedAt: '2026-06-15T00:00:02.000Z',
+            });
+          }
           throw new Error('snapshot write failed');
         },
       },
@@ -1118,10 +1220,10 @@ test('rolls back visibility changes when snapshot write fails after runtime conf
   const route = await store.getRouteBySiteId('site_1', 'production');
 
   assert.equal(response.status, 503);
-  assert.equal((await response.json()).error.code, 'ROUTE_SNAPSHOT_WRITE_FAILED');
+  assert.equal((await response.json()).error.code, 'ROUTE_POLICY_REPAIR_REQUIRED');
   assert.equal((await store.getSite('site_1')).defaultVisibility, 'org');
   assert.equal(route.visibility, 'org');
-  assert.equal(route.policyVersion, previousRoute.policyVersion);
+  assert.equal(route.policyVersion, previousRoute.policyVersion + 2);
   assert.equal(route.runtimeConfigGeneration, previousRoute.runtimeConfigGeneration + 1);
 });
 
@@ -2207,10 +2309,6 @@ test('runtime vars fallback resynchronizes the latest generation when provider c
       workerName: 'pages-v2-guide-ver-1',
       vars: { API_BASE: 'https://api.example.com', FEATURE_FLAG: 'on' },
     },
-    {
-      workerName: 'pages-v2-guide-ver-1',
-      vars: { API_BASE: 'https://api.example.com', FEATURE_FLAG: 'on' },
-    },
   ]);
   assert.deepEqual(activeBindings, { API_BASE: 'https://api.example.com', FEATURE_FLAG: 'on' });
 });
@@ -2253,7 +2351,7 @@ test('runtime vars legacy provider fallback receives a timeout signal', async ()
 test('runtime provider sync serializes a real WFP settings PATCH with secret PUT', async () => {
   const result = await runRuntimeProviderSecretRace('put');
 
-  assert.equal(result.interleaving, 'secret_queued');
+  assert.equal(result.interleaving, 'secret_waiting_for_site');
   assert.deepEqual(result.bindings, [
     { type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'pages-kv-gateway' },
     { type: 'plain_text', name: 'API_BASE', text: 'https://api.example.com' },
@@ -2264,7 +2362,7 @@ test('runtime provider sync serializes a real WFP settings PATCH with secret PUT
 test('runtime provider sync serializes a real WFP settings PATCH with secret DELETE', async () => {
   const result = await runRuntimeProviderSecretRace('delete');
 
-  assert.equal(result.interleaving, 'secret_queued');
+  assert.equal(result.interleaving, 'secret_waiting_for_site');
   assert.deepEqual(result.bindings, [
     { type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'pages-kv-gateway' },
     { type: 'plain_text', name: 'API_BASE', text: 'https://api.example.com' },
@@ -2422,7 +2520,69 @@ test('runtime provider sync passes the lease abort signal to vars and secret ope
 
   assert.deepEqual(varsResult, { appliesTo: 'active_worker' });
   assert.equal(secretResult, null);
-  assert.deepEqual(signals, [controller.signal, controller.signal]);
+  assert.equal(signals.length, 2);
+  assert.equal(signals.every((signal) => signal instanceof globalThis.AbortSignal), true);
+  assert.notEqual(signals[0], controller.signal);
+  assert.notEqual(signals[1], controller.signal);
+});
+
+test('runtime plain-text sync acquires the site lease before the runtime settings lock and re-reads the active Worker', async () => {
+  const store = await createSeededStore();
+  const site = await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  await activateSite(store, site.id);
+
+  const originalSiteLock = store.withSiteCommitLock.bind(store);
+  const originalRuntimeLock = store.withRuntimeConfigLock.bind(store);
+  let siteLockHeld = false;
+  let siteLockCalls = 0;
+  let runtimeLockCalls = 0;
+  const workerNames = [];
+  store.withSiteCommitLock = async (...args) => {
+    siteLockCalls += 1;
+    return originalSiteLock(args[0], args[1], async (lease) => {
+      siteLockHeld = true;
+      try {
+        return await args[2](lease);
+      } finally {
+        siteLockHeld = false;
+      }
+    }, args[3]);
+  };
+  store.withRuntimeConfigLock = async (...args) => {
+    runtimeLockCalls += 1;
+    assert.equal(siteLockHeld, true);
+    return originalRuntimeLock(args[0], args[1], async (lock) => {
+      assert.equal(siteLockHeld, true);
+      return args[2](lock);
+    }, args[3]);
+  };
+
+  const environment = testEnv(store, {
+    WFP_PROVIDER: {
+      replacePlainTextBindings: async ({ workerName }) => workerNames.push(workerName),
+    },
+  });
+  const result = await syncActiveWfpPlainTextBindings(
+    store,
+    environment,
+    { environment: 'production' },
+    site,
+    { vars: [{ name: 'API_BASE', value: 'https://api.example.com' }], generation: 1 }
+  );
+
+  assert.deepEqual(result, { appliesTo: 'active_worker' });
+  assert.equal(siteLockCalls, 1);
+  assert.equal(runtimeLockCalls, 1);
+  assert.deepEqual(workerNames, ['pages-v2-guide-ver-1']);
 });
 
 test('runtime vars mutations are idempotent and apply on the next deployment without an active Worker', async () => {
@@ -3069,6 +3229,48 @@ test('replaces site ACL with allow-only OR entries and rejects unsupported polic
   assert.equal((await invalidEmail.json()).error.code, 'ACL_SUBJECT_VALUE_INVALID');
 });
 
+test('regular ACL replacement uses the site lease and preserves public exposure in the snapshot', async () => {
+  const store = await createSeededStore();
+  const site = await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'acl',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  const initialRoute = await activateSite(store, site.id, { visibility: 'acl' });
+  store.routes.get(initialRoute.id).exposure = 'public';
+  store.sites.get(site.id).defaultExposure = 'public';
+  const originalWithSiteCommitLock = store.withSiteCommitLock.bind(store);
+  let lockCalls = 0;
+  store.withSiteCommitLock = async (...args) => {
+    lockCalls += 1;
+    return originalWithSiteCommitLock(...args);
+  };
+  const snapshots = createSnapshotStore();
+
+  const response = await worker.fetch(
+    putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1/acl', {
+      entries: [{ subjectType: 'email', subjectValue: 'reader@example.com' }],
+    }),
+    testEnv(store, { ROUTE_SNAPSHOTS: snapshots })
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.equal(lockCalls, 1);
+  assert.equal(JSON.stringify(await response.clone().json()).includes('exposure'), false);
+  const route = await store.getRouteBySiteId(site.id, 'production');
+  assert.equal(route.policyVersion, initialRoute.policyVersion + 1);
+  assert.equal(route.exposure, 'public');
+  const pointer = snapshots.read('production:route_pointer:guide.pages.xd.team');
+  const snapshot = snapshots.read(pointer.snapshotKey);
+  assert.equal(snapshot.exposure, 'public');
+  assert.deepEqual(snapshot.acl, [{ effect: 'allow', subjectType: 'email', subjectValue: 'reader@example.com' }]);
+});
+
 test('grants and revokes site ACL entries incrementally', async () => {
   const store = await createSeededStore();
   const site = await store.createSite({
@@ -3272,12 +3474,12 @@ test('rolls back ACL changes when active route snapshot write fails', async () =
   );
 
   assert.equal(response.status, 503);
-  assert.equal((await response.json()).error.code, 'ROUTE_SNAPSHOT_WRITE_FAILED');
+  assert.equal((await response.json()).error.code, 'ROUTE_POLICY_REPAIR_REQUIRED');
   assert.deepEqual(
     (await store.listSiteAclEntries('site_1')).map(({ id, subjectValue }) => ({ id, subjectValue })),
     [{ id: 'acl_existing', subjectValue: 'existing@example.com' }]
   );
-  assert.equal((await store.getRouteBySiteId('site_1')).policyVersion, 2);
+  assert.equal((await store.getRouteBySiteId('site_1')).policyVersion, 4);
 });
 
 test('rolls back ACL changes when snapshot write fails after runtime config changes', async () => {
@@ -3300,6 +3502,7 @@ test('rolls back ACL changes when snapshot write fails after runtime config chan
   );
   await activateSite(store, site.id, { visibility: 'acl' });
   const previousRoute = await store.getRouteBySiteId('site_1', 'production');
+  let injectedRuntimeChange = false;
 
   const response = await worker.fetch(
     putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1/acl', {
@@ -3308,15 +3511,18 @@ test('rolls back ACL changes when snapshot write fails after runtime config chan
     testEnv(store, {
       ROUTE_SNAPSHOTS: {
         put: async () => {
-          await store.putSiteSecret({
-            id: 'sec_1',
-            environment: 'production',
-            siteId: 'site_1',
-            name: 'API_TOKEN',
-            value: 'changed-during-acl-update',
-            actorId: 'usr_1',
-            updatedAt: '2026-06-15T00:00:02.000Z',
-          });
+          if (!injectedRuntimeChange) {
+            injectedRuntimeChange = true;
+            await store.putSiteSecret({
+              id: 'sec_1',
+              environment: 'production',
+              siteId: 'site_1',
+              name: 'API_TOKEN',
+              value: 'changed-during-acl-update',
+              actorId: 'usr_1',
+              updatedAt: '2026-06-15T00:00:02.000Z',
+            });
+          }
           throw new Error('snapshot write failed');
         },
       },
@@ -3325,12 +3531,12 @@ test('rolls back ACL changes when snapshot write fails after runtime config chan
   const route = await store.getRouteBySiteId('site_1', 'production');
 
   assert.equal(response.status, 503);
-  assert.equal((await response.json()).error.code, 'ROUTE_SNAPSHOT_WRITE_FAILED');
+  assert.equal((await response.json()).error.code, 'ROUTE_POLICY_REPAIR_REQUIRED');
   assert.deepEqual(
     (await store.listSiteAclEntries('site_1')).map(({ id, subjectValue }) => ({ id, subjectValue })),
     [{ id: 'acl_existing', subjectValue: 'existing@example.com' }]
   );
-  assert.equal(route.policyVersion, previousRoute.policyVersion);
+  assert.equal(route.policyVersion, previousRoute.policyVersion + 2);
   assert.equal(route.runtimeConfigGeneration, previousRoute.runtimeConfigGeneration + 1);
 });
 
@@ -3582,14 +3788,7 @@ async function runRuntimeProviderSecretRace(operation) {
   }
 
   let runtimeQueue = Promise.resolve();
-  let lockAttempts = 0;
-  let notifySecondLockAttempt;
-  const secondLockAttempt = new Promise((resolve) => {
-    notifySecondLockAttempt = resolve;
-  });
   store.withRuntimeConfigLock = async (_environment, _siteId, callback) => {
-    lockAttempts += 1;
-    if (lockAttempts === 2) notifySecondLockAttempt();
     const previous = runtimeQueue;
     let release;
     const gate = new Promise((resolve) => {
@@ -3658,10 +3857,12 @@ async function runRuntimeProviderSecretRace(operation) {
     name: 'API_TOKEN',
     ...(operation === 'put' ? { value: 'secret-value' } : {}),
   });
-  const interleaving = await Promise.race([
-    secretSync.then(() => 'secret_completed'),
-    secondLockAttempt.then(() => 'secret_queued'),
-  ]);
+  let secretCompleted = false;
+  void secretSync.then(() => {
+    secretCompleted = true;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const interleaving = secretCompleted ? 'secret_completed' : 'secret_waiting_for_site';
   releaseFirstSettingsGet();
   const [varResult, secretResult] = await Promise.all([varSync, secretSync]);
 
