@@ -5751,10 +5751,14 @@ test('marks deployment failed when WFP verify fails without creating active vers
 test('cleans uploaded workers and marks deployments failed when post-upload persistence fails', async () => {
   const store = await createSeededStore();
   store.createSiteVersion = async () => {
-    throw new Error('D1 unavailable');
+    const error = new Error('D1 unavailable');
+    error.code = 'D1_ERROR';
+    throw error;
   };
   const deletedWorkers = [];
+  const stateWriteLogs = [];
   const env = testEnv(store, createSnapshotStore(), {
+    logDeploymentStateWriteFailed: (line) => stateWriteLogs.push(JSON.parse(line)),
     WFP_PROVIDER: {
       upload: async ({ workerName }) => ({ artifactRef: `wfp://test/${workerName}` }),
       verify: async () => ({ ok: true }),
@@ -5773,8 +5777,16 @@ test('cleans uploaded workers and marks deployments failed when post-upload pers
   const body = await response.json();
   assert.equal(body.error.code, 'DEPLOYMENT_STATE_WRITE_FAILED');
   assert.equal(body.error.action, 'Retry the deployment with a new Idempotency-Key.');
-  assert.equal((await store.getDeployment('dep_1')).status, 'failed');
-  assert.equal((await store.getDeployment('dep_1')).errorCode, 'DEPLOYMENT_STATE_WRITE_FAILED');
+  const failedDeployment = await store.getDeployment('dep_1');
+  assert.equal(failedDeployment.status, 'failed');
+  assert.equal(failedDeployment.errorCode, 'DEPLOYMENT_STATE_WRITE_FAILED');
+  assert.equal(failedDeployment.failureDiagnostics.cause.sourceCode, 'D1_ERROR');
+  assert.equal(failedDeployment.failureDiagnostics.cause.sourceMessage, 'D1 unavailable');
+  assert.equal(stateWriteLogs.length, 1);
+  assert.equal(stateWriteLogs[0].event, 'pages_deployment_state_write_failed');
+  assert.equal(stateWriteLogs[0].deploymentId, 'dep_1');
+  assert.equal(stateWriteLogs[0].causeCode, 'D1_ERROR');
+  assert.equal(stateWriteLogs[0].causeMessage, 'D1 unavailable');
   assert.equal(await store.getSiteVersion('ver_1'), null);
   assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, null);
   assert.deepEqual(deletedWorkers, ['pages-v2-guide-ver-1']);
@@ -5814,6 +5826,7 @@ test('marks deployment failed when pre-upload status write fails without uploadi
   assert.deepEqual(uploadedWorkers, []);
   assert.equal((await store.getDeployment('dep_1')).status, 'failed');
   assert.equal((await store.getDeployment('dep_1')).errorCode, 'DEPLOYMENT_STATE_WRITE_FAILED');
+  assert.equal((await store.getDeployment('dep_1')).failureDiagnostics.cause.sourceMessage, 'D1 unavailable');
   assert.equal(await store.getSiteVersion('ver_1'), null);
   assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, null);
 });

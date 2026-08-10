@@ -418,8 +418,8 @@ async function createDeployment(request, env, config, store, actor, ctx) {
 
   try {
     await store.updateDeployment(deployment.id, { status: 'uploading' });
-  } catch {
-    await markDeploymentStateWriteFailed(store, deployment.id, { env });
+  } catch (error) {
+    await markDeploymentStateWriteFailed(store, deployment.id, { env, cause: error });
     return deploymentStateWriteFailed();
   }
   const runtimeSnapshotError = decisionRequiresWorker(decision)
@@ -543,9 +543,9 @@ async function createDeployment(request, env, config, store, actor, ctx) {
   }
   try {
     await store.updateDeployment(deployment.id, { status: 'uploaded' });
-  } catch {
+  } catch (error) {
     await cleanupUploadedWorker(provider, uploaded);
-    await markDeploymentStateWriteFailed(store, deployment.id, { env });
+    await markDeploymentStateWriteFailed(store, deployment.id, { env, cause: error });
     return deploymentStateWriteFailed();
   }
   try {
@@ -983,7 +983,7 @@ async function createDeployment(request, env, config, store, actor, ctx) {
       });
       return jsonError(error.code, error.message, error.status || 409, error.action);
     }
-    await markDeploymentStateWriteFailed(store, deployment.id, { env, versionId: version?.id });
+    await markDeploymentStateWriteFailed(store, deployment.id, { env, versionId: version?.id, cause: error });
     return deploymentStateWriteFailed();
   }
   if (activationSnapshotFailureResponse) return activationSnapshotFailureResponse;
@@ -2274,7 +2274,8 @@ function logDeploymentRepairRequired(env, input) {
   }
 }
 
-async function markDeploymentStateWriteFailed(store, deploymentId, { env, versionId = null } = {}) {
+async function markDeploymentStateWriteFailed(store, deploymentId, { env, versionId = null, cause = null } = {}) {
+  logDeploymentStateWriteFailed(env, { deploymentId, cause });
   try {
     await store.updateDeployment(deploymentId, {
       status: 'failed',
@@ -2287,12 +2288,38 @@ async function markDeploymentStateWriteFailed(store, deploymentId, { env, versio
         executionProvider: 'unknown',
         plannedVersionId: versionId,
         routePointerCommitted: false,
-        cause: { code: 'DEPLOYMENT_STATE_WRITE_FAILED', class: 'deployment_store_error' },
+        cause: deploymentStoreErrorCause(cause),
       }),
       completedAt: readNow(env || {}),
     });
   } catch {
     // Best-effort status update after a persistence failure.
+  }
+}
+
+function deploymentStoreErrorCause(cause) {
+  return omitUndefined({
+    code: 'DEPLOYMENT_STATE_WRITE_FAILED',
+    class: 'deployment_store_error',
+    sourceCode: typeof cause?.code === 'string' ? cause.code : undefined,
+    sourceMessage: cause?.message ? String(cause.message).slice(0, 240) : undefined,
+  });
+}
+
+function logDeploymentStateWriteFailed(env, { deploymentId, cause }) {
+  const payload = {
+    event: 'pages_deployment_state_write_failed',
+    deploymentId,
+    causeCode: typeof cause?.code === 'string' ? cause.code : null,
+    causeMessage: cause?.message ? String(cause.message).slice(0, 500) : null,
+    causeStack: cause?.stack ? String(cause.stack).slice(0, 2000) : null,
+  };
+  try {
+    const logger =
+      typeof env?.logDeploymentStateWriteFailed === 'function' ? env.logDeploymentStateWriteFailed : globalThis.console?.error;
+    if (typeof logger === 'function') logger(JSON.stringify(payload));
+  } catch {
+    // Diagnostics must never replace the deployment response.
   }
 }
 
