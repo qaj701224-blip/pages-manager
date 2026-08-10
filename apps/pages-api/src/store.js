@@ -729,15 +729,12 @@ export class D1PagesStore {
       this.db
         .prepare(
           `SELECT deployments.*,
-            sites.id AS joined_site_id,
             sites.slug AS site_slug,
             sites.owner_type AS site_owner_type,
             sites.owner_id AS site_owner_id,
             sites.owner_user_id AS site_owner_user_id,
             owner_users.email AS owner_user_email,
             owner_users.realname AS owner_user_realname,
-            actor_users.email AS actor_user_email,
-            actor_users.realname AS actor_user_realname,
             owner_teams.name AS owner_team_name,
             owner_teams.team_type AS owner_team_type,
             owner_teams.department_path AS owner_team_department_path
@@ -748,8 +745,6 @@ export class D1PagesStore {
           LEFT JOIN users AS owner_users
             ON COALESCE(sites.owner_type, 'user') = 'user'
             AND owner_users.user_id = COALESCE(sites.owner_id, sites.owner_user_id)
-          LEFT JOIN users AS actor_users
-            ON actor_users.user_id = deployments.actor_user_id
           LEFT JOIN teams AS owner_teams
             ON sites.owner_type = 'team'
             AND owner_teams.id = sites.owner_id
@@ -1109,15 +1104,12 @@ export class D1PagesStore {
     const result = await this.db
       .prepare(
         `SELECT deployments.*,
-          sites.id AS joined_site_id,
           sites.slug AS site_slug,
           sites.owner_type AS site_owner_type,
           sites.owner_id AS site_owner_id,
           sites.owner_user_id AS site_owner_user_id,
           owner_users.email AS owner_user_email,
           owner_users.realname AS owner_user_realname,
-          actor_users.email AS actor_user_email,
-          actor_users.realname AS actor_user_realname,
           owner_teams.name AS owner_team_name,
           owner_teams.team_type AS owner_team_type,
           owner_teams.department_path AS owner_team_department_path
@@ -1128,8 +1120,6 @@ export class D1PagesStore {
         LEFT JOIN users AS owner_users
           ON COALESCE(sites.owner_type, 'user') = 'user'
           AND owner_users.user_id = COALESCE(sites.owner_id, sites.owner_user_id)
-        LEFT JOIN users AS actor_users
-          ON actor_users.user_id = deployments.actor_user_id
         LEFT JOIN teams AS owner_teams
           ON sites.owner_type = 'team'
           AND owner_teams.id = sites.owner_id
@@ -5413,34 +5403,10 @@ function mapAdminSiteWithOwner(row) {
 
 function mapAdminDeploymentWithOwner(row) {
   const deployment = mapDeployment(row);
-  const actor = {
-    type: deployment.actorType || null,
-    id: deployment.actorId || null,
-    userId: deployment.actorUserId || null,
-    email: row.actor_user_email || null,
-    displayName: row.actor_user_realname || null,
-  };
-  if (!row.joined_site_id) {
-    return {
-      ...deployment,
-      siteSlug: null,
-      ownerState: 'not_created',
-      ownerType: null,
-      ownerId: null,
-      ownerUserId: null,
-      ownerEmail: null,
-      ownerDisplayName: null,
-      ownerDepartmentPath: null,
-      ownerTeamType: null,
-      actor,
-    };
-  }
-
   if (row.site_owner_type === 'team') {
     return {
       ...deployment,
       siteSlug: row.site_slug || null,
-      ownerState: 'persisted',
       ownerType: 'team',
       ownerId: row.site_owner_id || null,
       ownerDisplayName:
@@ -5451,22 +5417,17 @@ function mapAdminDeploymentWithOwner(row) {
         }) || null,
       ownerTeamType: row.owner_team_type || null,
       ownerDepartmentPath: row.owner_team_department_path || null,
-      actor,
     };
   }
 
   return {
     ...deployment,
     siteSlug: row.site_slug || null,
-    ownerState: 'persisted',
     ownerType: row.site_owner_type || 'user',
     ownerId: row.site_owner_id || row.site_owner_user_id || null,
     ownerUserId: row.site_owner_user_id || row.site_owner_id || null,
     ownerEmail: row.owner_user_email || null,
     ownerDisplayName: row.owner_user_realname || null,
-    ownerDepartmentPath: null,
-    ownerTeamType: null,
-    actor,
   };
 }
 

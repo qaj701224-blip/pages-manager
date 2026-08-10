@@ -16,13 +16,9 @@ const appSource = readFileSync(new URL('./App.jsx', import.meta.url), 'utf8');
 const stylesSource = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
 
 test('admin failed deployments show owner context', () => {
-  assert.match(adminDashboardSource, /adminDeploymentOwnerView\(deployment\.owner\)/);
-  assert.match(adminDashboardSource, /adminDeploymentActorView\(deployment\.actor\)/);
-  assert.match(adminDashboardSource, /<th>客户端来源<\/th>/);
-  assert.match(adminDashboardSource, /<th>站点归属<\/th>/);
-  assert.match(adminDashboardSource, /<th>操作人<\/th>/);
-  assert.match(adminDashboardSource, /data-label="站点归属"/);
-  assert.match(adminDashboardSource, /data-label="操作人"/);
+  assert.match(adminDashboardSource, /adminSiteOwnerView\(deployment\.owner\)/);
+  assert.match(adminDashboardSource, /<th>归属<\/th>/);
+  assert.match(adminDashboardSource, /data-label="归属"/);
   assert.match(adminDashboardSource, /deployment\.siteSlug \|\| deployment\.siteId/);
   assert.doesNotMatch(adminDashboardSource, /<td data-label="站点">\{deployment\.siteId\}<\/td>/);
 });

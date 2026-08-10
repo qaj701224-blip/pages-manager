@@ -86,41 +86,6 @@ export function adminSiteOwnerView(owner = {}) {
   };
 }
 
-export function adminDeploymentOwnerView(owner = {}) {
-  if (owner?.state === 'not_created') {
-    return {
-      state: 'not_created',
-      type: 'not_created',
-      tag: '未创建',
-      primary: '站点未创建',
-      secondary: '',
-    };
-  }
-
-  return {
-    state: 'persisted',
-    ...adminSiteOwnerView(owner),
-  };
-}
-
-export function adminDeploymentActorView(actor = {}) {
-  const type = normalizeOwnerLabel(actor?.type) || 'unknown';
-  const displayName = normalizeOwnerLabel(actor?.displayName || actor?.realname || actor?.name);
-  const email = normalizeOwnerLabel(actor?.email);
-  const userId = normalizeOwnerLabel(actor?.userId);
-  const actorId = normalizeOwnerLabel(actor?.id);
-  const fallbackId = userId || actorId;
-  const primary = displayName || email || fallbackId || '未知操作人';
-  const secondary = displayName && email ? email : primary === email ? fallbackId : '';
-
-  return {
-    type,
-    tag: type,
-    primary,
-    secondary,
-  };
-}
-
 function normalizeOwnerLabel(value) {
   return String(value || '').trim();
 }

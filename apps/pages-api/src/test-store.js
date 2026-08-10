@@ -2613,35 +2613,11 @@ class TestPagesStore {
 
   decorateAdminDeployment(deployment) {
     const site = this.sites.get(deployment.siteId);
-    const joinedSite = site && site.environment === deployment.environment ? site : null;
-    const actorUser = deployment.actorUserId ? this.users.get(deployment.actorUserId) || null : null;
-    const actor = {
-      type: deployment.actorType || null,
-      id: deployment.actorId || null,
-      userId: deployment.actorUserId || null,
-      email: actorUser?.email || null,
-      displayName: actorUser?.realname || null,
-    };
-    if (!joinedSite) {
-      return {
-        ...deployment,
-        siteSlug: null,
-        ownerState: 'not_created',
-        ownerType: null,
-        ownerId: null,
-        ownerUserId: null,
-        ownerEmail: null,
-        ownerDisplayName: null,
-        ownerDepartmentPath: null,
-        ownerTeamType: null,
-        actor,
-      };
-    }
-    const decoratedSite = this.decorateAdminSite(joinedSite);
+    if (!site) return deployment;
+    const decoratedSite = this.decorateAdminSite(site);
     return {
       ...deployment,
       siteSlug: decoratedSite.slug || null,
-      ownerState: 'persisted',
       ownerType: decoratedSite.ownerType || 'user',
       ownerId: decoratedSite.ownerId || decoratedSite.ownerUserId || null,
       ownerUserId: decoratedSite.ownerUserId || null,
@@ -2649,7 +2625,6 @@ class TestPagesStore {
       ownerDisplayName: decoratedSite.ownerDisplayName || null,
       ownerDepartmentPath: decoratedSite.ownerDepartmentPath || null,
       ownerTeamType: decoratedSite.ownerTeamType || null,
-      actor,
     };
   }
 

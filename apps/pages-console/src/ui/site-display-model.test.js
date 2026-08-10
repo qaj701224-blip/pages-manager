@@ -2,14 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import * as siteDisplayModel from './site-display-model.js';
-import {
-  adminDeploymentActorView,
-  adminDeploymentOwnerView,
-  adminSiteOwnerView,
-  siteCardOwnerLabel,
-  sitePublicUrl,
-  siteVisibilityLabel,
-} from './site-display-model.js';
+import { adminSiteOwnerView, siteCardOwnerLabel, sitePublicUrl, siteVisibilityLabel } from './site-display-model.js';
 
 test('sitePublicUrl displays hostnames with https protocol', () => {
   assert.equal(sitePublicUrl('demo.workers.xd.team'), 'https://demo.workers.xd.team');
@@ -38,62 +31,6 @@ test('adminSiteOwnerView prefers user email and team department path', () => {
       secondary: 'XD Web',
     }
   );
-});
-
-test('adminDeploymentOwnerView distinguishes an uncreated site from persisted ownership', () => {
-  assert.deepEqual(adminDeploymentOwnerView({ state: 'not_created' }), {
-    state: 'not_created',
-    type: 'not_created',
-    tag: '未创建',
-    primary: '站点未创建',
-    secondary: '',
-  });
-  assert.deepEqual(
-    adminDeploymentOwnerView({
-      state: 'persisted',
-      type: 'team',
-      id: 'team_1',
-      displayName: 'Platform',
-      departmentPath: 'XD/Platform',
-    }),
-    {
-      state: 'persisted',
-      type: 'team',
-      tag: 'team',
-      primary: 'XD/Platform',
-      secondary: 'Platform',
-    }
-  );
-});
-
-test('adminDeploymentActorView falls back from actor profile to safe identifiers', () => {
-  assert.deepEqual(
-    adminDeploymentActorView({ type: 'access_key', id: 'ak_1', userId: 'usr_1', email: 'actor@example.com' }),
-    {
-      type: 'access_key',
-      tag: 'access_key',
-      primary: 'actor@example.com',
-      secondary: 'usr_1',
-    }
-  );
-  assert.deepEqual(adminDeploymentActorView({ type: 'system', id: 'system:deploy' }), {
-    type: 'system',
-    tag: 'system',
-    primary: 'system:deploy',
-    secondary: '',
-  });
-  assert.deepEqual(adminDeploymentActorView({ type: 'user', id: 'usr_missing' }), {
-    type: 'user',
-    tag: 'user',
-    primary: 'usr_missing',
-    secondary: '',
-  });
-  assert.deepEqual(adminDeploymentActorView({}), {
-    type: 'unknown',
-    tag: 'unknown',
-    primary: '未知操作人',
-    secondary: '',
-  });
 });
 
 test('siteCardOwnerLabel shows only the concrete owner object name', () => {
