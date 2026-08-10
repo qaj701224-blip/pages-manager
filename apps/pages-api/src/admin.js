@@ -176,12 +176,15 @@ export async function handleConsoleAdminApi(request, env, config, store) {
     if (request.method === 'PATCH') return updateSiteAccess(request, env, config, store, session, site.id, { site });
     if (request.method !== 'GET') return methodNotAllowed();
     const aclEntries = typeof store.listSiteAclEntries === 'function' ? await store.listSiteAclEntries(site.id) : [];
+    const exposure = site.route?.exposure || site.defaultExposure || 'internal';
+    const exposureReason = await readAdminSitePublicExposureReason(store, config, site, exposure);
     return jsonOk({
       access: {
-        exposure: site.route?.exposure || site.defaultExposure || 'internal',
+        exposure,
         accessMode: site.route?.accessMode || accessModeFromVisibility(site.route?.visibility || site.defaultVisibility),
         visibility: site.route?.visibility || site.defaultVisibility,
         aclEntries: aclEntries.map(formatAclEntry),
+        exposureReason,
       },
     });
   }
@@ -2558,6 +2561,10 @@ async function updateAdminSiteExposure(request, env, config, store, session, sit
           accessMode: committedRoute.accessMode,
           visibility: committedRoute.visibility,
           aclEntries: (mutation.aclEntries || []).map(formatAclEntry),
+          exposureReason:
+            committedRoute.exposure === 'public' && reason
+              ? { text: reason, changedAt: now }
+              : null,
         },
         auditStatus,
       };
@@ -2636,6 +2643,27 @@ function safeAdminExposureFailureCode(error) {
 
 function safeAdminExposureAuditWarningCode(error) {
   return error?.code === 'AUDIT_WRITE_FAILED' ? 'AUDIT_WRITE_FAILED' : 'UNKNOWN';
+}
+
+async function readAdminSitePublicExposureReason(store, config, site, exposure) {
+  if (exposure !== 'public' || typeof store.getLatestAdminSitePublicExposureReason !== 'function') return null;
+  try {
+    return await store.getLatestAdminSitePublicExposureReason({
+      environment: config.environment,
+      siteId: site.id,
+      currentExposure: exposure,
+    });
+  } catch (error) {
+    globalThis.console?.warn?.(
+      'SITE_EXPOSURE_REASON_READ_UNCONFIRMED',
+      JSON.stringify({
+        environment: config.environment,
+        siteId: site.id,
+        errorCode: safeAdminExposureAuditWarningCode(error),
+      })
+    );
+    return null;
+  }
 }
 
 function adminExposureErrorResponse(error) {

@@ -196,6 +196,48 @@ export function buildOpenApi(config) {
             },
           },
         },
+        AdminSiteExposureReason: {
+          type: 'object',
+          required: ['text', 'changedAt'],
+          properties: {
+            text: { type: 'string', maxLength: 500 },
+            changedAt: { type: 'string', format: 'date-time' },
+          },
+        },
+        AdminSiteAccess: {
+          type: 'object',
+          required: ['exposure', 'accessMode', 'visibility', 'aclEntries', 'exposureReason'],
+          properties: {
+            exposure: { type: 'string', enum: ['internal', 'public'] },
+            accessMode: { type: 'string', enum: ['anonymous', 'org', 'acl', 'owner', 'disabled'] },
+            visibility: { $ref: '#/components/schemas/SiteVisibility' },
+            aclEntries: {
+              type: 'array',
+              items: { $ref: '#/components/schemas/SiteAclEntry' },
+            },
+            exposureReason: {
+              oneOf: [
+                { $ref: '#/components/schemas/AdminSiteExposureReason' },
+                { type: 'null' },
+              ],
+            },
+          },
+        },
+        AdminSiteAccessResponse: {
+          type: 'object',
+          required: ['access'],
+          properties: {
+            access: { $ref: '#/components/schemas/AdminSiteAccess' },
+          },
+        },
+        AdminSiteExposureUpdateResponse: {
+          type: 'object',
+          required: ['access', 'auditStatus'],
+          properties: {
+            access: { $ref: '#/components/schemas/AdminSiteAccess' },
+            auditStatus: { type: 'string', enum: ['confirmed', 'unconfirmed'] },
+          },
+        },
         SiteTransferRequest: {
           type: 'object',
           required: ['ownerType'],
@@ -449,12 +491,37 @@ export function buildOpenApi(config) {
             200: {
               description:
                 'Site exposure updated and effective in the route snapshot. auditStatus is confirmed or unconfirmed.',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/AdminSiteExposureUpdateResponse' },
+                },
+              },
             },
             400: { description: 'Invalid exposure or missing reason' },
             403: { description: 'Platform admin required' },
             404: { description: 'Site not found' },
             409: { description: 'Site policy changed while the operation was being applied' },
             503: { description: 'Worker binding, route snapshot, or policy update failed' },
+          },
+        },
+      },
+      '/.xd-pages/api/console/admin/sites/{id}/access': {
+        get: {
+          summary: 'Read a site access policy as a platform admin',
+          description:
+            'Admin-only Console BFF operation. exposureReason is present only for the currently effective public exposure policy.',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: {
+            200: {
+              description: 'Site access policy',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/AdminSiteAccessResponse' },
+                },
+              },
+            },
+            403: { description: 'Platform admin required' },
+            404: { description: 'Site not found' },
           },
         },
       },
