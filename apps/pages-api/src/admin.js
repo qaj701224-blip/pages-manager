@@ -2431,7 +2431,7 @@ async function updateAdminSiteExposure(request, env, config, store, session, sit
       const committedVersion = committedRoute.activeVersionId
         ? await store.getSiteVersion(committedRoute.activeVersionId, config.environment)
         : null;
-      const snapshotResult = await writeAndConfirmAdminExposureSnapshot(
+      const snapshotResult = await writeAdminExposureSnapshot(
         env,
         store,
         committedSite,
@@ -2459,7 +2459,7 @@ async function updateAdminSiteExposure(request, env, config, store, session, sit
 
         if (!compensationError) {
           const restoredSite = (await store.getAdminSiteById(currentSite.id, config.environment)) || currentSite;
-          const safeSnapshotResult = await writeAndConfirmAdminExposureSnapshot(
+          const safeSnapshotResult = await writeAdminExposureSnapshot(
             env,
             store,
             restoredSite,
@@ -2576,7 +2576,7 @@ async function updateAdminSiteExposure(request, env, config, store, session, sit
   }
 }
 
-async function writeAndConfirmAdminExposureSnapshot(env, store, site, route, environment) {
+async function writeAdminExposureSnapshot(env, store, site, route, environment) {
   let writeResult;
   try {
     writeResult = await refreshCurrentRouteSnapshot(env, store, site, route, environment);
@@ -2590,36 +2590,7 @@ async function writeAndConfirmAdminExposureSnapshot(env, store, site, route, env
     return { error };
   }
 
-  try {
-    const version = route.activeVersionId ? await store.getSiteVersion(route.activeVersionId, environment) : null;
-    const aclEntries = await store.listSiteAclEntries(site.id);
-    const snapshot = buildRouteSnapshot({ site, route, version, aclEntries });
-    const state = await readRouteSnapshotState(env, snapshot);
-    if (state.state !== 'exact' || !adminExposureSnapshotPayloadMatches(state.snapshot, snapshot)) {
-      const error = new Error('ROUTE_POLICY_REPAIR_REQUIRED');
-      error.code = 'ROUTE_POLICY_REPAIR_REQUIRED';
-      error.state = state;
-      return { error };
-    }
-    return { snapshot, state };
-  } catch (error) {
-    return { error };
-  }
-}
-
-function adminExposureSnapshotPayloadMatches(actual, expected) {
-  return JSON.stringify(normalizeSnapshotJson(actual)) === JSON.stringify(normalizeSnapshotJson(expected));
-}
-
-function normalizeSnapshotJson(value) {
-  if (Array.isArray(value)) return value.map(normalizeSnapshotJson);
-  if (!value || typeof value !== 'object') return value;
-  return Object.fromEntries(
-    Object.entries(value)
-      .filter(([, entry]) => entry !== undefined)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, entry]) => [key, normalizeSnapshotJson(entry)])
-  );
+  return { committed: true };
 }
 
 async function recordAdminExposureFailureAudit(store, env, config, session, site, operationId, auditMetadata, error) {
