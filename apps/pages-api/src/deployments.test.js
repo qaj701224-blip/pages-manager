@@ -81,6 +81,40 @@ test('creates deployment, immutable version, active route, and route snapshot', 
   ]);
 });
 
+test('deploy and rollback succeed with production ID generation (no env.nextId injection)', async () => {
+  const store = await createSeededStore();
+  const env = testEnv(store, createSnapshotStore());
+  delete env.nextId;
+
+  const deployed = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'real_ids_deploy_1',
+    }),
+    env
+  );
+  assert.equal(deployed.status, 201, await deployed.clone().text());
+  const firstVersionId = (await deployed.json()).deployment.versionId;
+
+  const redeployed = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ moduleContent: 'export default { fetch() { return new Response("v2"); } };' }),
+      { 'Idempotency-Key': 'real_ids_deploy_2' }
+    ),
+    env
+  );
+  assert.equal(redeployed.status, 201, await redeployed.clone().text());
+
+  const rollback = await worker.fetch(
+    jsonRequest(`https://api.pages.xd.team/.xd-pages/api/versions/${firstVersionId}/rollback`, {}, {
+      'Idempotency-Key': 'real_ids_rollback_1',
+    }),
+    env
+  );
+  assert.equal(rollback.status, 201, await rollback.clone().text());
+  assert.equal((await store.getRouteBySiteId('site_1', 'production')).activeVersionId, firstVersionId);
+});
+
 test('successful deployments deliver site.deployed webhooks for matching subscriptions', async () => {
   const store = await createSeededStore();
   await seedPlatformAdmin(store);
