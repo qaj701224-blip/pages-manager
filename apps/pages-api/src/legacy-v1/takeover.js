@@ -1,4 +1,4 @@
-import { newId } from '../id.js';
+import { nextId } from '../id.js';
 import { cleanupLegacyV1CloudflareSite } from './cloudflare-cleanup.js';
 import { resolveLegacyV1SiteTarget } from './ownership.js';
 
@@ -163,11 +163,6 @@ function sameTarget(left, right) {
     left.claimOwnerId === right.claimOwnerId &&
     left.claimOwnerRef === right.claimOwnerRef
   );
-}
-
-function nextId(env, prefix) {
-  if (typeof env?.nextId === 'function') return env.nextId(prefix);
-  return newId(prefix);
 }
 
 function readNow(env) {

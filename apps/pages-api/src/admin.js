@@ -14,7 +14,7 @@ import {
 import { departmentTeamDisplayName } from './department-path.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
 import { formatConsoleUser } from './console-users.js';
-import { newId } from './id.js';
+import { newId, nextId } from './id.js';
 import { handleConsoleAdminWebhooksApi } from './webhooks.js';
 import {
   buildSiteOwnerTransferAuditEvent,
@@ -1002,11 +1002,6 @@ function readReuseHoldSeconds(env) {
 
 function addSecondsIso(iso, seconds) {
   return new Date(Date.parse(iso) + seconds * 1000).toISOString();
-}
-
-function nextId(env, prefix) {
-  if (typeof env?.nextId === 'function') return env.nextId(prefix);
-  return newId(prefix);
 }
 
 function getAdminOps(config) {
