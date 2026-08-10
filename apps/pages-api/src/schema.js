@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 19;
+export const SCHEMA_VERSION = 18;
 
 export function createSchemaSql() {
   return [
@@ -28,8 +28,6 @@ export function createSchemaSql() {
       owner_id TEXT,
       owner_user_id TEXT NOT NULL,
       default_visibility TEXT NOT NULL,
-      default_exposure TEXT NOT NULL DEFAULT 'internal',
-      default_access_mode TEXT,
       execution_mode_override TEXT,
       site_uuid TEXT NOT NULL,
       created_at TEXT NOT NULL,
@@ -49,8 +47,6 @@ export function createSchemaSql() {
       slot_id TEXT,
       active_version_id TEXT,
       visibility TEXT NOT NULL,
-      exposure TEXT NOT NULL DEFAULT 'internal',
-      access_mode TEXT,
       policy_version INTEGER NOT NULL,
       route_generation INTEGER NOT NULL,
       runtime_config_generation INTEGER NOT NULL DEFAULT 0,
@@ -60,16 +56,6 @@ export function createSchemaSql() {
       cache_tier TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
-    )`,
-    `CREATE TABLE IF NOT EXISTS site_policy_locks (
-      environment TEXT NOT NULL,
-      site_id TEXT NOT NULL,
-      lock_id TEXT NOT NULL,
-      fencing_token INTEGER NOT NULL,
-      acquired_at TEXT NOT NULL,
-      expires_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      PRIMARY KEY (environment, site_id)
     )`,
     `CREATE TABLE IF NOT EXISTS hostname_claims (
       id TEXT PRIMARY KEY,

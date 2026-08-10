@@ -157,7 +157,7 @@ publish -> activate -> drain -> retire
 | SSO clientSecret 泄露       | OAuth 换 token 需要 secret                                                       | 只放 Worker secret，不进 CLI/浏览器/日志                                                                                                      |
 | session 不可吊销            | 纯本地 JWT 验证性能好但吊销慢                                                    | 短 TTL + sid + 高风险操作查状态                                                                                                               |
 | staging/prod 串环境         | route 或 binding 选错影响 P0                                                     | 双 router 物理隔离，thin router 不持有 secret                                                                                                 |
-| 子站公网暴露                | public exposure 绕过 Router IP 门禁后，匿名 runtime 入口可能被滥用                  | exposure 与 access mode 正交；Admin 操作写审计并移除/验证 `XD_OFFICE_NET`，runtime gateway 先做严格同源/CORS 防护；限流、配额和完整滥用防护后续补齐 |
+| 子站公网暴露                | 未来 public exposure 如果混入第一版 visibility 会造成误解                        | 第一版只开放 `internal`，router 强制 IP allowlist；公网能力后续以 `exposure + access` 单独设计                                                |
 | 用户 Worker 伪造身份        | 浏览器可伪造普通 header                                                          | router 清洗入站 header，并注入签名内部 JWT                                                                                                    |
 | User Worker 覆盖平台 cookie | 不可信代码可返回 Set-Cookie                                                      | router 清洗平台保留 cookie/header                                                                                                             |
 | User Worker 设置父域 cookie | 可污染 sibling 子站或平台 host                                                   | 只允许 host-only cookie，拒绝父域 Domain                                                                                                      |
@@ -191,7 +191,7 @@ publish -> activate -> drain -> retire
 - 用户 CLI 不暴露 execution provider；`xd-cell deploy` 由平台 `PAGES_EXECUTION_MODE` 决定部署到 WFP 或 ordinary Worker slot。
 - `wfp` 模式下新发布进入 dispatch namespace，且用户命令不需要感知 execution provider。
 - production/staging 由不同 router Worker 和不同资源承载；如果使用 thin router，它不能持有业务 secret。
-- pages-router 对 `internal` exposure 或缺少可信 public snapshot 的请求必须强制 IP allowlist；未命中公司网络的请求直接 403，且不 dispatch 到 User Worker。只有可信 public exposure 才能绕过网络门禁，access mode、SSO、ACL 和 disabled 判断仍继续执行。
+- pages-router 第一版必须强制 IP allowlist；未命中公司网络的请求直接 403，且不 dispatch 到 User Worker。
 - `xd-cell deploy --visibility org` 发布的站点，未登录访问会跳转 SSO。
 - `org` 站点只允许 active employee 访问；disabled/left/unknown 默认拒绝或 strict 校验后拒绝。
 - 登录后访问受保护子站不回 `pages-api`。

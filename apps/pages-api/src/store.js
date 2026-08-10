@@ -1,10 +1,3 @@
-import {
-  accessModeFromVisibility,
-  isValidAccessMode,
-  normalizeExposure,
-  visibilityFromAccessMode,
-} from '@xd/pages-access-policy';
-
 import { departmentTeamDisplayName, deriveDepartmentTeamIdentity, normalizeDepartmentPath } from './department-path.js';
 import { MAX_RUNTIME_VARS, runtimeVarObjectsEqual, runtimeVarsObject, validateRuntimeBindingQuotas } from './runtime-config.js';
 import { markRuntimeConfigError } from './runtime-config-diagnostics.js';
@@ -12,9 +5,6 @@ import { markRuntimeConfigError } from './runtime-config-diagnostics.js';
 const RUNTIME_CONFIG_LOCK_LEASE_MS = 60 * 1000;
 const RUNTIME_CONFIG_LOCK_RENEW_MS = 20 * 1000;
 const RUNTIME_CONFIG_PROVIDER_TIMEOUT_MS = 15 * 1000;
-const SITE_COMMIT_LOCK_LEASE_MS = 60 * 1000;
-const SITE_COMMIT_LOCK_RENEW_MS = 20 * 1000;
-const SITE_COMMIT_TIMEOUT_MS = 45 * 1000;
 
 export function createPagesStore(env = {}) {
   if (env.PAGES_STORE) return env.PAGES_STORE;
@@ -1035,9 +1025,8 @@ export class D1PagesStore {
     return (result.results || []).map(mapUser);
   }
 
-  async listAdminSites({ environment, limit = 200, exposure } = {}) {
+  async listAdminSites({ environment, limit = 200 }) {
     const normalizedLimit = Math.max(1, Math.min(Number(limit) || 200, 500));
-    const exposureFilter = exposure === 'public' || exposure === 'internal' ? exposure : null;
     const result = await this.db
       .prepare(
         `SELECT sites.*, site_routes.id AS route_id, site_routes.hostname AS route_hostname,
@@ -1047,8 +1036,7 @@ export class D1PagesStore {
           site_routes.dispatch_binding_name AS route_dispatch_binding_name,
           site_routes.slot_id AS route_slot_id,
           site_routes.active_version_id AS route_active_version_id,
-          site_routes.visibility AS route_visibility, site_routes.exposure AS route_exposure,
-          site_routes.access_mode AS route_access_mode, site_routes.policy_version AS route_policy_version,
+          site_routes.visibility AS route_visibility, site_routes.policy_version AS route_policy_version,
           site_routes.route_generation AS route_route_generation,
           site_routes.runtime_config_generation AS route_runtime_config_generation,
           site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
@@ -1070,11 +1058,10 @@ export class D1PagesStore {
           AND owner_teams.id = sites.owner_id
           AND owner_teams.deleted_at IS NULL
         WHERE sites.environment = ? AND sites.deleted_at IS NULL
-          ${exposureFilter ? 'AND COALESCE(site_routes.exposure, \'internal\') = ?' : ''}
         ORDER BY sites.updated_at DESC
         LIMIT ?`
       )
-      .bind(...(exposureFilter ? [environment, exposureFilter, normalizedLimit] : [environment, normalizedLimit]))
+      .bind(environment, normalizedLimit)
       .all();
     return (result.results || []).map(mapAdminSiteWithOwner);
   }
@@ -1089,8 +1076,7 @@ export class D1PagesStore {
           site_routes.dispatch_binding_name AS route_dispatch_binding_name,
           site_routes.slot_id AS route_slot_id,
           site_routes.active_version_id AS route_active_version_id,
-          site_routes.visibility AS route_visibility, site_routes.exposure AS route_exposure,
-          site_routes.access_mode AS route_access_mode, site_routes.policy_version AS route_policy_version,
+          site_routes.visibility AS route_visibility, site_routes.policy_version AS route_policy_version,
           site_routes.route_generation AS route_route_generation,
           site_routes.runtime_config_generation AS route_runtime_config_generation,
           site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
@@ -1893,8 +1879,6 @@ export class D1PagesStore {
       ownerId: input.ownerId || input.ownerUserId,
       ownerUserId: input.ownerUserId,
       defaultVisibility: input.defaultVisibility,
-      defaultExposure: 'internal',
-      defaultAccessMode: accessModeFromVisibility(input.defaultVisibility),
       executionModeOverride: input.executionModeOverride || null,
       siteUuid: input.siteUuid,
       createdAt: now,
@@ -2020,10 +2004,9 @@ export class D1PagesStore {
         this.db
           .prepare(
             `INSERT INTO sites (
-              id, slug, environment, owner_type, owner_id, owner_user_id,
-              default_visibility, default_exposure, default_access_mode,
-              execution_mode_override, site_uuid, created_at, updated_at, deleted_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+              id, slug, environment, owner_type, owner_id, owner_user_id, default_visibility, execution_mode_override, site_uuid,
+              created_at, updated_at, deleted_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           )
           .bind(
             site.id,
@@ -2033,8 +2016,6 @@ export class D1PagesStore {
             site.ownerId,
             site.ownerUserId,
             site.defaultVisibility,
-            site.defaultExposure,
-            site.defaultAccessMode,
             site.executionModeOverride,
             site.siteUuid,
             site.createdAt,
@@ -2046,10 +2027,10 @@ export class D1PagesStore {
             `INSERT INTO site_routes (
               id, hostname, site_id, environment, runtime, execution_provider, worker_name,
               dispatch_type, dispatch_binding_name, slot_id,
-              active_version_id, visibility, exposure, access_mode, policy_version, route_generation,
+              active_version_id, visibility, policy_version, route_generation,
               runtime_config_generation, runtime_config_lock_id, runtime_config_lock_expires_at,
               route_status, cache_tier, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           )
           .bind(
             route.id,
@@ -2064,8 +2045,6 @@ export class D1PagesStore {
             route.slotId,
             route.activeVersionId,
             route.visibility,
-            route.exposure,
-            route.accessMode,
             route.policyVersion,
             route.routeGeneration,
             route.runtimeConfigGeneration,
@@ -2123,8 +2102,6 @@ export class D1PagesStore {
       ownerId: input.ownerId || input.ownerUserId,
       ownerUserId: input.ownerUserId,
       defaultVisibility: input.defaultVisibility,
-      defaultExposure: 'internal',
-      defaultAccessMode: accessModeFromVisibility(input.defaultVisibility),
       executionModeOverride: input.executionModeOverride || null,
       siteUuid: input.siteUuid,
       createdAt: now,
@@ -2205,10 +2182,9 @@ export class D1PagesStore {
       this.db
         .prepare(
           `INSERT INTO sites (
-            id, slug, environment, owner_type, owner_id, owner_user_id,
-            default_visibility, default_exposure, default_access_mode,
-            execution_mode_override, site_uuid, created_at, updated_at, deleted_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            id, slug, environment, owner_type, owner_id, owner_user_id, default_visibility, execution_mode_override, site_uuid,
+            created_at, updated_at, deleted_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .bind(
           site.id,
@@ -2218,8 +2194,6 @@ export class D1PagesStore {
           site.ownerId,
           site.ownerUserId,
           site.defaultVisibility,
-          site.defaultExposure,
-          site.defaultAccessMode,
           site.executionModeOverride,
           site.siteUuid,
           site.createdAt,
@@ -2231,10 +2205,10 @@ export class D1PagesStore {
           `INSERT INTO site_routes (
             id, hostname, site_id, environment, runtime, execution_provider, worker_name,
             dispatch_type, dispatch_binding_name, slot_id,
-            active_version_id, visibility, exposure, access_mode, policy_version, route_generation,
+            active_version_id, visibility, policy_version, route_generation,
             runtime_config_generation, runtime_config_lock_id, runtime_config_lock_expires_at,
             route_status, cache_tier, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .bind(
           route.id,
@@ -2249,8 +2223,6 @@ export class D1PagesStore {
           route.slotId,
           route.activeVersionId,
           route.visibility,
-          route.exposure,
-          route.accessMode,
           route.policyVersion,
           route.routeGeneration,
           route.runtimeConfigGeneration,
@@ -2520,18 +2492,17 @@ export class D1PagesStore {
     const nextOwnerType = ownerType || 'user';
     const now = updatedAt || this.now();
     const nextDefaultVisibility = defaultVisibility || site.defaultVisibility;
-    const nextDefaultAccessMode = accessModeFromVisibility(nextDefaultVisibility);
     const statements = [
       this.db
         .prepare(
           `UPDATE sites
-          SET owner_type = ?, owner_id = ?, owner_user_id = ?, default_visibility = ?, default_access_mode = ?, updated_at = ?
+          SET owner_type = ?, owner_id = ?, owner_user_id = ?, default_visibility = ?, updated_at = ?
           WHERE id = ?${environment ? ' AND environment = ?' : ''} AND deleted_at IS NULL`
         )
         .bind(
           ...(environment
-            ? [nextOwnerType, ownerId, ownerUserId, nextDefaultVisibility, nextDefaultAccessMode, now, siteId, environment]
-            : [nextOwnerType, ownerId, ownerUserId, nextDefaultVisibility, nextDefaultAccessMode, now, siteId])
+            ? [nextOwnerType, ownerId, ownerUserId, nextDefaultVisibility, now, siteId, environment]
+            : [nextOwnerType, ownerId, ownerUserId, nextDefaultVisibility, now, siteId])
         ),
     ];
 
@@ -2622,8 +2593,7 @@ export class D1PagesStore {
           site_routes.dispatch_binding_name AS route_dispatch_binding_name,
           site_routes.slot_id AS route_slot_id,
           site_routes.active_version_id AS route_active_version_id,
-          site_routes.visibility AS route_visibility, site_routes.exposure AS route_exposure,
-          site_routes.access_mode AS route_access_mode, site_routes.policy_version AS route_policy_version,
+          site_routes.visibility AS route_visibility, site_routes.policy_version AS route_policy_version,
           site_routes.route_generation AS route_route_generation,
           site_routes.runtime_config_generation AS route_runtime_config_generation,
           site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
@@ -2676,8 +2646,7 @@ export class D1PagesStore {
             site_routes.dispatch_binding_name AS route_dispatch_binding_name,
             site_routes.slot_id AS route_slot_id,
             site_routes.active_version_id AS route_active_version_id,
-            site_routes.visibility AS route_visibility, site_routes.exposure AS route_exposure,
-            site_routes.access_mode AS route_access_mode, site_routes.policy_version AS route_policy_version,
+            site_routes.visibility AS route_visibility, site_routes.policy_version AS route_policy_version,
             site_routes.route_generation AS route_route_generation,
             site_routes.runtime_config_generation AS route_runtime_config_generation,
             site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
@@ -2702,8 +2671,7 @@ export class D1PagesStore {
           site_routes.dispatch_binding_name AS route_dispatch_binding_name,
           site_routes.slot_id AS route_slot_id,
           site_routes.active_version_id AS route_active_version_id,
-          site_routes.visibility AS route_visibility, site_routes.exposure AS route_exposure,
-          site_routes.access_mode AS route_access_mode, site_routes.policy_version AS route_policy_version,
+          site_routes.visibility AS route_visibility, site_routes.policy_version AS route_policy_version,
           site_routes.route_generation AS route_route_generation,
           site_routes.runtime_config_generation AS route_runtime_config_generation,
           site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
@@ -2750,8 +2718,7 @@ export class D1PagesStore {
           site_routes.dispatch_binding_name AS route_dispatch_binding_name,
           site_routes.slot_id AS route_slot_id,
           site_routes.active_version_id AS route_active_version_id,
-          site_routes.visibility AS route_visibility, site_routes.exposure AS route_exposure,
-          site_routes.access_mode AS route_access_mode, site_routes.policy_version AS route_policy_version,
+          site_routes.visibility AS route_visibility, site_routes.policy_version AS route_policy_version,
           site_routes.route_generation AS route_route_generation,
           site_routes.runtime_config_generation AS route_runtime_config_generation,
           site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
@@ -2806,8 +2773,7 @@ export class D1PagesStore {
           site_routes.dispatch_binding_name AS route_dispatch_binding_name,
           site_routes.slot_id AS route_slot_id,
           site_routes.active_version_id AS route_active_version_id,
-          site_routes.visibility AS route_visibility, site_routes.exposure AS route_exposure,
-          site_routes.access_mode AS route_access_mode, site_routes.policy_version AS route_policy_version,
+          site_routes.visibility AS route_visibility, site_routes.policy_version AS route_policy_version,
           site_routes.route_generation AS route_route_generation,
           site_routes.runtime_config_generation AS route_runtime_config_generation,
           site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
@@ -2855,8 +2821,7 @@ export class D1PagesStore {
             site_routes.dispatch_binding_name AS route_dispatch_binding_name,
             site_routes.slot_id AS route_slot_id,
             site_routes.active_version_id AS route_active_version_id,
-            site_routes.visibility AS route_visibility, site_routes.exposure AS route_exposure,
-            site_routes.access_mode AS route_access_mode, site_routes.policy_version AS route_policy_version,
+            site_routes.visibility AS route_visibility, site_routes.policy_version AS route_policy_version,
             site_routes.route_generation AS route_route_generation,
             site_routes.runtime_config_generation AS route_runtime_config_generation,
             site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
@@ -2970,8 +2935,7 @@ export class D1PagesStore {
           site_routes.dispatch_binding_name AS route_dispatch_binding_name,
           site_routes.slot_id AS route_slot_id,
           site_routes.active_version_id AS route_active_version_id,
-          site_routes.visibility AS route_visibility, site_routes.exposure AS route_exposure,
-          site_routes.access_mode AS route_access_mode, site_routes.policy_version AS route_policy_version,
+          site_routes.visibility AS route_visibility, site_routes.policy_version AS route_policy_version,
           site_routes.route_generation AS route_route_generation,
           site_routes.runtime_config_generation AS route_runtime_config_generation,
           site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
@@ -3062,291 +3026,24 @@ export class D1PagesStore {
     return row ? mapSiteRoute(row) : null;
   }
 
-  async getSiteCommitLock(environment, siteId) {
-    const row = await this.db
-      .prepare(
-        `SELECT environment, site_id, lock_id, fencing_token, acquired_at, expires_at, updated_at
-        FROM site_policy_locks
-        WHERE environment = ? AND site_id = ?`
-      )
-      .bind(environment, siteId)
-      .first();
-    return row ? mapSiteCommitLock(row) : null;
-  }
-
-  async acquireSiteCommitLock(environment, siteId, options = {}) {
-    const acquiredAt = this.now();
-    const lockId = options.lockId || randomStoreId('policy_lock');
-    const expiresAt = siteCommitLockExpiry(acquiredAt, options.leaseMs);
-    const result = await this.db
-      .prepare(
-        `INSERT INTO site_policy_locks (
-          environment, site_id, lock_id, fencing_token, acquired_at, expires_at, updated_at
-        )
-        SELECT ?, ?, ?, 1, ?, ?, ?
-        WHERE EXISTS (
-          SELECT 1 FROM site_routes WHERE environment = ? AND site_id = ?
-        )
-        ON CONFLICT(environment, site_id) DO UPDATE SET
-          lock_id = excluded.lock_id,
-          fencing_token = site_policy_locks.fencing_token + 1,
-          acquired_at = excluded.acquired_at,
-          expires_at = excluded.expires_at,
-          updated_at = excluded.updated_at
-        WHERE site_policy_locks.expires_at <= excluded.acquired_at`
-      )
-      .bind(environment, siteId, lockId, acquiredAt, expiresAt, acquiredAt, environment, siteId)
-      .run();
-    if (result?.meta?.changes !== 1) return null;
-    const lock = await this.getSiteCommitLock(environment, siteId);
-    return lock?.lockId === lockId ? lock : null;
-  }
-
-  async renewSiteCommitLock(environment, siteId, lockId, options = {}) {
-    const renewedAt = this.now();
-    const expiresAt = siteCommitLockExpiry(renewedAt, options.leaseMs);
-    const fencingCondition = options.fencingToken == null ? '' : ' AND fencing_token = ?';
-    const binds = [expiresAt, renewedAt, environment, siteId, lockId, renewedAt];
-    if (options.fencingToken != null) binds.push(options.fencingToken);
-    const result = await this.db
-      .prepare(
-        `UPDATE site_policy_locks
-        SET expires_at = ?, updated_at = ?
-        WHERE environment = ? AND site_id = ? AND lock_id = ? AND expires_at > ?${fencingCondition}`
-      )
-      .bind(...binds)
-      .run();
-    if (result?.meta?.changes !== 1) return null;
-    const lock = await this.getSiteCommitLock(environment, siteId);
-    return lock?.lockId === lockId ? lock : null;
-  }
-
-  async releaseSiteCommitLock(environment, siteId, lockId) {
-    const releasedAt = this.now();
-    const result = await this.db
-      .prepare(
-        `UPDATE site_policy_locks
-        SET expires_at = ?, updated_at = ?
-        WHERE environment = ? AND site_id = ? AND lock_id = ? AND expires_at > ?`
-      )
-      .bind(releasedAt, releasedAt, environment, siteId, lockId, releasedAt)
-      .run();
-    return result?.meta?.changes === 1;
-  }
-
-  async withSiteCommitLock(environment, siteId, callback, options = {}) {
-    let lock = await this.acquireSiteCommitLock(environment, siteId, options);
-    const waitForLockMs = Number(options.waitForLockMs || 0);
-    if (!lock && waitForLockMs > 0) {
-      const deadline = Date.now() + waitForLockMs;
-      while (!lock && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, Math.min(25, Math.max(1, deadline - Date.now()))));
-        lock = await this.acquireSiteCommitLock(environment, siteId, options);
-      }
-    }
-    if (!lock) throw sitePolicyError('SITE_POLICY_LOCKED');
-
-    let result;
-    let failure;
-    let currentLock = lock;
-    const abortController = new globalThis.AbortController();
-    const timeout = globalThis.setTimeout(() => {
-      abortController.abort(sitePolicyError('SITE_COMMIT_TIMEOUT'));
-    }, options.timeoutMs || SITE_COMMIT_TIMEOUT_MS);
-    let renewal = Promise.resolve();
-    const renew = () => {
-      renewal = renewal
-        .then(async () => {
-          const renewed = await this.renewSiteCommitLock(environment, siteId, currentLock.lockId, {
-            fencingToken: currentLock.fencingToken,
-            leaseMs: options.leaseMs,
-          });
-          if (!renewed) throw sitePolicyError('SITE_POLICY_LOCKED');
-          currentLock = renewed;
-        })
-        .catch((error) => {
-          abortController.abort(error);
-          throw error;
-        });
-      renewal.catch(() => {});
-    };
-    const timer = globalThis.setInterval(renew, options.renewIntervalMs || SITE_COMMIT_LOCK_RENEW_MS);
-    try {
-      result = await callback({ ...currentLock, signal: abortController.signal });
-    } catch (error) {
-      failure = error;
-    }
-    globalThis.clearInterval(timer);
-    globalThis.clearTimeout(timeout);
-    try {
-      await renewal;
-    } catch (error) {
-      if (!failure) failure = error;
-    }
-    try {
-      const released = await this.releaseSiteCommitLock(environment, siteId, currentLock.lockId);
-      if (!released && !failure && !options.bestEffortRelease) failure = sitePolicyError('SITE_POLICY_LOCKED');
-    } catch (error) {
-      if (!failure && !options.bestEffortRelease) failure = error;
-    }
-    if (failure) throw failure;
-    return result;
-  }
-
-  async updateSiteAccessPolicy(input) {
-    const commitNow = this.now();
-    const now = input.updatedAt || commitNow;
-    const site = await this.getSite(input.siteId);
-    const route = await this.getRouteBySiteId(input.siteId, input.environment);
-    if (!site || !route || site.environment !== input.environment) throw sitePolicyError('SITE_POLICY_NOT_FOUND');
-    assertSitePolicyExpected(route, input.expected);
-    await this.assertSitePolicyLease(input.environment, input.siteId, input.lease, commitNow);
-
-    const nextExposure = resolveNextExposure(route.exposure, input);
-    const nextAccessMode = resolveNextAccessMode(route.accessMode, input);
-    const nextVisibility = visibilityFromAccessMode(nextAccessMode);
-    if (!nextVisibility) throw sitePolicyError('SITE_POLICY_INVALID');
-
-    const currentAclEntries = await this.listSiteAclEntries(input.siteId);
-    const nextAclEntries = Object.hasOwn(input, 'aclEntries')
-      ? normalizeSitePolicyAclEntries(input.aclEntries, input.siteId, input.actorUserId, now)
-      : currentAclEntries;
-    const aclChanged = !sitePolicyAclEntriesEqual(currentAclEntries, nextAclEntries);
-    const policyChanged =
-      nextExposure !== route.exposure || nextAccessMode !== route.accessMode || nextVisibility !== route.visibility;
-
-    if (!policyChanged && !aclChanged) {
-      return {
-        changed: false,
-        site,
-        route,
-        aclEntries: currentAclEntries,
-      };
-    }
-
-    const expected = normalizeSitePolicyExpected(input.expected);
-    const lease = normalizeSitePolicyLease(input.lease);
-    const statements = [
-      this.db
-        .prepare(
-          `UPDATE site_routes
-          SET exposure = ?, access_mode = ?, visibility = ?, cache_tier = ?,
-            policy_version = policy_version + 1, updated_at = ?
-          WHERE environment = ? AND site_id = ?
-            AND policy_version = ? AND route_generation = ?
-            AND active_version_id IS ? AND runtime_config_generation = ?
-            AND EXISTS (
-              SELECT 1 FROM site_policy_locks
-              WHERE environment = ? AND site_id = ? AND lock_id = ? AND fencing_token = ? AND expires_at > ?
-            )`
-        )
-        .bind(
-          nextExposure,
-          nextAccessMode,
-          nextVisibility,
-          cacheTierForVisibility(nextVisibility),
-          now,
-          input.environment,
-          input.siteId,
-          expected.policyVersion,
-          expected.routeGeneration,
-          expected.activeVersionId,
-          expected.runtimeConfigGeneration,
-          input.environment,
-          input.siteId,
-          lease.lockId,
-          lease.fencingToken,
-          commitNow
-        ),
-      this.sitePolicyGuardStatement(),
-      this.db
-        .prepare(
-          `UPDATE sites
-          SET default_exposure = ?, default_access_mode = ?, default_visibility = ?, updated_at = ?
-          WHERE id = ? AND environment = ? AND deleted_at IS NULL`
-        )
-        .bind(nextExposure, nextAccessMode, nextVisibility, now, input.siteId, input.environment),
-    ];
-
-    if (Object.hasOwn(input, 'aclEntries')) {
-      statements.push(this.db.prepare('DELETE FROM site_acl_entries WHERE site_id = ?').bind(input.siteId));
-      for (const entry of nextAclEntries) {
-        statements.push(
-          this.db
-            .prepare(
-              `INSERT INTO site_acl_entries (
-                id, site_id, subject_type, subject_value, access_role,
-                effect, created_by, created_at
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-            )
-            .bind(
-              entry.id,
-              input.siteId,
-              entry.subjectType,
-              entry.subjectValue,
-              entry.accessRole,
-              entry.effect,
-              entry.createdBy,
-              entry.createdAt
-            )
-        );
-      }
-    }
-    if (input.auditEvent) statements.push(this.auditEventStatement(input.auditEvent));
-
-    await this.db.batch(statements);
-    return {
-      changed: true,
-      site: await this.getSite(input.siteId),
-      route: await this.getRouteBySiteId(input.siteId, input.environment),
-      aclEntries: await this.listSiteAclEntries(input.siteId),
-    };
-  }
-
-  async assertSitePolicyLease(environment, siteId, leaseInput, now = this.now()) {
-    const lease = normalizeSitePolicyLease(leaseInput);
-    const current = await this.getSiteCommitLock(environment, siteId);
-    if (
-      !current ||
-      current.lockId !== lease.lockId ||
-      current.fencingToken !== lease.fencingToken ||
-      current.expiresAt <= now
-    ) {
-      throw sitePolicyError('SITE_POLICY_CONFLICT');
-    }
-    return current;
-  }
-
-  sitePolicyGuardStatement() {
-    return this.db
-      .prepare(`SELECT json_extract('{"ok":true}', CASE WHEN changes() = 1 THEN '$.ok' ELSE ? END)`)
-      .bind('SITE_POLICY_CONFLICT');
-  }
-
   async updateSiteVisibility(siteId, { visibility, updatedAt }, environment) {
     if (!(await this.getRouteBySiteId(siteId, environment))) return null;
     const now = updatedAt || this.now();
     const cacheTier = cacheTierForVisibility(visibility);
-    const accessMode = accessModeFromVisibility(visibility);
     await this.db.batch([
       this.db
         .prepare(
-          `UPDATE sites SET default_visibility = ?, default_access_mode = ?, updated_at = ?
-          WHERE id = ?${environment ? ' AND environment = ?' : ''}`
+          `UPDATE sites SET default_visibility = ?, updated_at = ? WHERE id = ?${environment ? ' AND environment = ?' : ''}`
         )
-        .bind(...(environment ? [visibility, accessMode, now, siteId, environment] : [visibility, accessMode, now, siteId])),
+        .bind(...(environment ? [visibility, now, siteId, environment] : [visibility, now, siteId])),
       this.db
         .prepare(
           `UPDATE site_routes
-          SET visibility = ?, access_mode = ?, policy_version = policy_version + 1,
+          SET visibility = ?, policy_version = policy_version + 1,
             cache_tier = ?, updated_at = ?
           WHERE site_id = ?${environment ? ' AND environment = ?' : ''}`
         )
-        .bind(
-          ...(environment
-            ? [visibility, accessMode, cacheTier, now, siteId, environment]
-            : [visibility, accessMode, cacheTier, now, siteId])
-        ),
+        .bind(...(environment ? [visibility, cacheTier, now, siteId, environment] : [visibility, cacheTier, now, siteId])),
     ]);
     return this.getRouteBySiteId(siteId, environment);
   }
@@ -3362,30 +3059,14 @@ export class D1PagesStore {
       return currentRoute;
     }
     await this.db
-      .prepare(
-        `UPDATE sites SET default_visibility = ?, default_exposure = ?, default_access_mode = ?, updated_at = ?
-          WHERE id = ?${environment ? ' AND environment = ?' : ''}`
-      )
+      .prepare(`UPDATE sites SET default_visibility = ?, updated_at = ? WHERE id = ?${environment ? ' AND environment = ?' : ''}`)
       .bind(
         ...(environment
-          ? [
-              previousSite.defaultVisibility,
-              normalizeExposure(previousSite.defaultExposure),
-              accessModeFromVisibility(previousSite.defaultVisibility),
-              previousSite.updatedAt,
-              siteId,
-              environment,
-            ]
-          : [
-              previousSite.defaultVisibility,
-              normalizeExposure(previousSite.defaultExposure),
-              accessModeFromVisibility(previousSite.defaultVisibility),
-              previousSite.updatedAt,
-              siteId,
-            ])
+          ? [previousSite.defaultVisibility, previousSite.updatedAt, siteId, environment]
+          : [previousSite.defaultVisibility, previousSite.updatedAt, siteId])
       )
       .run();
-    return this.restoreSiteRoute(siteId, routeRestoredAsNewPolicyCommit(previousRoute, currentRoute), environment);
+    return this.restoreSiteRoute(siteId, routeWithLatestRuntimeConfig(previousRoute, currentRoute), environment);
   }
 
   async replaceSiteAclEntries(siteId, entries, { createdBy, updatedAt }, environment) {
@@ -4402,18 +4083,18 @@ export class D1PagesStore {
       .bind(
         record.id,
         environment,
-        record.traceId ?? null,
+        record.traceId,
         record.eventType,
-        record.actorUserId ?? null,
+        record.actorUserId,
         record.actorType,
-        record.siteId ?? null,
-        record.routeId ?? null,
-        record.versionId ?? null,
+        record.siteId,
+        record.routeId,
+        record.versionId,
         record.decision,
-        record.statusCode ?? null,
-        record.ipHash ?? null,
-        record.userAgentHash ?? null,
-        stringifyJsonColumn(record.metadata ?? null),
+        record.statusCode,
+        record.ipHash,
+        record.userAgentHash,
+        stringifyJsonColumn(record.metadata),
         record.createdAt
       );
   }
@@ -4498,28 +4179,13 @@ export class D1PagesStore {
       visibility,
       requiredArtifactAvailability = null,
       updatedAt,
-      lease = null,
     },
     environment,
     expectedRoute = null
   ) {
-    const leaseValue = lease ? normalizeSitePolicyLease(lease) : null;
-    if (leaseValue) await this.assertSitePolicyLease(environment, siteId, leaseValue, this.now());
-    const expectedConditions = [];
-    if (expectedRoute) {
-      expectedConditions.push(
-        ' AND route_generation = ? AND policy_version = ? AND runtime_config_generation = ? AND active_version_id IS ?'
-      );
-      if (Object.hasOwn(expectedRoute, 'exposure')) expectedConditions.push(' AND exposure = ?');
-    }
-    if (leaseValue) {
-      expectedConditions.push(
-        ` AND EXISTS (
-          SELECT 1 FROM site_policy_locks
-          WHERE environment = ? AND site_id = ? AND lock_id = ? AND fencing_token = ? AND expires_at > ?
-        )`
-      );
-    }
+    const expectedConditions = expectedRoute
+      ? ' AND route_generation = ? AND policy_version = ? AND runtime_config_generation = ? AND active_version_id IS ?'
+      : '';
     const artifactAvailabilityCondition = requiredArtifactAvailability
       ? ` AND EXISTS (
           SELECT 1 FROM site_versions
@@ -4533,66 +4199,53 @@ export class D1PagesStore {
         ? [
             expectedRoute.routeGeneration,
             expectedRoute.policyVersion,
-          expectedRoute.runtimeConfigGeneration || 0,
-          expectedRoute.activeVersionId,
-          ...(Object.hasOwn(expectedRoute, 'exposure') ? [normalizeExposure(expectedRoute.exposure)] : []),
-        ]
-        : []),
-      ...(leaseValue
-        ? [environment, siteId, leaseValue.lockId, leaseValue.fencingToken, this.now()]
+            expectedRoute.runtimeConfigGeneration || 0,
+            expectedRoute.activeVersionId,
+          ]
         : []),
       ...(requiredArtifactAvailability ? [activeVersionId, requiredArtifactAvailability] : []),
     ];
-    const routeExpected = Boolean(expectedRoute || requiredArtifactAvailability || leaseValue);
-    const whereSuffix = [
-      environment ? ' AND environment = ?' : '',
-      expectedConditions.join(''),
-      artifactAvailabilityCondition,
-    ].join('');
-    const bindValues = environment
-      ? [
-          activeVersionId,
-          workerName,
-          runtime,
-          executionProvider,
-          dispatchType,
-          dispatchBindingName,
-          slotId,
-          visibility,
-          accessModeFromVisibility(visibility),
-          cacheTierForVisibility(visibility),
-          updatedAt,
-          siteId,
-          environment,
-          ...conditionBinds,
-        ]
-      : [
-          activeVersionId,
-          workerName,
-          runtime,
-          executionProvider,
-          dispatchType,
-          dispatchBindingName,
-          slotId,
-          visibility,
-          accessModeFromVisibility(visibility),
-          cacheTierForVisibility(visibility),
-          updatedAt,
-          siteId,
-          ...conditionBinds,
-        ];
     const result = await this.db
       .prepare(
         `UPDATE site_routes
         SET active_version_id = ?, worker_name = ?, runtime = ?,
           execution_provider = ?, dispatch_type = ?, dispatch_binding_name = ?, slot_id = ?,
-          visibility = ?, access_mode = ?, cache_tier = ?, route_status = 'active', route_generation = route_generation + 1,
+          visibility = ?, route_status = 'active', route_generation = route_generation + 1,
           updated_at = ?
-        WHERE site_id = ?${whereSuffix}`
+        WHERE site_id = ?${environment ? ' AND environment = ?' : ''}${expectedConditions}${artifactAvailabilityCondition}`
       )
-      .bind(...bindValues)
+      .bind(
+        ...(environment
+          ? [
+              activeVersionId,
+              workerName,
+              runtime,
+              executionProvider,
+              dispatchType,
+              dispatchBindingName,
+              slotId,
+              visibility,
+              updatedAt,
+              siteId,
+              environment,
+              ...conditionBinds,
+            ]
+          : [
+              activeVersionId,
+              workerName,
+              runtime,
+              executionProvider,
+              dispatchType,
+              dispatchBindingName,
+              slotId,
+              visibility,
+              updatedAt,
+              siteId,
+              ...conditionBinds,
+            ])
+      )
       .run();
-    if (routeExpected && result?.meta?.changes === 0) return null;
+    if ((expectedRoute || requiredArtifactAvailability) && result?.meta?.changes === 0) return null;
     return this.getRouteBySiteId(siteId, environment);
   }
 
@@ -4603,7 +4256,7 @@ export class D1PagesStore {
         `UPDATE site_routes
         SET active_version_id = ?, worker_name = ?, runtime = ?,
           execution_provider = ?, dispatch_type = ?, dispatch_binding_name = ?, slot_id = ?,
-          visibility = ?, exposure = ?, access_mode = ?, policy_version = ?, route_generation = ?,
+          visibility = ?, policy_version = ?, route_generation = ?,
           runtime_config_generation = ?, route_status = ?, cache_tier = ?, updated_at = ?
         WHERE site_id = ?${environment ? ' AND environment = ?' : ''}`
       )
@@ -4618,8 +4271,6 @@ export class D1PagesStore {
               route.dispatchBindingName,
               route.slotId,
               route.visibility,
-              normalizeExposure(route.exposure),
-              accessModeFromVisibility(route.visibility),
               route.policyVersion,
               route.routeGeneration,
               route.runtimeConfigGeneration || 0,
@@ -4638,8 +4289,6 @@ export class D1PagesStore {
               route.dispatchBindingName,
               route.slotId,
               route.visibility,
-              normalizeExposure(route.exposure),
-              accessModeFromVisibility(route.visibility),
               route.policyVersion,
               route.routeGeneration,
               route.runtimeConfigGeneration || 0,
@@ -4682,7 +4331,7 @@ export class D1PagesStore {
           `UPDATE site_routes
           SET active_version_id = ?, worker_name = ?, runtime = ?,
             execution_provider = ?, dispatch_type = ?, dispatch_binding_name = ?, slot_id = ?,
-            visibility = ?, exposure = ?, access_mode = ?, policy_version = ?, route_generation = ?,
+            visibility = ?, policy_version = ?, route_generation = ?,
             runtime_config_generation = ?, route_status = ?, cache_tier = ?, updated_at = ?
           WHERE site_id = ?${environment ? ' AND environment = ?' : ''}`
         )
@@ -4697,8 +4346,6 @@ export class D1PagesStore {
                 restoredRoute.dispatchBindingName,
                 restoredRoute.slotId,
                 restoredRoute.visibility,
-                normalizeExposure(restoredRoute.exposure),
-                accessModeFromVisibility(restoredRoute.visibility),
                 restoredRoute.policyVersion,
                 restoredRoute.routeGeneration,
                 restoredRoute.runtimeConfigGeneration || 0,
@@ -4717,8 +4364,6 @@ export class D1PagesStore {
                 restoredRoute.dispatchBindingName,
                 restoredRoute.slotId,
                 restoredRoute.visibility,
-                normalizeExposure(restoredRoute.exposure),
-                accessModeFromVisibility(restoredRoute.visibility),
                 restoredRoute.policyVersion,
                 restoredRoute.routeGeneration,
                 restoredRoute.runtimeConfigGeneration || 0,
@@ -5472,8 +5117,6 @@ export function createInitialRoute(input, now) {
     slotId: null,
     activeVersionId: null,
     visibility: input.defaultVisibility,
-    exposure: 'internal',
-    accessMode: accessModeFromVisibility(input.defaultVisibility),
     policyVersion: 1,
     routeGeneration: 0,
     runtimeConfigGeneration: 0,
@@ -5599,8 +5242,6 @@ function routeRestoredAsNewCommit(previousRoute, currentRoute) {
   return {
     ...previousRoute,
     visibility: currentRoute.visibility,
-    exposure: normalizeExposure(currentRoute.exposure),
-    accessMode: accessModeFromVisibility(currentRoute.visibility),
     policyVersion: currentRoute.policyVersion,
     cacheTier: currentRoute.cacheTier,
     routeGeneration: Math.max(previousRoute.routeGeneration || 0, currentRoute.routeGeneration || 0) + 1,
@@ -5609,105 +5250,8 @@ function routeRestoredAsNewCommit(previousRoute, currentRoute) {
   };
 }
 
-function routeRestoredAsNewPolicyCommit(previousRoute, currentRoute) {
-  const previousPolicyVersion = previousRoute.policyVersion || 0;
-  const currentPolicyVersion = currentRoute.policyVersion || 0;
-  return {
-    ...previousRoute,
-    exposure: normalizeExposure(previousRoute.exposure),
-    accessMode: accessModeFromVisibility(previousRoute.visibility),
-    policyVersion:
-      Math.max(previousPolicyVersion, currentPolicyVersion) + (currentPolicyVersion > previousPolicyVersion ? 1 : 0),
-    routeGeneration: currentRoute.routeGeneration,
-    runtimeConfigGeneration: currentRoute.runtimeConfigGeneration || 0,
-    cacheTier: cacheTierForVisibility(previousRoute.visibility),
-    updatedAt: currentRoute.updatedAt,
-  };
-}
-
 function siteAclEntryKey(entry) {
   return `${entry.effect}:${entry.subjectType}:${entry.subjectValue}:${entry.accessRole}`;
-}
-
-function resolveNextExposure(currentExposure, input) {
-  if (!Object.hasOwn(input, 'exposure')) return normalizeExposure(currentExposure);
-  if (input.exposure !== 'internal' && input.exposure !== 'public') {
-    throw sitePolicyError('SITE_EXPOSURE_INVALID');
-  }
-  return input.exposure;
-}
-
-function resolveNextAccessMode(currentAccessMode, input) {
-  const value = Object.hasOwn(input, 'accessMode') ? input.accessMode : currentAccessMode;
-  if (!isValidAccessMode(value)) throw sitePolicyError('SITE_POLICY_INVALID');
-  return value;
-}
-
-function normalizeSitePolicyExpected(expected) {
-  if (!expected || !Number.isInteger(expected.policyVersion) || !Number.isInteger(expected.routeGeneration)) {
-    throw sitePolicyError('SITE_POLICY_CONFLICT');
-  }
-  return {
-    policyVersion: expected.policyVersion,
-    routeGeneration: expected.routeGeneration,
-    activeVersionId: expected.activeVersionId || null,
-    runtimeConfigGeneration: Number(expected.runtimeConfigGeneration || 0),
-  };
-}
-
-function assertSitePolicyExpected(route, expectedInput) {
-  const expected = normalizeSitePolicyExpected(expectedInput);
-  if (
-    route.policyVersion !== expected.policyVersion ||
-    route.routeGeneration !== expected.routeGeneration ||
-    (route.activeVersionId || null) !== expected.activeVersionId ||
-    Number(route.runtimeConfigGeneration || 0) !== expected.runtimeConfigGeneration
-  ) {
-    throw sitePolicyError('SITE_POLICY_CONFLICT');
-  }
-  return expected;
-}
-
-function normalizeSitePolicyLease(lease) {
-  if (!lease?.lockId || !Number.isInteger(lease.fencingToken) || lease.fencingToken < 1) {
-    throw sitePolicyError('SITE_POLICY_CONFLICT');
-  }
-  return { lockId: lease.lockId, fencingToken: lease.fencingToken };
-}
-
-function normalizeSitePolicyAclEntries(entries, siteId, actorUserId, createdAt) {
-  if (!Array.isArray(entries)) throw sitePolicyError('SITE_POLICY_INVALID');
-  const byKey = new Map();
-  for (const entry of entries) {
-    if (!entry?.subjectType || !entry?.subjectValue || !entry?.accessRole || !entry?.effect) {
-      throw sitePolicyError('SITE_POLICY_INVALID');
-    }
-    const normalized = {
-      id: entry.id || randomStoreId('acl'),
-      siteId,
-      subjectType: entry.subjectType,
-      subjectValue: entry.subjectValue,
-      accessRole: entry.accessRole,
-      effect: entry.effect,
-      createdBy: entry.createdBy || actorUserId,
-      createdAt: entry.createdAt || createdAt,
-    };
-    byKey.set(siteAclEntryKey(normalized), normalized);
-  }
-  return [...byKey.values()];
-}
-
-function sitePolicyAclEntriesEqual(left, right) {
-  if (left.length !== right.length) return false;
-  const leftKeys = left.map(siteAclEntryKey).sort();
-  const rightKeys = right.map(siteAclEntryKey).sort();
-  return leftKeys.every((key, index) => key === rightKeys[index]);
-}
-
-function sitePolicyError(code) {
-  const error = new Error(code);
-  error.code = code;
-  return error;
 }
 
 function mapUser(row) {
@@ -5741,8 +5285,6 @@ function mapSite(row) {
     ownerId: row.owner_id || row.owner_user_id,
     ownerUserId: row.owner_user_id,
     defaultVisibility: row.default_visibility,
-    defaultExposure: normalizeExposure(row.default_exposure),
-    defaultAccessMode: accessModeFromVisibility(row.default_visibility),
     executionModeOverride: row.execution_mode_override || null,
     siteUuid: row.site_uuid,
     createdAt: row.created_at,
@@ -5947,8 +5489,6 @@ function mapSiteWithJoinedRoute(row) {
         slotId: row.route_slot_id || null,
         activeVersionId: row.route_active_version_id,
         visibility: row.route_visibility,
-        exposure: normalizeExposure(row.route_exposure),
-        accessMode: accessModeFromVisibility(row.route_visibility),
         policyVersion: row.route_policy_version,
         routeGeneration: row.route_route_generation,
         runtimeConfigGeneration: row.route_runtime_config_generation || 0,
@@ -5975,26 +5515,12 @@ function mapSiteRoute(row) {
     slotId: row.slot_id || null,
     activeVersionId: row.active_version_id,
     visibility: row.visibility,
-    exposure: normalizeExposure(row.exposure),
-    accessMode: accessModeFromVisibility(row.visibility),
     policyVersion: row.policy_version,
     routeGeneration: row.route_generation,
     runtimeConfigGeneration: row.runtime_config_generation || 0,
     routeStatus: row.route_status,
     cacheTier: row.cache_tier,
     createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
-}
-
-function mapSiteCommitLock(row) {
-  return {
-    environment: row.environment,
-    siteId: row.site_id,
-    lockId: row.lock_id,
-    fencingToken: Number(row.fencing_token),
-    acquiredAt: row.acquired_at,
-    expiresAt: row.expires_at,
     updatedAt: row.updated_at,
   };
 }
@@ -6308,13 +5834,6 @@ function runtimeConfigLockExpiry(updatedAt) {
   const timestamp = Date.parse(updatedAt);
   if (!Number.isFinite(timestamp)) throw new Error('RUNTIME_CONFIG_LOCK_TIME_INVALID');
   return new Date(timestamp + RUNTIME_CONFIG_LOCK_LEASE_MS).toISOString();
-}
-
-function siteCommitLockExpiry(updatedAt, leaseMs = SITE_COMMIT_LOCK_LEASE_MS) {
-  const timestamp = Date.parse(updatedAt);
-  if (!Number.isFinite(timestamp)) throw sitePolicyError('SITE_POLICY_LOCK_TIME_INVALID');
-  const duration = Number.isFinite(leaseMs) && leaseMs > 0 ? leaseMs : SITE_COMMIT_LOCK_LEASE_MS;
-  return new Date(timestamp + duration).toISOString();
 }
 
 function randomStoreId(prefix) {

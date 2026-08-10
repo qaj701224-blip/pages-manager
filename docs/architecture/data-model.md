@@ -28,7 +28,7 @@ JWT Cookie:
 | 数据类型                           | 权威存储                       | 快路径                 | 说明                              |
 | ---------------------------------- | ------------------------------ | ---------------------- | --------------------------------- |
 | 用户、站点、版本、成员、ACL        | D1                             | KV snapshot + L1 cache | 关系型数据，需要查询和审计        |
-| 路由表、active version、access policy | D1                          | route snapshot         | exposure/access mode 属权限边界，KV 只做缓存 |
+| 路由表、active version、visibility | D1                             | route snapshot         | 权限相关，KV 只做缓存             |
 | 普通 Worker slot 池状态            | D1                             | route snapshot         | 扩容与分配必须强一致              |
 | OAuth state、一次性 code           | Durable Objects                | 无                     | 必须防重放、单次消费              |
 | CLI login polling                  | Durable Objects                | 无                     | 同一 login transaction 需要强一致 |
@@ -72,8 +72,6 @@ sites
   slug                -- 用户可见站点名
   owner_user_id
   default_visibility  -- internal / org / acl / owner / disabled
-  default_exposure    -- internal / public；默认 internal，仅平台管理员可改变
-  default_access_mode -- anonymous / org / acl / owner / disabled；迁移期双写投影
   execution_mode_override -- null / wfp / normal-worker-slot；仅平台维护者可写
   site_uuid           -- 存储隔离锚点，删除后重建必须变化
   created_at
@@ -99,8 +97,6 @@ site_routes
   slot_id             -- slot 模式引用 worker_slots.id；WFP 模式为 null
   active_version_id
   visibility          -- internal / org / acl / owner / disabled
-  exposure            -- internal / public；Router 网络范围权威字段
-  access_mode         -- anonymous / org / acl / owner / disabled；迁移期双写投影
   policy_version
   route_generation    -- active version / workerName 切换代数
   route_status        -- active / disabled / deleted
@@ -109,7 +105,7 @@ site_routes
   updated_at
 ```
 
-`site_routes` 是 router 的权威解析表。schema 19 兼容期内，`exposure` 是独立权威字段；合法 legacy `visibility` 用于派生 accessMode，`access_mode` 与 visibility 在同一批次双写，未知 visibility 不映射。`exposure`、access mode、兼容 visibility 和 `policy_version` 都属于安全边界，不能只存在 KV snapshot。普通用户 visibility/ACL 写入保留 exposure，Admin exposure 写入保留 access mode/ACL。
+`site_routes` 是 router 的权威解析表。`visibility` 和 `policy_version` 属于安全边界字段，不能只存在 KV snapshot。`runtime` 表示路由是否进入用户代码，`execution_provider` 表示用户代码部署在哪类执行面；这样未来从 slot 切换到 WFP 时，不需要改变用户侧 API。
 
 #### site_versions
 
@@ -510,11 +506,9 @@ KV key 必须带环境前缀，避免 staging/prod 串环境：
 
 #### route snapshot
 
-迁移期间仍会读取旧的 `schemaVersion": 2` snapshot，但它只能按 `exposure=internal` 安全降级，不能绕过 Router IP 门禁；新写入 snapshot 使用 schema v3。
-
 ```json
 {
-  "schemaVersion": 3,
+  "schemaVersion": 2,
   "hostname": "foo.workers.xd.team",
   "siteId": "site_123",
   "siteUuid": "su_123",
@@ -538,8 +532,6 @@ KV key 必须带环境前缀，避免 staging/prod 串环境：
   "deploymentShape": "assets-only",
   "resolvedFallback": "index",
   "routingMode": "assets-only",
-  "exposure": "internal",
-  "accessMode": "org",
   "visibility": "org",
   "policyVersion": 12,
   "routeGeneration": 42,
@@ -556,7 +548,7 @@ WFP 模式的 route snapshot 只替换执行面 dispatch 信息，其它鉴权�
 
 ```json
 {
-  "schemaVersion": 3,
+  "schemaVersion": 2,
   "runtime": "worker",
   "executionProvider": "wfp",
   "workerName": "foo_v42",
@@ -579,7 +571,7 @@ staging snapshot 必须使用 staging hostname 和 `environment=staging`，例�
 {env}:route_snapshot:{hostname}:{routeGeneration}:{policyVersion} -> immutable snapshot body
 ```
 
-router 的 L1 cache 必须缓存 pointer 和 snapshot。当前实现以 D1 `site_routes` 为权威：发布 / 回滚先用 D1 CAS 切换 active route，再写 immutable snapshot 和 route pointer；如果 snapshot / pointer 写入失败且 KV pointer 尚未提交，API 立即恢复 previous route 并让操作失败。KV route pointer 是 router 可见的提交点；一旦 pointer 已写入，后续 DO state 写入失败不能再让控制面回滚 D1，只能由 reconciliation 修复 DO state 或重建 pointer。写 route pointer 前必须读取现有 pointer 做单调版本保护，禁止较低 `routeGeneration` 或同 generation 较低 `policyVersion` 覆盖更新的 pointer。ACL、access mode 和 exposure 这类 policy-only 变更不应冒充发布 generation，但必须 bump `policyVersion` 并生成新的 immutable snapshot key。Admin exposure 更新还会写后读回确认 exposure/accessMode/visibility；确认失败时条件补偿回旧 exposure，无法确认则返回 repair-required 并 fail closed。schema v2 snapshot 固定按 internal exposure 读取；schema v3 accessMode 非法或 visibility 投影不一致时拒绝。
+router 的 L1 cache 必须缓存 pointer 和 snapshot。当前实现以 D1 `site_routes` 为权威：发布 / 回滚先用 D1 CAS 切换 active route，再写 immutable snapshot 和 route pointer；如果 snapshot / pointer 写入失败且 KV pointer 尚未提交，API 立即恢复 previous route 并让操作失败。KV route pointer 是 router 可见的提交点；一旦 pointer 已写入，后续 DO state 写入失败不能再让控制面回滚 D1，只能由 reconciliation 修复 DO state 或重建 pointer。写 route pointer 前必须读取现有 pointer 做单调版本保护，禁止较低 `routeGeneration` 或同 generation 较低 `policyVersion` 覆盖更新的 pointer。ACL / visibility 这类 policy-only 变更不应冒充发布 generation，但必须 bump `policyVersion` 并生成新的 immutable snapshot key，避免覆盖旧 snapshot。router 发现 pointer generation 或 policyVersion 大于 L1 snapshot 时，必须刷新 snapshot；pointer 缺失或 malformed 时按故障矩阵 fail closed 或查 D1。
 
 #### policy snapshot
 
@@ -688,4 +680,4 @@ JWT 验证清单：
 
 `auth_session` 由 `pages-auth` 签发，`site_session` 和 `internal_worker_jwt` 由 `pages-router` 签发。三者可以共享 key registry 结构，但必须通过 `iss`、`aud`、`kid` 和环境绑定区分用途，不能让某类 token 被另一类 token 的校验逻辑接受。
 
-internal exposure 站点受平台 IP Check 保护；只有可信 schema v3 snapshot 显式声明 public 才绕过该网络门禁。对于通过站点访问策略的已登录请求，`internal_worker_jwt.user` 默认包含稳定用户 ID、email、accountId、name、完整部门路径数组和 employeeStatus；匿名请求的 `user` 为 `null`。这些字段只作为业务上下文，不能替代 router 的 ACL、owner 或员工状态门禁，也不得写入日志。
+当前用户站点统一受平台 IP Check 保护。对于通过站点访问策略的已登录请求，`internal_worker_jwt.user` 默认包含稳定用户 ID、email、accountId、name、完整部门路径数组和 employeeStatus；匿名请求的 `user` 为 `null`。这些字段只作为业务上下文，不能替代 router 的 ACL、owner 或员工状态门禁，也不得写入日志。未来开放 public 站点前必须重新评估身份披露边界。

@@ -87,7 +87,7 @@ ${loginGuide}
 
 ${commandGuide}
 
-可见性只使用：\`internal\`、\`org\`、\`acl\`、\`owner\`、\`disabled\`。其中 \`internal\` 在兼容 API 中表示匿名访问模式；网络范围由 Platform Admin 独立管理的 exposure 决定，普通用户和 CLI 不接受 exposure 字段。默认 exposure 为 \`internal\`，只有 Admin 明确开启的可信 public snapshot 才允许互联网访问。
+可见性只使用：\`internal\`、\`org\`、\`acl\`、\`owner\`、\`disabled\`。第一版所有可见性都受公司网络 / VPN / 办公网出口 IP allowlist 约束。
 \`acl\` 使用邮箱和完整部门路径授权，部门路径默认包含子部门；站点 owner 在非 \`disabled\` 状态下隐式可访问。
 
 \`xd-cell.config.json\` 是发布模板。未传 \`--config\` 时，CLI 只自动读取当前目录的 \`xd-cell.config.json\`，不会读取父目录。
@@ -173,8 +173,8 @@ runtime bindings 只注入 Worker 发布；单个 var / secret value 当前限�
 ## 安全边界
 
 - 发布必须通过强认证。
-- 子站访问由 router 执行 exposure、IP allowlist、access mode、SSO 和 ACL。
-- \`visibility=internal\` 表示匿名 access mode；\`exposure=internal\` 才表示受公司网络范围限制。
+- 子站访问由 router 执行 IP allowlist、visibility、SSO 和 ACL。
+- \`internal\` 表示公司网络内匿名可访问，不代表互联网公开。
 - \`acl\` 支持邮箱和部门路径 OR 授权；部门路径授权包含子部门。
 - User Worker 不会收到平台 session cookie 或平台 secret。
 - 平台能力通过独立 capability 和 gateway 暴露，不能把 router 注入的身份 token 当作通用能力凭证。

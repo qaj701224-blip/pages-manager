@@ -1,14 +1,10 @@
-import { accessModeFromVisibility } from '@xd/pages-access-policy';
-
-const PROTECTED_ACCESS_MODES = new Set(['org', 'acl', 'owner']);
+const PROTECTED_VISIBILITIES = new Set(['org', 'acl', 'owner']);
 
 export function evaluateAccessPolicy(route, identity) {
-  const accessMode = Object.hasOwn(route || {}, 'accessMode')
-    ? route.accessMode
-    : accessModeFromVisibility(route?.visibility);
-  if (accessMode === 'disabled') return denied('SITE_DISABLED', 403);
-  if (accessMode === 'anonymous') return { ok: true, user: null };
-  if (!PROTECTED_ACCESS_MODES.has(accessMode)) return denied('SITE_POLICY_INVALID', 403);
+  const visibility = route?.visibility;
+  if (visibility === 'disabled') return denied('SITE_DISABLED', 403);
+  if (visibility === 'internal') return { ok: true, user: identity || null };
+  if (!PROTECTED_VISIBILITIES.has(visibility)) return denied('SITE_POLICY_INVALID', 403);
 
   if (!identity) return denied('SITE_SESSION_REQUIRED', 302);
   if (identity.siteId !== route.siteId) return denied('SITE_SESSION_STALE', 302);
@@ -19,8 +15,8 @@ export function evaluateAccessPolicy(route, identity) {
 
   if (identity.employeeStatus !== 'active') return denied('SITE_ACCESS_FORBIDDEN', 403);
   if (identity.userId === route.ownerUserId) return { ok: true, user: identity };
-  if (accessMode === 'org') return { ok: true, user: identity };
-  if (accessMode === 'owner') return denied('SITE_ACCESS_FORBIDDEN', 403);
+  if (visibility === 'org') return { ok: true, user: identity };
+  if (visibility === 'owner') return denied('SITE_ACCESS_FORBIDDEN', 403);
 
   return aclAllows(route.acl, identity) ? { ok: true, user: identity } : denied('SITE_ACCESS_FORBIDDEN', 403);
 }

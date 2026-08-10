@@ -247,10 +247,7 @@ export function createWfpClient({
         method: 'GET',
         signal: input.signal,
       });
-      if (
-        !Array.isArray(currentSettings?.bindings) ||
-        currentSettings.bindings.some((binding) => !binding || typeof binding !== 'object' || Array.isArray(binding))
-      ) {
+      if (!Array.isArray(currentSettings?.bindings)) {
         throw new WfpApiError({
           status: 502,
           code: 'WFP_API_SETTINGS_INVALID',
@@ -270,53 +267,6 @@ export function createWfpClient({
         body: form,
         signal: input.signal,
       });
-    },
-
-    async getUserWorkerSettings(scriptName, options = {}) {
-      const safeScriptName = validateScriptName(scriptName);
-      const settingsUrl = `${scriptUrl(baseUrl, account, namespace, safeScriptName)}/settings`;
-      const currentSettings = await requestCloudflare(fetch, apiToken, settingsUrl, {
-        method: 'GET',
-        signal: options.signal,
-      });
-      if (
-        !Array.isArray(currentSettings?.bindings) ||
-        currentSettings.bindings.some((binding) => !binding || typeof binding !== 'object' || Array.isArray(binding))
-      ) {
-        throw new WfpApiError({
-          status: 502,
-          code: 'WFP_API_SETTINGS_INVALID',
-          message: 'Cloudflare WFP settings response did not include bindings.',
-        });
-      }
-      return currentSettings;
-    },
-
-    async removeOfficeNetBinding(scriptName, options = {}) {
-      const safeScriptName = validateScriptName(scriptName);
-      const currentSettings = await this.getUserWorkerSettings(safeScriptName, options);
-      const currentBindings = currentSettings.bindings.map(cloneJsonObject);
-      const bindings = currentBindings.filter(
-        (binding) => !(binding.type === 'vpc_network' && binding.name === 'XD_OFFICE_NET')
-      );
-      if (bindings.length === currentBindings.length) return { removed: false, bindings };
-
-      const settingsUrl = `${scriptUrl(baseUrl, account, namespace, safeScriptName)}/settings`;
-      const form = new FormData();
-      form.set('settings', new Blob([JSON.stringify({ bindings })], { type: 'application/json' }));
-      const result = await requestCloudflare(fetch, apiToken, settingsUrl, {
-        method: 'PATCH',
-        body: form,
-        signal: options.signal,
-      });
-      return { removed: true, bindings, result };
-    },
-
-    async verifyOfficeNetAbsent(scriptName, options = {}) {
-      const currentSettings = await this.getUserWorkerSettings(scriptName, options);
-      return !currentSettings.bindings.some(
-        (binding) => binding?.type === 'vpc_network' && binding?.name === 'XD_OFFICE_NET'
-      );
     },
 
     async putUserWorkerSecret(scriptName, secret, options = {}) {

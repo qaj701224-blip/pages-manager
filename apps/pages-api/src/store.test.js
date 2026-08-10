@@ -84,8 +84,6 @@ test('createSite creates owner membership and inactive route authority record', 
     slotId: null,
     activeVersionId: null,
     visibility: 'acl',
-    exposure: 'internal',
-    accessMode: 'acl',
     policyVersion: 1,
     routeGeneration: 0,
     runtimeConfigGeneration: 0,
@@ -94,41 +92,6 @@ test('createSite creates owner membership and inactive route authority record', 
     createdAt: '2026-06-15T00:00:00.000Z',
     updatedAt: '2026-06-15T00:00:00.000Z',
   });
-});
-
-test('D1 audit statements bind omitted nullable fields as null', () => {
-  let bound = [];
-  const db = {
-    prepare() {
-      return {
-        bind(...args) {
-          bound = args;
-          return this;
-        },
-      };
-    },
-  };
-  const store = new D1PagesStore(db);
-
-  store.auditEventStatement({
-    id: 'audit_1',
-    environment: 'staging',
-    eventType: 'admin.site.exposure',
-    actorUserId: 'usr_admin',
-    actorType: 'platform_admin',
-    siteId: 'site_1',
-    routeId: 'route_1',
-    decision: 'allow',
-    statusCode: 200,
-    metadata: { stage: 'policy_committed' },
-    createdAt: '2026-08-07T10:00:00.000Z',
-  });
-
-  assert.equal(bound.includes(undefined), false);
-  assert.equal(bound[2], null);
-  assert.equal(bound[8], null);
-  assert.equal(bound[11], null);
-  assert.equal(bound[12], null);
 });
 
 test('D1 store filters audit events by environment', async () => {
@@ -4961,16 +4924,7 @@ function fakeTransferSiteOwnerDb({ site, members = [] } = {}) {
             },
             run: async () => {
               if (/UPDATE sites\s+SET owner_type = \?/.test(sql)) {
-                const [
-                  ownerType,
-                  ownerId,
-                  ownerUserId,
-                  defaultVisibility,
-                  defaultAccessMode,
-                  updatedAt,
-                  siteId,
-                  environment,
-                ] = args;
+                const [ownerType, ownerId, ownerUserId, defaultVisibility, updatedAt, siteId, environment] = args;
                 if (state.site?.id !== siteId || state.site?.environment !== environment || state.site?.deleted_at) {
                   return { meta: { changes: 0 } };
                 }
@@ -4979,7 +4933,6 @@ function fakeTransferSiteOwnerDb({ site, members = [] } = {}) {
                   owner_id: ownerId,
                   owner_user_id: ownerUserId,
                   default_visibility: defaultVisibility,
-                  default_access_mode: defaultAccessMode,
                   updated_at: updatedAt,
                 });
                 return { meta: { changes: 1 } };
@@ -5114,8 +5067,6 @@ function fakeSiteDeleteRestoreRun(state, sql, args) {
       dispatchBindingName,
       slotId,
       visibility,
-      exposure,
-      accessMode,
       policyVersion,
       routeGeneration,
       runtimeConfigGeneration,
@@ -5138,8 +5089,6 @@ function fakeSiteDeleteRestoreRun(state, sql, args) {
       dispatch_binding_name: dispatchBindingName,
       slot_id: slotId,
       visibility,
-      exposure,
-      access_mode: accessMode,
       policy_version: policyVersion,
       route_generation: routeGeneration,
       runtime_config_generation: runtimeConfigGeneration,

@@ -46,7 +46,7 @@ importers:
         version: 5.78.0
       drizzle-orm:
         specifier: ^0.45.2
-        version: 0.45.2(better-sqlite3@12.4.1)(mysql2@3.22.5(@types/node@25.9.3))
+        version: 0.45.2(mysql2@3.22.5(@types/node@25.9.3))
       ioredis:
         specifier: ^5.10.1
         version: 5.11.1
@@ -73,9 +73,6 @@ importers:
 
   apps/pages-api:
     dependencies:
-      '@xd/pages-access-policy':
-        specifier: workspace:*
-        version: link:../../packages/pages-access-policy
       '@xd/pages-runtime-protocol':
         specifier: workspace:*
         version: link:../../packages/pages-runtime-protocol
@@ -186,9 +183,6 @@ importers:
       '@xd/ip-guard':
         specifier: workspace:*
         version: link:../../packages/ip-guard
-      '@xd/pages-access-policy':
-        specifier: workspace:*
-        version: link:../../packages/pages-access-policy
       '@xd/pages-runtime-protocol':
         specifier: workspace:*
         version: link:../../packages/pages-runtime-protocol
@@ -275,8 +269,6 @@ importers:
   packages/git-client: {}
 
   packages/ip-guard: {}
-
-  packages/pages-access-policy: {}
 
   packages/pages-runtime-protocol: {}
 
@@ -4343,9 +4335,8 @@ snapshots:
       esbuild: 0.25.12
       tsx: 4.22.4
 
-  drizzle-orm@0.45.2(better-sqlite3@12.4.1)(mysql2@3.22.5(@types/node@25.9.3)):
+  drizzle-orm@0.45.2(mysql2@3.22.5(@types/node@25.9.3)):
     optionalDependencies:
-      better-sqlite3: 12.4.1
       mysql2: 3.22.5(@types/node@25.9.3)
 
   electron-to-chromium@1.5.382: {}
