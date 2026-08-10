@@ -727,6 +727,15 @@ function AdminExposurePanel({ site, access, updateExposure, onResourceUpdate, on
               </button>
             )}
           </div>
+          {exposure === 'public' && access.exposureReason?.text ? (
+            <div className="exposure-policy-reason" aria-label="最近开启公网理由">
+              <div>
+                <span>最近开启理由</span>
+                <strong>{access.exposureReason.text}</strong>
+              </div>
+              <span>开启时间：{formatDate(access.exposureReason.changedAt)}</span>
+            </div>
+          ) : null}
           {publicAnonymous ? (
             <div className="form-error">高风险：当前组合为互联网匿名访问，任何互联网用户都无需登录即可访问站点。</div>
           ) : null}
