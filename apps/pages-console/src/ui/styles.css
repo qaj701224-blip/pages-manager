@@ -2064,6 +2064,13 @@ button {
   padding: 16px 18px 18px;
 }
 
+.access-policy-description {
+  margin: -8px 0 0;
+  color: var(--xd-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .exposure-policy-summary {
   display: flex;
   align-items: center;
@@ -2089,6 +2096,12 @@ button {
   color: var(--xd-muted);
   font-size: 13px;
   line-height: 1.5;
+}
+
+.exposure-combination-note {
+  color: #8a4b22;
+  border-color: rgba(243, 112, 34, 0.26);
+  background: var(--xd-orange-soft);
 }
 
 .exposure-policy-reason {
@@ -4052,6 +4065,16 @@ button {
 
   .exposure-policy-reason {
     grid-template-columns: 1fr;
+  }
+
+  .exposure-policy-summary {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .exposure-policy-card .panel-head .tag,
+  .exposure-policy-summary > button {
+    align-self: flex-start;
   }
 
   .site-status-summary__meta > span {

@@ -52,6 +52,9 @@ import {
   normalizeAclEntriesForForm,
   removeAclEntryAt,
   siteAccessEffectLabel,
+  siteAccessOptionLabel,
+  siteAccessRequirementDescription,
+  siteNetworkRangeView,
   siteExposureAuditWarning,
   toAclUpdatePayload,
 } from '../site-detail-model.js';
@@ -530,6 +533,8 @@ function AccessPolicyForm({ site, siteApi, access, onResourceUpdate, onSitePatch
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const aclEnabled = visibility === 'acl';
+  const currentExposure = access.exposure === 'public' ? 'public' : 'internal';
+  const currentAccessMode = visibility === 'internal' ? 'anonymous' : visibility;
 
   useEffect(() => {
     setVisibility(access.visibility || 'internal');
@@ -582,10 +587,7 @@ function AccessPolicyForm({ site, siteApi, access, onResourceUpdate, onSitePatch
   return (
     <form className="info-list" onSubmit={submit}>
       <div className="panel-head">
-        <div>
-          <p>访问策略</p>
-          <h2>访问控制</h2>
-        </div>
+        <h2>访问权限</h2>
         <button className="primary-button" type="submit" disabled={saving || !isDirty}>
           <Save size={16} />
           {saving ? '保存中' : '保存'}
@@ -593,11 +595,12 @@ function AccessPolicyForm({ site, siteApi, access, onResourceUpdate, onSitePatch
       </div>
       <div className="access-policy-body">
         <SelectField
-          label="Visibility"
+          label="访问对象"
           value={visibility}
-          options={VISIBILITY_OPTIONS.map((option) => ({ value: option, label: siteVisibilityLabel(option) }))}
+          options={VISIBILITY_OPTIONS.map((option) => ({ value: option, label: siteAccessOptionLabel(option) }))}
           onChange={setVisibility}
         />
+        <p className="access-policy-description">{siteAccessRequirementDescription(visibility)}</p>
         {aclEnabled ? (
           <div className="acl-editor">
             <div className="acl-editor__head">
@@ -613,8 +616,13 @@ function AccessPolicyForm({ site, siteApi, access, onResourceUpdate, onSitePatch
             <AclEntriesTable entries={entries} onRemove={(index) => setEntries((current) => removeAclEntryAt(current, index))} />
           </div>
         ) : (
-          <div className="acl-policy-summary">ACL 条目仅在 Visibility 选择 acl 时生效。</div>
+          <div className="acl-policy-summary">ACL 条目仅在访问对象选择“指定成员”时生效。</div>
         )}
+        {currentExposure === 'public' ? (
+          <div className={currentAccessMode === 'anonymous' ? 'form-error' : 'form-note exposure-combination-note'}>
+            当前组合：{siteAccessEffectLabel({ exposure: currentExposure, accessMode: currentAccessMode })}。
+          </div>
+        ) : null}
         {error ? <div className="form-error">{formatSiteActionError(error)}</div> : null}
       </div>
       <AclEntryDialog
@@ -636,9 +644,7 @@ function AdminExposurePanel({ site, access, updateExposure, onResourceUpdate, on
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [auditWarning, setAuditWarning] = useState(null);
-  const accessMode = access.accessMode || (access.visibility === 'internal' ? 'anonymous' : access.visibility);
-  const effectLabel = siteAccessEffectLabel({ exposure, accessMode, visibility: access.visibility });
-  const publicAnonymous = exposure === 'public' && accessMode === 'anonymous';
+  const rangeView = siteNetworkRangeView(exposure);
 
   useEffect(() => {
     setExposure(access.exposure || 'internal');
@@ -699,61 +705,53 @@ function AdminExposurePanel({ site, access, updateExposure, onResourceUpdate, on
 
   return (
     <>
-      <section className="info-list exposure-policy-card" aria-label="公网访问控制">
+      <section className="info-list exposure-policy-card" aria-label="网络范围控制">
         <div className="panel-head">
-          <div>
-            <p>平台网络策略</p>
-            <h2>公网访问</h2>
-          </div>
+          <h2>网络范围</h2>
           <span className={exposure === 'public' ? 'tag tag-success' : 'tag muted'}>
-            {exposure === 'public' ? '已开启' : '公司网络'}
+            {rangeView.status}
           </span>
         </div>
         <div className="access-policy-body">
           <div className="exposure-policy-summary">
             <div>
-              <strong>{effectLabel}</strong>
-              <span>
-                网络范围与 Visibility（{siteVisibilityLabel(access.visibility || site.visibility || 'internal')}）分别生效。
-              </span>
+              <strong>{rangeView.effect}</strong>
+              <span>{rangeView.description}</span>
             </div>
             {exposure === 'public' ? (
               <button className="secondary-button" type="button" disabled={saving} onClick={() => setDialog('internal')}>
-                关闭公网
+                {rangeView.action}
               </button>
             ) : (
               <button className="primary-button" type="button" disabled={saving} onClick={openPublicDialog}>
-                开启公网
+                {rangeView.action}
               </button>
             )}
           </div>
           {exposure === 'public' && access.exposureReason?.text ? (
-            <div className="exposure-policy-reason" aria-label="最近开启公网理由">
+            <div className="exposure-policy-reason" aria-label="最近一次允许互联网访问原因">
               <div>
-                <span>最近开启理由</span>
+                <span>最近一次开启原因</span>
                 <strong>{access.exposureReason.text}</strong>
               </div>
               <span>开启时间：{formatDate(access.exposureReason.changedAt)}</span>
             </div>
           ) : null}
-          {publicAnonymous ? (
-            <div className="form-error">高风险：当前组合为互联网匿名访问，任何互联网用户都无需登录即可访问站点。</div>
-          ) : null}
           {auditWarning ? <div className="form-note">{auditWarning}</div> : null}
           {error ? <div className="form-error">{formatSiteActionError(error)}</div> : null}
         </div>
       </section>
-      <AppDialog open={dialog === 'public'} title="开启公网访问" eyebrow="平台网络策略" onOpenChange={(open) => !saving && !open && setDialog(null)}>
+      <AppDialog open={dialog === 'public'} title="允许互联网访问" eyebrow="网络范围" onOpenChange={(open) => !saving && !open && setDialog(null)}>
         <form className="dialog-form" onSubmit={submitPublic}>
           <p className="dialog-description">
-            开启后，站点会绕过公司网络 IP 门禁。当前 Worker 会移除 XD_OFFICE_NET 绑定并校验不存在。
+            允许后，站点会绕过公司网络 IP 门禁。当前 Worker 会移除 XD_OFFICE_NET 绑定并校验不存在。
           </p>
           <label className="field">
-            <span>公网访问理由</span>
+            <span>开启原因</span>
             <textarea
               value={reason}
               onChange={(event) => setReason(event.target.value)}
-              placeholder="例如：staging 公网验收"
+              placeholder="例如：staging 互联网验收"
               maxLength={500}
               autoFocus
             />
@@ -764,19 +762,19 @@ function AdminExposurePanel({ site, access, updateExposure, onResourceUpdate, on
               取消
             </button>
             <button className="primary-button" type="submit" disabled={saving || !reason.trim()}>
-              {saving ? '保存中' : '确认开启'}
+              {saving ? '保存中' : '确认允许'}
             </button>
           </div>
         </form>
       </AppDialog>
       <ConfirmDialog
         open={dialog === 'internal'}
-        title="关闭公网访问？"
-        eyebrow="平台网络策略"
+        title="限制为公司网络？"
+        eyebrow="网络范围"
         target={site.slug || site.id}
-        targetMeta="关闭后恢复公司网络 IP 门禁，Visibility 与 ACL 保持不变；不会立即恢复 XD_OFFICE_NET。"
-        description="确认将该站点切回公司网络访问吗？"
-        confirmLabel={saving ? '保存中' : '确认关闭'}
+        targetMeta="限制后恢复公司网络 IP 门禁，访问权限与 ACL 保持不变；不会立即恢复 XD_OFFICE_NET。"
+        description="确认将该站点限制为仅公司网络可访问吗？"
+        confirmLabel={saving ? '保存中' : '确认限制'}
         confirming={saving}
         error={error ? formatSiteActionError(error) : ''}
         onOpenChange={(open) => !saving && !open && setDialog(null)}
@@ -829,18 +827,27 @@ function AclEntryDialog({ open, draft, error, onDraftChange, onOpenChange, onSub
 }
 
 function ReadOnlyAccessPolicy({ access, entries }) {
+  const visibility = access.visibility || 'internal';
   return (
     <>
       <section className="info-list">
-        <h2>访问控制</h2>
-        <dl>
-          <div>
-            <dt>Visibility</dt>
-            <dd>{access.visibility || 'internal'}</dd>
-          </div>
-        </dl>
+        <div className="panel-head">
+          <h2>访问权限</h2>
+        </div>
+        <div className="access-policy-body">
+          <dl>
+            <div>
+              <dt>访问对象</dt>
+              <dd>{siteAccessOptionLabel(access.visibility || 'internal')}</dd>
+            </div>
+            <div>
+              <dt>访问要求</dt>
+              <dd>{siteAccessRequirementDescription(access.visibility || 'internal')}</dd>
+            </div>
+          </dl>
+        </div>
       </section>
-      {access.visibility === 'acl' ? <ReadOnlyAclList entries={entries} /> : null}
+      {visibility === 'acl' ? <ReadOnlyAclList entries={entries} /> : null}
     </>
   );
 }
