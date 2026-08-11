@@ -49,10 +49,19 @@ test('admin site management exposes network exposure controls without changing v
   assert.match(adminSitesSource, /\[exposure\]/);
   assert.match(siteDetailSource, /updateAdminSiteExposure/);
   assert.match(siteDetailSource, /AdminExposurePanel/);
-  assert.match(siteDetailSource, /公网访问理由/);
+  assert.match(siteDetailSource, /<h2>网络范围<\/h2>/);
+  assert.match(siteDetailSource, /<h2>访问权限<\/h2>/);
+  assert.match(siteDetailSource, /label="访问对象"/);
+  assert.match(siteDetailSource, /开启原因/);
+  assert.match(siteDetailSource, /最近一次开启原因/);
+  assert.match(siteDetailSource, /开启时间/);
   assert.match(siteDetailSource, /移除 XD_OFFICE_NET/);
-  assert.match(siteDetailSource, /互联网匿名访问/);
+  assert.match(siteDetailSource, /允许互联网访问/);
+  assert.match(siteDetailSource, /限制为公司网络/);
+  assert.match(siteDetailSource, /当前组合：/);
   assert.match(siteDetailSource, /不会立即恢复 XD_OFFICE_NET/);
+  assert.doesNotMatch(siteDetailSource, /<h2>公网访问<\/h2>/);
+  assert.doesNotMatch(siteDetailSource, /label="Visibility"/);
   assert.doesNotMatch(siteDetailSource, /VISIBILITY_OPTIONS = \[[^\]]*public/);
 });
 

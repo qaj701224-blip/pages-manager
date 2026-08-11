@@ -14,7 +14,7 @@ import {
 import { departmentTeamDisplayName } from './department-path.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
 import { formatConsoleUser } from './console-users.js';
-import { newId } from './id.js';
+import { newId, nextId } from './id.js';
 import { handleConsoleAdminWebhooksApi } from './webhooks.js';
 import {
   buildSiteOwnerTransferAuditEvent,
@@ -176,12 +176,15 @@ export async function handleConsoleAdminApi(request, env, config, store) {
     if (request.method === 'PATCH') return updateSiteAccess(request, env, config, store, session, site.id, { site });
     if (request.method !== 'GET') return methodNotAllowed();
     const aclEntries = typeof store.listSiteAclEntries === 'function' ? await store.listSiteAclEntries(site.id) : [];
+    const exposure = site.route?.exposure || site.defaultExposure || 'internal';
+    const exposureReason = await readAdminSitePublicExposureReason(env, store, config, site, exposure);
     return jsonOk({
       access: {
-        exposure: site.route?.exposure || site.defaultExposure || 'internal',
+        exposure,
         accessMode: site.route?.accessMode || accessModeFromVisibility(site.route?.visibility || site.defaultVisibility),
         visibility: site.route?.visibility || site.defaultVisibility,
         aclEntries: aclEntries.map(formatAclEntry),
+        exposureReason,
       },
     });
   }
@@ -1002,11 +1005,6 @@ function readReuseHoldSeconds(env) {
 
 function addSecondsIso(iso, seconds) {
   return new Date(Date.parse(iso) + seconds * 1000).toISOString();
-}
-
-function nextId(env, prefix) {
-  if (typeof env?.nextId === 'function') return env.nextId(prefix);
-  return newId(prefix);
 }
 
 function getAdminOps(config) {
@@ -2563,6 +2561,10 @@ async function updateAdminSiteExposure(request, env, config, store, session, sit
           accessMode: committedRoute.accessMode,
           visibility: committedRoute.visibility,
           aclEntries: (mutation.aclEntries || []).map(formatAclEntry),
+          exposureReason:
+            committedRoute.exposure === 'public' && reason
+              ? { text: reason, changedAt: now }
+              : null,
         },
         auditStatus,
       };
@@ -2641,6 +2643,49 @@ function safeAdminExposureFailureCode(error) {
 
 function safeAdminExposureAuditWarningCode(error) {
   return error?.code === 'AUDIT_WRITE_FAILED' ? 'AUDIT_WRITE_FAILED' : 'UNKNOWN';
+}
+
+async function readAdminSitePublicExposureReason(env, store, config, site, exposure) {
+  if (exposure !== 'public' || typeof store.getLatestAdminSitePublicExposureReason !== 'function') return null;
+  try {
+    const lockBefore = await readAdminSiteCommitLock(store, config, site);
+    if (isActiveAdminSiteCommitLock(lockBefore, readNow(env))) return null;
+    const reason = await store.getLatestAdminSitePublicExposureReason({
+      environment: config.environment,
+      siteId: site.id,
+      currentExposure: exposure,
+    });
+    const lockAfter = await readAdminSiteCommitLock(store, config, site);
+    if (isActiveAdminSiteCommitLock(lockAfter, readNow(env)) || adminSiteCommitLockChanged(lockBefore, lockAfter)) return null;
+    return reason;
+  } catch (error) {
+    globalThis.console?.warn?.(
+      'SITE_EXPOSURE_REASON_READ_UNCONFIRMED',
+      JSON.stringify({
+        environment: config.environment,
+        siteId: site.id,
+        errorCode: safeAdminExposureAuditWarningCode(error),
+      })
+    );
+    return null;
+  }
+}
+
+async function readAdminSiteCommitLock(store, config, site) {
+  if (typeof store.getSiteCommitLock !== 'function') return null;
+  return store.getSiteCommitLock(config.environment, site.id);
+}
+
+function isActiveAdminSiteCommitLock(lock, now) {
+  return Date.parse(lock?.expiresAt || '') > Date.parse(now);
+}
+
+function adminSiteCommitLockChanged(before, after) {
+  return (
+    (before?.lockId || null) !== (after?.lockId || null) ||
+    Number(before?.fencingToken || 0) !== Number(after?.fencingToken || 0) ||
+    (before?.updatedAt || null) !== (after?.updatedAt || null)
+  );
 }
 
 function adminExposureErrorResponse(error) {

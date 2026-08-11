@@ -6,7 +6,7 @@ import {
 } from './console-auth.js';
 import { departmentTeamDisplayName } from './department-path.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
-import { newHexId, newId } from './id.js';
+import { newHexId, nextId } from './id.js';
 import { MAX_SITE_SECRET_VALUE_BYTES, normalizeRuntimeSecretName, normalizeRuntimeVars } from './runtime-config.js';
 import { logRuntimeConfigFailure, readRuntimeConfigErrorDiagnostic } from './runtime-config-diagnostics.js';
 import {
@@ -985,11 +985,6 @@ function teamOwnerVisibilityUnsupported() {
     400,
     '团队站点请使用 internal、org、acl 或 disabled。'
   );
-}
-
-function nextId(env, prefix) {
-  if (typeof env?.nextId === 'function') return env.nextId(prefix);
-  return newId(prefix);
 }
 
 function nextSiteUuid(env) {
