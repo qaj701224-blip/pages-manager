@@ -84,8 +84,8 @@ test('admin exposure panel shows the current public reason as escaped React text
   assert.match(panelSource, /开启时间：\{formatDate\(access\.exposureReason\.changedAt\)\}/);
   assert.doesNotMatch(panelSource, /dangerouslySetInnerHTML/);
   assert.match(stylesSource, /\.exposure-policy-reason\s*\{[\s\S]*?display:\s*grid;/);
+  assert.match(stylesSource, /\.exposure-policy-reason\s*\{[\s\S]*?border-top:\s*1px solid var\(--xd-border\);/);
   assert.match(stylesSource, /\.exposure-policy-reason strong\s*\{[\s\S]*?overflow-wrap:\s*anywhere;/);
-  assert.match(stylesSource, /:root\[data-theme='dark'\] \.exposure-policy-reason/);
 });
 
 test('site access cards keep network range and access requirements in consistent positions', () => {
@@ -98,23 +98,47 @@ test('site access cards keep network range and access requirements in consistent
     siteDetailSource.indexOf('function AclEntryDialog')
   );
 
+  assert.match(exposurePanelSource, /className="info-list access-control-card exposure-policy-card"/);
+  assert.match(exposurePanelSource, /className="access-control-card__head"/);
+  assert.match(exposurePanelSource, /className="access-control-card__body network-range-body"/);
   assert.match(exposurePanelSource, /<h2>网络范围<\/h2>/);
   assert.match(exposurePanelSource, /\{rangeView\.status\}/);
   assert.match(exposurePanelSource, /\{rangeView\.effect\}/);
   assert.match(exposurePanelSource, /\{rangeView\.description\}/);
   assert.match(exposurePanelSource, /\{rangeView\.action\}/);
+  assert.doesNotMatch(exposurePanelSource, /className="primary-button"[\s\S]*?\{rangeView\.action\}/);
+  assert.doesNotMatch(exposurePanelSource, /className="panel-head"/);
   assert.doesNotMatch(exposurePanelSource, /网络范围与 Visibility/);
   const mobileExposureSummaryPattern =
     /@media \(max-width: 640px\)[\s\S]*?\.exposure-policy-summary\s*\{[\s\S]*?flex-direction:\s*column;/;
   const mobileExposureActionsPattern =
-    /\.exposure-policy-card \.panel-head \.tag,[\s\S]*?\.exposure-policy-summary > button\s*\{[\s\S]*?align-self:\s*flex-start;/;
+    /\.exposure-policy-summary > button\s*\{[\s\S]*?align-self:\s*flex-start;/;
+  const mobileCardHeadPattern =
+    /@media \(max-width: 640px\)[\s\S]*?\.access-control-card__head,[\s\S]*?flex-direction:\s*column;/;
   assert.match(stylesSource, mobileExposureSummaryPattern);
   assert.match(stylesSource, mobileExposureActionsPattern);
+  assert.match(stylesSource, mobileCardHeadPattern);
+  assert.match(accessFormSource, /<form className="info-list access-control-card"/);
+  assert.match(accessFormSource, /className="access-control-card__head"/);
+  assert.match(accessFormSource, /className="access-control-card__body"/);
   assert.match(accessFormSource, /<h2>访问权限<\/h2>/);
   assert.match(accessFormSource, /label="访问对象"/);
   assert.match(accessFormSource, /siteAccessOptionLabel\(option\)/);
   assert.match(accessFormSource, /siteAccessRequirementDescription\(visibility\)/);
-  assert.match(accessFormSource, /当前组合：\{siteAccessEffectLabel/);
+  assert.match(accessFormSource, /<AlertTriangle[^>]*\/>[\s\S]*?当前组合：\{siteAccessEffectLabel/);
+  assert.doesNotMatch(accessFormSource, /acl-policy-summary/);
+  assert.doesNotMatch(accessFormSource, /className="panel-head"/);
+
+  const summaryRule = stylesSource.match(/\.exposure-policy-summary\s*\{([^}]*)\}/)?.[1] || '';
+  const cardRule = stylesSource.match(/\.access-control-card\s*\{([^}]*)\}/)?.[1] || '';
+  const cardHeadRule = stylesSource.match(/\.access-control-card__head\s*\{([^}]*)\}/)?.[1] || '';
+  const cardTitleRule = stylesSource.match(/\.access-control-card__head h2\s*\{([^}]*)\}/)?.[1] || '';
+  assert.doesNotMatch(summaryRule, /border:/);
+  assert.doesNotMatch(summaryRule, /border-radius:/);
+  assert.doesNotMatch(summaryRule, /background:/);
+  assert.match(cardRule, /min-height:\s*194px;/);
+  assert.doesNotMatch(cardHeadRule, /border-bottom:/);
+  assert.match(cardTitleRule, /padding:\s*0;/);
 });
 
 test('read-only access policy uses the same access subject terminology', () => {
@@ -124,8 +148,10 @@ test('read-only access policy uses the same access subject terminology', () => {
   );
 
   assert.match(readOnlySource, /<h2>访问权限<\/h2>/);
-  assert.match(readOnlySource, /className="panel-head"/);
-  assert.match(readOnlySource, /className="access-policy-body"/);
+  assert.match(readOnlySource, /className="info-list access-control-card"/);
+  assert.match(readOnlySource, /className="access-control-card__head"/);
+  assert.match(readOnlySource, /className="access-control-card__body"/);
+  assert.doesNotMatch(readOnlySource, /className="panel-head"/);
   assert.match(readOnlySource, /<dt>访问对象<\/dt>/);
   assert.match(readOnlySource, /siteAccessOptionLabel\(access\.visibility \|\| 'internal'\)/);
   assert.match(readOnlySource, /siteAccessRequirementDescription\(access\.visibility \|\| 'internal'\)/);

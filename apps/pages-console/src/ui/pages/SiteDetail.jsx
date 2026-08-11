@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   ArrowLeft,
   LockKeyhole,
   Pencil,
@@ -585,15 +586,15 @@ function AccessPolicyForm({ site, siteApi, access, onResourceUpdate, onSitePatch
   };
 
   return (
-    <form className="info-list" onSubmit={submit}>
-      <div className="panel-head">
+    <form className="info-list access-control-card" onSubmit={submit}>
+      <div className="access-control-card__head">
         <h2>访问权限</h2>
         <button className="primary-button" type="submit" disabled={saving || !isDirty}>
           <Save size={16} />
           {saving ? '保存中' : '保存'}
         </button>
       </div>
-      <div className="access-policy-body">
+      <div className="access-control-card__body">
         <SelectField
           label="访问对象"
           value={visibility}
@@ -615,12 +616,11 @@ function AccessPolicyForm({ site, siteApi, access, onResourceUpdate, onSitePatch
             </div>
             <AclEntriesTable entries={entries} onRemove={(index) => setEntries((current) => removeAclEntryAt(current, index))} />
           </div>
-        ) : (
-          <div className="acl-policy-summary">ACL 条目仅在访问对象选择“指定成员”时生效。</div>
-        )}
+        ) : null}
         {currentExposure === 'public' ? (
-          <div className={currentAccessMode === 'anonymous' ? 'form-error' : 'form-note exposure-combination-note'}>
-            当前组合：{siteAccessEffectLabel({ exposure: currentExposure, accessMode: currentAccessMode })}。
+          <div className="exposure-combination-note">
+            <AlertTriangle size={16} aria-hidden="true" />
+            <span>当前组合：{siteAccessEffectLabel({ exposure: currentExposure, accessMode: currentAccessMode })}。</span>
           </div>
         ) : null}
         {error ? <div className="form-error">{formatSiteActionError(error)}</div> : null}
@@ -705,14 +705,14 @@ function AdminExposurePanel({ site, access, updateExposure, onResourceUpdate, on
 
   return (
     <>
-      <section className="info-list exposure-policy-card" aria-label="网络范围控制">
-        <div className="panel-head">
+      <section className="info-list access-control-card exposure-policy-card" aria-label="网络范围控制">
+        <div className="access-control-card__head">
           <h2>网络范围</h2>
           <span className={exposure === 'public' ? 'tag tag-success' : 'tag muted'}>
             {rangeView.status}
           </span>
         </div>
-        <div className="access-policy-body">
+        <div className="access-control-card__body network-range-body">
           <div className="exposure-policy-summary">
             <div>
               <strong>{rangeView.effect}</strong>
@@ -723,7 +723,7 @@ function AdminExposurePanel({ site, access, updateExposure, onResourceUpdate, on
                 {rangeView.action}
               </button>
             ) : (
-              <button className="primary-button" type="button" disabled={saving} onClick={openPublicDialog}>
+              <button className="secondary-button" type="button" disabled={saving} onClick={openPublicDialog}>
                 {rangeView.action}
               </button>
             )}
@@ -830,11 +830,11 @@ function ReadOnlyAccessPolicy({ access, entries }) {
   const visibility = access.visibility || 'internal';
   return (
     <>
-      <section className="info-list">
-        <div className="panel-head">
+      <section className="info-list access-control-card">
+        <div className="access-control-card__head">
           <h2>访问权限</h2>
         </div>
-        <div className="access-policy-body">
+        <div className="access-control-card__body">
           <dl>
             <div>
               <dt>访问对象</dt>
