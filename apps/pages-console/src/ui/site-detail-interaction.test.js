@@ -79,13 +79,57 @@ test('admin exposure panel shows the current public reason as escaped React text
   );
 
   assert.match(panelSource, /exposure === 'public' && access\.exposureReason\?\.text/);
-  assert.match(panelSource, /aria-label="最近开启公网理由"/);
+  assert.match(panelSource, /aria-label="最近一次允许互联网访问原因"/);
   assert.match(panelSource, /\{access\.exposureReason\.text\}/);
   assert.match(panelSource, /开启时间：\{formatDate\(access\.exposureReason\.changedAt\)\}/);
   assert.doesNotMatch(panelSource, /dangerouslySetInnerHTML/);
   assert.match(stylesSource, /\.exposure-policy-reason\s*\{[\s\S]*?display:\s*grid;/);
   assert.match(stylesSource, /\.exposure-policy-reason strong\s*\{[\s\S]*?overflow-wrap:\s*anywhere;/);
   assert.match(stylesSource, /:root\[data-theme='dark'\] \.exposure-policy-reason/);
+});
+
+test('site access cards keep network range and access requirements in consistent positions', () => {
+  const accessFormSource = siteDetailSource.slice(
+    siteDetailSource.indexOf('function AccessPolicyForm'),
+    siteDetailSource.indexOf('function AdminExposurePanel')
+  );
+  const exposurePanelSource = siteDetailSource.slice(
+    siteDetailSource.indexOf('function AdminExposurePanel'),
+    siteDetailSource.indexOf('function AclEntryDialog')
+  );
+
+  assert.match(exposurePanelSource, /<h2>网络范围<\/h2>/);
+  assert.match(exposurePanelSource, /\{rangeView\.status\}/);
+  assert.match(exposurePanelSource, /\{rangeView\.effect\}/);
+  assert.match(exposurePanelSource, /\{rangeView\.description\}/);
+  assert.match(exposurePanelSource, /\{rangeView\.action\}/);
+  assert.doesNotMatch(exposurePanelSource, /网络范围与 Visibility/);
+  const mobileExposureSummaryPattern =
+    /@media \(max-width: 640px\)[\s\S]*?\.exposure-policy-summary\s*\{[\s\S]*?flex-direction:\s*column;/;
+  const mobileExposureActionsPattern =
+    /\.exposure-policy-card \.panel-head \.tag,[\s\S]*?\.exposure-policy-summary > button\s*\{[\s\S]*?align-self:\s*flex-start;/;
+  assert.match(stylesSource, mobileExposureSummaryPattern);
+  assert.match(stylesSource, mobileExposureActionsPattern);
+  assert.match(accessFormSource, /<h2>访问权限<\/h2>/);
+  assert.match(accessFormSource, /label="访问对象"/);
+  assert.match(accessFormSource, /siteAccessOptionLabel\(option\)/);
+  assert.match(accessFormSource, /siteAccessRequirementDescription\(visibility\)/);
+  assert.match(accessFormSource, /当前组合：\{siteAccessEffectLabel/);
+});
+
+test('read-only access policy uses the same access subject terminology', () => {
+  const readOnlySource = siteDetailSource.slice(
+    siteDetailSource.indexOf('function ReadOnlyAccessPolicy'),
+    siteDetailSource.indexOf('function ReadOnlyAclList')
+  );
+
+  assert.match(readOnlySource, /<h2>访问权限<\/h2>/);
+  assert.match(readOnlySource, /className="panel-head"/);
+  assert.match(readOnlySource, /className="access-policy-body"/);
+  assert.match(readOnlySource, /<dt>访问对象<\/dt>/);
+  assert.match(readOnlySource, /siteAccessOptionLabel\(access\.visibility \|\| 'internal'\)/);
+  assert.match(readOnlySource, /siteAccessRequirementDescription\(access\.visibility \|\| 'internal'\)/);
+  assert.doesNotMatch(readOnlySource, /Visibility/);
 });
 
 test('runtime config uses add dialogs instead of inline creation forms', () => {
