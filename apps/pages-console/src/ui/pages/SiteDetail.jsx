@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   ArrowLeft,
   LockKeyhole,
   Pencil,
@@ -27,6 +28,7 @@ import {
   getAdminSiteAccess,
   getAdminSiteConfig,
   getAdminSiteDeployments,
+  updateAdminSiteExposure,
   listAdminTeams,
   listAdminUsers,
   listConsoleUsers,
@@ -50,6 +52,11 @@ import {
   getSiteCapabilities,
   normalizeAclEntriesForForm,
   removeAclEntryAt,
+  siteAccessEffectLabel,
+  siteAccessOptionLabel,
+  siteAccessRequirementDescription,
+  siteNetworkRangeView,
+  siteExposureAuditWarning,
   toAclUpdatePayload,
 } from '../site-detail-model.js';
 import {
@@ -60,6 +67,7 @@ import {
   siteOwnerCandidateLabel,
   siteOwnerCandidateMeta,
 } from '../site-settings-model.js';
+import { adminDeploymentActorView, siteVisibilityLabel } from '../site-display-model.js';
 import { PageHeading } from './SitesDirectory.jsx';
 
 const SITE_TABS = new Set(['overview', 'deployments', 'access', 'config', 'settings']);
@@ -85,6 +93,7 @@ function createSiteApi(scope) {
         return Promise.resolve(null);
       },
       updateAccess: updateAdminSiteAccess,
+      updateExposure: updateAdminSiteExposure,
       updateSettings: updateAdminSiteSettings,
       listOwnerUsers: ({ query } = {}) => listAdminUsers({ query }),
       listOwnerTeams: () => listAdminTeams({ status: 'active' }),
@@ -205,6 +214,7 @@ export function SiteDetail({
       {state.status === 'ready' && state.site ? (
         <SiteTabContent
           site={state.site}
+          scope={scope}
           siteApi={siteApi}
           tab={activeTab}
           resourceState={resourceState}
@@ -295,17 +305,29 @@ function ContextLink({ href, active, icon, label }) {
   );
 }
 
-function SiteTabContent({ site, siteApi, tab, resourceState, onResourceUpdate, onSitePatch, onResourceReload, onSiteDeleted }) {
-  if (tab === 'deployments') return <DeploymentsPanel state={resourceState} site={site} />;
+function SiteTabContent({
+  site,
+  scope,
+  siteApi,
+  tab,
+  resourceState,
+  onResourceUpdate,
+  onSitePatch,
+  onResourceReload,
+  onSiteDeleted,
+}) {
+  if (tab === 'deployments') return <DeploymentsPanel state={resourceState} site={site} scope={scope} />;
   if (tab === 'access') {
     return (
       <AccessPanel
         site={site}
+        scope={scope}
         siteApi={siteApi}
         state={resourceState}
         fallbackVisibility={site.access?.visibility}
         onResourceUpdate={onResourceUpdate}
         onSitePatch={onSitePatch}
+        onResourceReload={onResourceReload}
       />
     );
   }
@@ -376,7 +398,7 @@ function SiteStatusSummary({ site }) {
   );
 }
 
-function DeploymentsPanel({ state, site }) {
+function DeploymentsPanel({ state, site, scope }) {
   if (state.status === 'loading') return <div className="placeholder">加载中</div>;
   if (state.status === 'error') return <div className="placeholder">无法加载部署记录</div>;
   const deployments = state.data?.deployments || [];
@@ -391,7 +413,7 @@ function DeploymentsPanel({ state, site }) {
       <div className="deployment-table-head">
         <span>Deployment</span>
         <span>来源</span>
-        <span>归属</span>
+        {scope === 'admin' ? <span>操作人</span> : <span>归属</span>}
         <span>状态</span>
         <span>创建时间</span>
         <span>完成时间</span>
@@ -404,7 +426,11 @@ function DeploymentsPanel({ state, site }) {
               <span>{deployment.operation || '-'}</span>
             </div>
             <span>{deployment.source || 'unknown'}</span>
-            <span title={deploymentOwnerLabel(deployment, site)}>{deploymentOwnerLabel(deployment, site)}</span>
+            {scope === 'admin' ? (
+              <DeploymentActorCell actor={adminDeploymentActorView(deployment.actor)} />
+            ) : (
+              <span title={deploymentOwnerLabel(deployment, site)}>{deploymentOwnerLabel(deployment, site)}</span>
+            )}
             <span className="tag muted">{deployment.status || 'unknown'}</span>
             <span>{formatDate(deployment.createdAt)}</span>
             <span>{formatDate(deployment.completedAt)}</span>
@@ -413,6 +439,15 @@ function DeploymentsPanel({ state, site }) {
         </div>
       ))}
     </section>
+  );
+}
+
+function DeploymentActorCell({ actor }) {
+  return (
+    <span title={actor.secondary ? `${actor.primary} · ${actor.secondary}` : actor.primary}>
+      {actor.primary}
+      {actor.secondary ? ` · ${actor.secondary}` : ''}
+    </span>
   );
 }
 
@@ -457,7 +492,7 @@ function deploymentOperatorActionLabel(value) {
   return value || '';
 }
 
-function AccessPanel({ site, siteApi, state, fallbackVisibility, onResourceUpdate, onSitePatch }) {
+function AccessPanel({ site, scope, siteApi, state, fallbackVisibility, onResourceUpdate, onSitePatch, onResourceReload }) {
   if (state.status === 'loading') return <div className="placeholder">加载中</div>;
   if (state.status === 'error') return <div className="placeholder">无法加载访问控制</div>;
   const access = state.data?.access || { visibility: fallbackVisibility || 'internal', aclEntries: [] };
@@ -466,6 +501,16 @@ function AccessPanel({ site, siteApi, state, fallbackVisibility, onResourceUpdat
 
   return (
     <section className="detail-stack">
+      {scope === 'admin' && siteApi.updateExposure ? (
+        <AdminExposurePanel
+          site={site}
+          access={access}
+          updateExposure={siteApi.updateExposure}
+          onResourceUpdate={onResourceUpdate}
+          onSitePatch={onSitePatch}
+          onResourceReload={onResourceReload}
+        />
+      ) : null}
       {capabilities.canEditAccess ? (
         <AccessPolicyForm
           site={site}
@@ -489,6 +534,8 @@ function AccessPolicyForm({ site, siteApi, access, onResourceUpdate, onSitePatch
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const aclEnabled = visibility === 'acl';
+  const currentExposure = access.exposure === 'public' ? 'public' : 'internal';
+  const currentAccessMode = visibility === 'internal' ? 'anonymous' : visibility;
 
   useEffect(() => {
     setVisibility(access.visibility || 'internal');
@@ -526,7 +573,7 @@ function AccessPolicyForm({ site, siteApi, access, onResourceUpdate, onSitePatch
         visibility,
         aclEntries: toAclUpdatePayload(entries),
       });
-      onResourceUpdate?.({ access: data.access });
+      onResourceUpdate?.({ access: { ...access, ...data.access } });
       onSitePatch?.({
         access: { ...(site.access || {}), ...data.access },
         visibility: data.access?.visibility || visibility,
@@ -539,24 +586,22 @@ function AccessPolicyForm({ site, siteApi, access, onResourceUpdate, onSitePatch
   };
 
   return (
-    <form className="info-list" onSubmit={submit}>
-      <div className="panel-head">
-        <div>
-          <p>访问策略</p>
-          <h2>访问控制</h2>
-        </div>
+    <form className="info-list access-control-card" onSubmit={submit}>
+      <div className="access-control-card__head">
+        <h2>访问权限</h2>
         <button className="primary-button" type="submit" disabled={saving || !isDirty}>
           <Save size={16} />
           {saving ? '保存中' : '保存'}
         </button>
       </div>
-      <div className="access-policy-body">
+      <div className="access-control-card__body">
         <SelectField
-          label="Visibility"
+          label="访问对象"
           value={visibility}
-          options={VISIBILITY_OPTIONS.map((option) => ({ value: option, label: option }))}
+          options={VISIBILITY_OPTIONS.map((option) => ({ value: option, label: siteAccessOptionLabel(option) }))}
           onChange={setVisibility}
         />
+        <p className="access-policy-description">{siteAccessRequirementDescription(visibility)}</p>
         {aclEnabled ? (
           <div className="acl-editor">
             <div className="acl-editor__head">
@@ -571,9 +616,13 @@ function AccessPolicyForm({ site, siteApi, access, onResourceUpdate, onSitePatch
             </div>
             <AclEntriesTable entries={entries} onRemove={(index) => setEntries((current) => removeAclEntryAt(current, index))} />
           </div>
-        ) : (
-          <div className="acl-policy-summary">ACL 条目仅在 Visibility 选择 acl 时生效。</div>
-        )}
+        ) : null}
+        {currentExposure === 'public' ? (
+          <div className="exposure-combination-note">
+            <AlertTriangle size={16} aria-hidden="true" />
+            <span>当前组合：{siteAccessEffectLabel({ exposure: currentExposure, accessMode: currentAccessMode })}。</span>
+          </div>
+        ) : null}
         {error ? <div className="form-error">{formatSiteActionError(error)}</div> : null}
       </div>
       <AclEntryDialog
@@ -585,6 +634,154 @@ function AccessPolicyForm({ site, siteApi, access, onResourceUpdate, onSitePatch
         onSubmit={addEntry}
       />
     </form>
+  );
+}
+
+function AdminExposurePanel({ site, access, updateExposure, onResourceUpdate, onSitePatch, onResourceReload }) {
+  const [exposure, setExposure] = useState(access.exposure || 'internal');
+  const [reason, setReason] = useState('');
+  const [dialog, setDialog] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+  const [auditWarning, setAuditWarning] = useState(null);
+  const rangeView = siteNetworkRangeView(exposure);
+
+  useEffect(() => {
+    setExposure(access.exposure || 'internal');
+    setReason('');
+    setDialog(null);
+    setSaving(false);
+    setError(null);
+  }, [access.exposure]);
+
+  const openPublicDialog = () => {
+    setReason('');
+    setError(null);
+    setAuditWarning(null);
+    setDialog('public');
+  };
+
+  const submitPublic = async (event) => {
+    event.preventDefault();
+    if (!reason.trim() || saving) return;
+    await saveExposure('public', reason.trim());
+  };
+
+  const saveExposure = async (nextExposure, nextReason = null) => {
+    setSaving(true);
+    setError(null);
+    try {
+      const data = await updateExposure(site.id, {
+        exposure: nextExposure,
+        ...(nextReason ? { reason: nextReason } : {}),
+      });
+      const nextAccess = { ...access, ...(data.access || {}), exposure: nextExposure };
+      setExposure(nextExposure);
+      setDialog(null);
+      setReason('');
+      setAuditWarning(
+        data.auditStatus === 'unconfirmed'
+          ? siteExposureAuditWarning(nextExposure)
+          : null
+      );
+      onResourceUpdate?.({ access: nextAccess });
+      onSitePatch?.({ access: { ...(site.access || {}), ...nextAccess } });
+    } catch (nextError) {
+      if (nextError?.code === 'SITE_EXPOSURE_AUDIT_FAILED') {
+        setExposure(nextExposure);
+        setAuditWarning(siteExposureAuditWarning(nextExposure));
+        try {
+          await onResourceReload?.();
+        } catch {
+          // Keep the locally confirmed effective state and warning when the refresh is unavailable.
+        }
+      } else {
+        setError(nextError);
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <>
+      <section className="info-list access-control-card exposure-policy-card" aria-label="网络范围控制">
+        <div className="access-control-card__head">
+          <h2>网络范围</h2>
+          <span className={exposure === 'public' ? 'tag tag-success' : 'tag muted'}>
+            {rangeView.status}
+          </span>
+        </div>
+        <div className="access-control-card__body network-range-body">
+          <div className="exposure-policy-summary">
+            <div>
+              <strong>{rangeView.effect}</strong>
+              <span>{rangeView.description}</span>
+            </div>
+            {exposure === 'public' ? (
+              <button className="secondary-button" type="button" disabled={saving} onClick={() => setDialog('internal')}>
+                {rangeView.action}
+              </button>
+            ) : (
+              <button className="secondary-button" type="button" disabled={saving} onClick={openPublicDialog}>
+                {rangeView.action}
+              </button>
+            )}
+          </div>
+          {exposure === 'public' && access.exposureReason?.text ? (
+            <div className="exposure-policy-reason" aria-label="最近一次允许互联网访问原因">
+              <div>
+                <span>最近一次开启原因</span>
+                <strong>{access.exposureReason.text}</strong>
+              </div>
+              <span>开启时间：{formatDate(access.exposureReason.changedAt)}</span>
+            </div>
+          ) : null}
+          {auditWarning ? <div className="form-note">{auditWarning}</div> : null}
+          {error ? <div className="form-error">{formatSiteActionError(error)}</div> : null}
+        </div>
+      </section>
+      <AppDialog open={dialog === 'public'} title="允许互联网访问" eyebrow="网络范围" onOpenChange={(open) => !saving && !open && setDialog(null)}>
+        <form className="dialog-form" onSubmit={submitPublic}>
+          <p className="dialog-description">
+            允许后，站点会绕过公司网络 IP 门禁。当前 Worker 会移除 XD_OFFICE_NET 绑定并校验不存在。
+          </p>
+          <label className="field">
+            <span>开启原因</span>
+            <textarea
+              value={reason}
+              onChange={(event) => setReason(event.target.value)}
+              placeholder="例如：staging 互联网验收"
+              maxLength={500}
+              autoFocus
+            />
+          </label>
+          {error ? <div className="form-error">{formatSiteActionError(error)}</div> : null}
+          <div className="dialog-actions">
+            <button className="secondary-button" type="button" disabled={saving} onClick={() => setDialog(null)}>
+              取消
+            </button>
+            <button className="primary-button" type="submit" disabled={saving || !reason.trim()}>
+              {saving ? '保存中' : '确认允许'}
+            </button>
+          </div>
+        </form>
+      </AppDialog>
+      <ConfirmDialog
+        open={dialog === 'internal'}
+        title="限制为公司网络？"
+        eyebrow="网络范围"
+        target={site.slug || site.id}
+        targetMeta="限制后恢复公司网络 IP 门禁，访问权限与 ACL 保持不变；不会立即恢复 XD_OFFICE_NET。"
+        description="确认将该站点限制为仅公司网络可访问吗？"
+        confirmLabel={saving ? '保存中' : '确认限制'}
+        confirming={saving}
+        error={error ? formatSiteActionError(error) : ''}
+        onOpenChange={(open) => !saving && !open && setDialog(null)}
+        onCancel={() => setDialog(null)}
+        onConfirm={() => saveExposure('internal')}
+      />
+    </>
   );
 }
 
@@ -630,18 +827,27 @@ function AclEntryDialog({ open, draft, error, onDraftChange, onOpenChange, onSub
 }
 
 function ReadOnlyAccessPolicy({ access, entries }) {
+  const visibility = access.visibility || 'internal';
   return (
     <>
-      <section className="info-list">
-        <h2>访问控制</h2>
-        <dl>
-          <div>
-            <dt>Visibility</dt>
-            <dd>{access.visibility || 'internal'}</dd>
-          </div>
-        </dl>
+      <section className="info-list access-control-card">
+        <div className="access-control-card__head">
+          <h2>访问权限</h2>
+        </div>
+        <div className="access-control-card__body">
+          <dl>
+            <div>
+              <dt>访问对象</dt>
+              <dd>{siteAccessOptionLabel(access.visibility || 'internal')}</dd>
+            </div>
+            <div>
+              <dt>访问要求</dt>
+              <dd>{siteAccessRequirementDescription(access.visibility || 'internal')}</dd>
+            </div>
+          </dl>
+        </div>
       </section>
-      {access.visibility === 'acl' ? <ReadOnlyAclList entries={entries} /> : null}
+      {visibility === 'acl' ? <ReadOnlyAclList entries={entries} /> : null}
     </>
   );
 }
@@ -1312,12 +1518,7 @@ function deploymentOwnerLabel(deployment, site) {
 }
 
 function siteVisibilityText(visibility) {
-  if (visibility === 'internal') return '内网可见';
-  if (visibility === 'org') return '企业成员可见';
-  if (visibility === 'acl') return '指定成员可见';
-  if (visibility === 'owner') return '仅归属方可见';
-  if (visibility === 'disabled') return '已停用';
-  return visibility || '内网可见';
+  return siteVisibilityLabel(visibility) || '免登录访问';
 }
 
 function roleLabel(role) {

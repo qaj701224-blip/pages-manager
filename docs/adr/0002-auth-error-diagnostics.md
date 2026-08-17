@@ -291,6 +291,8 @@ Auth 诊断有三类出口，不能混用：
 
 下列值的原文禁止出现在错误响应 body / headers、HTML 错误、诊断事件、metrics labels、trace attributes、文档示例或错误测试快照中。协议成功响应中的 challenge / confirmation 字段可以按设计返回给合法调用方，例如 CLI login start 返回给 CLI 的 `loginSecret` / `deviceCode`、确认页表单中的 `confirmToken`；但这些值仍不得进入错误响应、诊断事件、metrics 或 trace。
 
+例外：`pages-router` 的 `IP_DENIED` 浏览器 HTML 错误页可以展示 Cloudflare 可信请求头 `CF-Connecting-IP` 中的原始客户端 IP，供用户把地址发给平台维护者核对当前 IP allowlist。该例外只适用于这个错误页的 HTML body；不得扩展到 JSON/runtime 错误、其它 HTML 错误页、response headers、日志、诊断事件、metrics labels、trace attributes、文档示例或错误测试快照。缺失 IP 时显示 `未知`，并继续按 fail-closed 规则拒绝请求。
+
 - OAuth authorization code 或 SSO authorization code
 - 完整 OAuth `state`
 - SSO `access_token`、refresh token、`id_token` 或 JWT
@@ -306,7 +308,7 @@ Auth 诊断有三类出口，不能混用：
 - OAuth、SSO token、SSO profile、callback、redirect、return 或 referer URL 的完整 query string
 - `redirect_uri`、`return_to`、`Location` header、provider `error`、`error_description` 或 `error_uri`
 - 原始或 normalize 后的 SSO profile payload 和 profile PII，例如 email、userId、accountId、account、realname、employeeNum、employeenum、departments
-- 原始客户端 IP、完整 User-Agent 或其它可直接识别个人/设备的请求指纹
+- 原始客户端 IP（`pages-router` 的 `IP_DENIED` 浏览器 HTML 页例外除外）、完整 User-Agent 或其它可直接识别个人/设备的请求指纹
 - Cloudflare account id、zone id、KV namespace id 或 Worker secrets
 
 诊断事件必须使用 allowlist 字段。推荐安全字段包括 `requestId`、`traceId`、`event`、公开 `step`、内部 `internalStep`、`outcome`、`code`、公开 `reason`、内部 `internalReason`、HTTP status、耗时、environment、method、host、pathname、已知参数 presence map，例如 `hasCode` / `hasState`，以及为诊断专门生成的 keyed HMAC digest。除 `requestId` / `traceId` 这类 correlation ID 外，不要记录任何原始或截断后的 state / login / confirm transaction 标识，也不要记录用户可控的未知 query key 名。记录 SSO 外呼时，应记录 provider endpoint 类型，例如 `sso_token` 或 `sso_profile`，而不是完整 provider URL。

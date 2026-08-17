@@ -4,7 +4,7 @@ import {
   verifyConnectionAssertion,
 } from './connection-assertion.js';
 import { constantTimeEqualHex, hashAccessKey, parseAccessKeyPlaintext } from './crypto.js';
-import { newId } from './id.js';
+import { nextId } from './id.js';
 
 const CONNECTION_ACTOR_SCOPES = ['deploy:site', 'read:site', 'rollback:site'];
 
@@ -308,11 +308,6 @@ function isUserIdentityConstraintError(error) {
     ].includes(error?.code || error?.message) ||
     /UNIQUE constraint failed:\s*(?:users\.|index\s+['"]?idx_users)/i.test(String(error?.message || ''))
   );
-}
-
-function nextId(env, prefix) {
-  if (typeof env?.nextId === 'function') return env.nextId(prefix);
-  return newId(prefix);
 }
 
 function readBearerToken(request) {

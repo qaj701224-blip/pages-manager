@@ -16,9 +16,13 @@ const appSource = readFileSync(new URL('./App.jsx', import.meta.url), 'utf8');
 const stylesSource = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
 
 test('admin failed deployments show owner context', () => {
-  assert.match(adminDashboardSource, /adminSiteOwnerView\(deployment\.owner\)/);
-  assert.match(adminDashboardSource, /<th>归属<\/th>/);
-  assert.match(adminDashboardSource, /data-label="归属"/);
+  assert.match(adminDashboardSource, /adminDeploymentOwnerView\(deployment\.owner\)/);
+  assert.match(adminDashboardSource, /adminDeploymentActorView\(deployment\.actor\)/);
+  assert.match(adminDashboardSource, /<th>客户端来源<\/th>/);
+  assert.match(adminDashboardSource, /<th>站点归属<\/th>/);
+  assert.match(adminDashboardSource, /<th>操作人<\/th>/);
+  assert.match(adminDashboardSource, /data-label="站点归属"/);
+  assert.match(adminDashboardSource, /data-label="操作人"/);
   assert.match(adminDashboardSource, /deployment\.siteSlug \|\| deployment\.siteId/);
   assert.doesNotMatch(adminDashboardSource, /<td data-label="站点">\{deployment\.siteId\}<\/td>/);
 });
@@ -34,7 +38,31 @@ test('admin site management displays and filters the active deployment shape', (
   assert.match(adminSitesSource, /<th>站点类型<\/th>/);
   assert.match(adminSitesSource, /aria-label="站点类型"/);
   assert.match(adminSitesSource, /siteDeploymentShapeLabel\(site\.deploymentShape\)/);
-  assert.match(adminSitesSource, /filterAdminSites\(state\.sites, \{ query, ownerType, status, deploymentShape \}\)/);
+  assert.match(adminSitesSource, /filterAdminSites\(state\.sites, \{ query, ownerType, status, deploymentShape, exposure \}\)/);
+});
+
+test('admin site management exposes network exposure controls without changing visibility options', () => {
+  assert.match(adminSitesSource, /aria-label="公网范围"/);
+  assert.match(adminSitesSource, /siteExposureLabel\(site\.exposure\)/);
+  assert.match(adminSitesSource, /filterAdminSites\(state\.sites, \{ query, ownerType, status, deploymentShape, exposure \}\)/);
+  assert.match(adminSitesSource, /listAdminSites\(\{ exposure: exposure === 'all' \? undefined : exposure \}\)/);
+  assert.match(adminSitesSource, /\[exposure\]/);
+  assert.match(siteDetailSource, /updateAdminSiteExposure/);
+  assert.match(siteDetailSource, /AdminExposurePanel/);
+  assert.match(siteDetailSource, /<h2>网络范围<\/h2>/);
+  assert.match(siteDetailSource, /<h2>访问权限<\/h2>/);
+  assert.match(siteDetailSource, /label="访问对象"/);
+  assert.match(siteDetailSource, /开启原因/);
+  assert.match(siteDetailSource, /最近一次开启原因/);
+  assert.match(siteDetailSource, /开启时间/);
+  assert.match(siteDetailSource, /移除 XD_OFFICE_NET/);
+  assert.match(siteDetailSource, /允许互联网访问/);
+  assert.match(siteDetailSource, /限制为公司网络/);
+  assert.match(siteDetailSource, /当前组合：/);
+  assert.match(siteDetailSource, /不会立即恢复 XD_OFFICE_NET/);
+  assert.doesNotMatch(siteDetailSource, /<h2>公网访问<\/h2>/);
+  assert.doesNotMatch(siteDetailSource, /label="Visibility"/);
+  assert.doesNotMatch(siteDetailSource, /VISIBILITY_OPTIONS = \[[^\]]*public/);
 });
 
 test('admin team management exposes a safe team detail action', () => {

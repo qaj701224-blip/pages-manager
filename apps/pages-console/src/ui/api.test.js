@@ -24,6 +24,7 @@ import {
   getAdminOps,
   listAdminV1Sites,
   getAdminSiteAccess,
+  getAdminSiteExposure,
   getAdminSiteConfig,
   listAdminTeamMembers,
   grantPlatformAdmin,
@@ -55,6 +56,7 @@ import {
   updateSiteAccess,
   updateSiteSettings,
   updateAdminSiteAccess,
+  updateAdminSiteExposure,
   updateAdminSiteSettings,
   updateAdminWebhook,
   updateAdminTeamMember,
@@ -182,6 +184,9 @@ test('admin governance API helpers use console admin endpoints', async () => {
   await listAdminUsers({ query: '目标用户', fetchImpl });
   await listAdminUsers({ query: '目标用户', limit: 10, offset: 20, admin: 'admin', status: 'active', fetchImpl });
   await listAdminSites({ fetchImpl });
+  await listAdminSites({ exposure: 'public', fetchImpl });
+  await getAdminSiteExposure('site_public', { fetchImpl });
+  await updateAdminSiteExposure('site_public', { exposure: 'public', reason: 'test' }, { fetchImpl, csrfToken: 'csrf-4' });
   await listAdminTeams({ fetchImpl, teamType: 'department', status: 'active' });
   await listAdminAuditEvents({ fetchImpl });
   await mergeAdminDepartmentTeam('team_source', { targetTeamId: 'team_target' }, { fetchImpl, csrfToken: 'csrf-1' });
@@ -200,6 +205,9 @@ test('admin governance API helpers use console admin endpoints', async () => {
       ['/api/console/admin/users?query=%E7%9B%AE%E6%A0%87%E7%94%A8%E6%88%B7', 'GET'],
       ['/api/console/admin/users?query=%E7%9B%AE%E6%A0%87%E7%94%A8%E6%88%B7&limit=10&offset=20&admin=admin&status=active', 'GET'],
       ['/api/console/admin/sites', 'GET'],
+      ['/api/console/admin/sites?exposure=public', 'GET'],
+      ['/api/console/admin/sites/site_public/exposure', 'GET'],
+      ['/api/console/admin/sites/site_public/exposure', 'PATCH'],
       ['/api/console/admin/teams?teamType=department&status=active', 'GET'],
       ['/api/console/admin/audit', 'GET'],
       ['/api/console/admin/teams/team_source/merge', 'POST'],
@@ -208,12 +216,14 @@ test('admin governance API helpers use console admin endpoints', async () => {
     ]
   );
   assert.equal(calls[5].init.headers['X-CSRF-Token'], 'csrf-cleanup');
-  assert.equal(calls[11].init.headers['X-CSRF-Token'], 'csrf-1');
-  assert.equal(calls[12].init.headers['X-CSRF-Token'], 'csrf-2');
-  assert.equal(calls[13].init.headers['X-CSRF-Token'], 'csrf-3');
+  assert.equal(calls[11].init.headers['X-CSRF-Token'], 'csrf-4');
+  assert.equal(calls[14].init.headers['X-CSRF-Token'], 'csrf-1');
+  assert.equal(calls[15].init.headers['X-CSRF-Token'], 'csrf-2');
+  assert.equal(calls[16].init.headers['X-CSRF-Token'], 'csrf-3');
   assert.deepEqual(JSON.parse(calls[5].init.body), { reason: 'manual' });
-  assert.deepEqual(JSON.parse(calls[12].init.body), { userId: 'usr_admin', reason: 'ops owner' });
-  assert.deepEqual(JSON.parse(calls[13].init.body), { reason: 'rotation' });
+  assert.deepEqual(JSON.parse(calls[11].init.body), { exposure: 'public', reason: 'test' });
+  assert.deepEqual(JSON.parse(calls[15].init.body), { userId: 'usr_admin', reason: 'ops owner' });
+  assert.deepEqual(JSON.parse(calls[16].init.body), { reason: 'rotation' });
 });
 
 test('resource governance write helpers use bounded admin endpoints and csrf', async () => {
@@ -250,7 +260,9 @@ test('admin site and team edit helpers stay under admin endpoints', async () => 
   };
 
   await getAdminSiteAccess('site_1', { fetchImpl });
+  await getAdminSiteExposure('site_1', { fetchImpl });
   await updateAdminSiteAccess('site_1', { visibility: 'acl', aclEntries: [] }, { fetchImpl, csrfToken: 'csrf-1' });
+  await updateAdminSiteExposure('site_1', { exposure: 'public', reason: 'ops' }, { fetchImpl, csrfToken: 'csrf-exposure' });
   await getAdminSiteConfig('site_1', { fetchImpl });
   await putAdminSiteRuntimeVar('site_1', 'API_BASE', 'https://api.example.test', { fetchImpl, csrfToken: 'csrf-2' });
   await deleteAdminSiteRuntimeVar('site_1', 'API_BASE', { fetchImpl, csrfToken: 'csrf-3' });
@@ -267,7 +279,9 @@ test('admin site and team edit helpers stay under admin endpoints', async () => 
     calls.map((call) => [call.url, call.init.method, call.init.headers['X-CSRF-Token'] || '']),
     [
       ['/api/console/admin/sites/site_1/access', 'GET', ''],
+      ['/api/console/admin/sites/site_1/exposure', 'GET', ''],
       ['/api/console/admin/sites/site_1/access', 'PATCH', 'csrf-1'],
+      ['/api/console/admin/sites/site_1/exposure', 'PATCH', 'csrf-exposure'],
       ['/api/console/admin/sites/site_1/config', 'GET', ''],
       ['/api/console/admin/sites/site_1/config/vars/API_BASE', 'PUT', 'csrf-2'],
       ['/api/console/admin/sites/site_1/config/vars/API_BASE', 'DELETE', 'csrf-3'],

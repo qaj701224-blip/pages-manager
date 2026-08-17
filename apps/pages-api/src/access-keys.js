@@ -2,7 +2,7 @@ import { authenticateApiRequest } from './auth.js';
 import { isConsoleBffRequest, requireConsoleUserSession } from './console-auth.js';
 import { createAccessKeyPlaintext, hashAccessKey } from './crypto.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
-import { newId } from './id.js';
+import { nextId } from './id.js';
 
 const ALLOWED_SCOPES = new Set(['deploy:site', 'read:site', 'rollback:site']);
 const DEFAULT_EXPIRY_MONTHS = 3;
@@ -391,11 +391,6 @@ function addUtcYears(date, years) {
 function matchAccessKeyId(pathname) {
   const match = pathname.match(/^\/\.xd-pages\/api\/access-keys\/([^/]+)$/);
   return match ? match[1] : null;
-}
-
-function nextId(env, prefix) {
-  if (typeof env?.nextId === 'function') return env.nextId(prefix);
-  return newId(prefix);
 }
 
 function randomBytes(env, length) {

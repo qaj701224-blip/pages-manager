@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -55,6 +55,7 @@ const dropS2sGuardsMigration = readFileSync(
   join(repoRoot, 'apps/pages-api/migrations/0017_drop_s2s_guards.sql'),
   'utf8'
 );
+const accessPolicyMigrationPath = join(repoRoot, 'apps/pages-api/migrations/0019_site_access_policy.sql');
 
 test('pages v2 D1 migration covers authority schema tables and indexes', () => {
   const schema = createSchemaSql().join('\n');
@@ -224,6 +225,21 @@ test('Cindy connection migrations add the membership identity and drop the S2S g
   assert.match(dropS2sGuardsMigration, /DROP TABLE IF EXISTS s2s_rate_limits;/);
   assert.match(dropS2sGuardsMigration, /DROP INDEX IF EXISTS idx_access_keys_s2s_owner_created;/);
   assert.doesNotMatch(schema, /s2s_nonces|s2s_rate_limits/);
+});
+
+test('site access policy migration adds exposure, access mode, and the site policy lease', () => {
+  assert.equal(existsSync(accessPolicyMigrationPath), true);
+  const accessPolicyMigration = readFileSync(accessPolicyMigrationPath, 'utf8');
+
+  assert.match(accessPolicyMigration, /ALTER TABLE sites ADD COLUMN default_exposure TEXT NOT NULL DEFAULT 'internal'/);
+  assert.match(accessPolicyMigration, /ALTER TABLE sites ADD COLUMN default_access_mode TEXT/);
+  assert.match(accessPolicyMigration, /ALTER TABLE site_routes ADD COLUMN exposure TEXT NOT NULL DEFAULT 'internal'/);
+  assert.match(accessPolicyMigration, /ALTER TABLE site_routes ADD COLUMN access_mode TEXT/);
+  assert.match(accessPolicyMigration, /WHEN 'internal' THEN 'anonymous'/);
+  assert.match(accessPolicyMigration, /ELSE NULL/);
+  assert.match(accessPolicyMigration, /CREATE TABLE IF NOT EXISTS site_policy_locks/);
+  assert.match(accessPolicyMigration, /PRIMARY KEY \(environment, site_id\)/);
+  assert.doesNotMatch(accessPolicyMigration, /DROP TABLE|DROP COLUMN|DELETE FROM/i);
 });
 
 function tableDefinition(sql, tableName) {

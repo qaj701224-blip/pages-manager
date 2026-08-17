@@ -949,6 +949,138 @@ test('updateUserWorkerBindings rejects a successful settings response without bi
   assert.deepEqual(methods, ['GET']);
 });
 
+test('removeOfficeNetBinding removes only the platform OfficeNet binding', async () => {
+  const calls = [];
+  const client = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'token',
+    dispatchNamespace: 'xd-cell-workers-staging',
+    apiBaseUrl: 'https://api.cloudflare.com/client/v4',
+    fetch: async (request) => {
+      calls.push(request.clone());
+      if (request.method === 'GET') {
+        return Response.json({
+          success: true,
+          result: {
+            bindings: [
+              { type: 'assets', name: 'ASSETS' },
+              { type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'pages-kv-gateway-staging' },
+              { type: 'vpc_network', name: 'XD_OFFICE_NET', tunnel_id: 'office-tunnel' },
+              { type: 'vpc_network', name: 'OTHER_VPC', tunnel_id: 'other-tunnel' },
+              { type: 'plain_text', name: 'API_BASE', text: 'https://api.example.com' },
+              { type: 'secret_text', name: 'API_TOKEN', text: 'redacted' },
+            ],
+          },
+        });
+      }
+      return Response.json({ success: true, result: { id: 'pages-v2-staging-docs-ver-1' } });
+    },
+  });
+
+  const result = await client.removeOfficeNetBinding('pages-v2-staging-docs-ver-1');
+
+  assert.equal(result.removed, true);
+  assert.equal(calls[0].method, 'GET');
+  assert.equal(calls[1].method, 'PATCH');
+  const form = await calls[1].formData();
+  assert.deepEqual(JSON.parse(await form.get('settings').text()), {
+    bindings: [
+      { type: 'assets', name: 'ASSETS' },
+      { type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'pages-kv-gateway-staging' },
+      { type: 'vpc_network', name: 'OTHER_VPC', tunnel_id: 'other-tunnel' },
+      { type: 'plain_text', name: 'API_BASE', text: 'https://api.example.com' },
+      { type: 'secret_text', name: 'API_TOKEN', text: 'redacted' },
+    ],
+  });
+});
+
+test('removeOfficeNetBinding is a no-op when the platform binding is absent', async () => {
+  const methods = [];
+  const client = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'token',
+    dispatchNamespace: 'xd-cell-workers-staging',
+    apiBaseUrl: 'https://api.cloudflare.com/client/v4',
+    fetch: async (request) => {
+      methods.push(request.method);
+      return Response.json({ success: true, result: { bindings: [{ type: 'service', name: 'OTHER', service: 'other' }] } });
+    },
+  });
+
+  const result = await client.removeOfficeNetBinding('pages-v2-staging-docs-ver-1');
+
+  assert.equal(result.removed, false);
+  assert.deepEqual(methods, ['GET']);
+});
+
+test('removeOfficeNetBinding rejects settings without bindings and propagates patch failures', async () => {
+  const invalidClient = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'token',
+    dispatchNamespace: 'xd-cell-workers-staging',
+    fetch: async () => Response.json({ success: true, result: {} }),
+  });
+  await assert.rejects(
+    invalidClient.removeOfficeNetBinding('pages-v2-staging-docs-ver-1'),
+    (error) => error instanceof WfpApiError && error.code === 'WFP_API_SETTINGS_INVALID'
+  );
+
+  const failingClient = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'token',
+    dispatchNamespace: 'xd-cell-workers-staging',
+    fetch: async (request) => {
+      if (request.method === 'GET') {
+        return Response.json({
+          success: true,
+          result: { bindings: [{ type: 'vpc_network', name: 'XD_OFFICE_NET', tunnel_id: 'office-tunnel' }] },
+        });
+      }
+      return Response.json({ success: false, errors: [{ code: 1000, message: 'patch failed' }] }, { status: 500 });
+    },
+  });
+  await assert.rejects(
+    failingClient.removeOfficeNetBinding('pages-v2-staging-docs-ver-1'),
+    (error) => error instanceof WfpApiError
+  );
+});
+
+test('removeOfficeNetBinding fails closed for malformed settings bindings', async () => {
+  const client = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'token',
+    dispatchNamespace: 'xd-cell-workers-staging',
+    fetch: async () => Response.json({ success: true, result: { bindings: [null] } }),
+  });
+
+  await assert.rejects(
+    client.removeOfficeNetBinding('pages-v2-staging-docs-ver-1'),
+    (error) => error instanceof WfpApiError && error.code === 'WFP_API_SETTINGS_INVALID'
+  );
+});
+
+test('verifyOfficeNetAbsent reports the current binding state', async () => {
+  let includeOfficeNet = true;
+  const client = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'token',
+    dispatchNamespace: 'xd-cell-workers-staging',
+    fetch: async () =>
+      Response.json({
+        success: true,
+        result: {
+          bindings: includeOfficeNet
+            ? [{ type: 'vpc_network', name: 'XD_OFFICE_NET', tunnel_id: 'office-tunnel' }]
+            : [{ type: 'service', name: 'OTHER', service: 'other' }],
+        },
+      }),
+  });
+
+  assert.equal(await client.verifyOfficeNetAbsent('pages-v2-staging-docs-ver-1'), false);
+  includeOfficeNet = false;
+  assert.equal(await client.verifyOfficeNetAbsent('pages-v2-staging-docs-ver-1'), true);
+});
+
 test('updateUserWorkerBindings stops before PATCH when its signal aborts after GET', async () => {
   const controller = new globalThis.AbortController();
   const methods = [];

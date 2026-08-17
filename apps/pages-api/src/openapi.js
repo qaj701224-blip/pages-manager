@@ -168,14 +168,74 @@ export function buildOpenApi(config) {
           type: 'string',
           enum: ['internal', 'org', 'acl', 'owner', 'disabled'],
           description:
-            'First release is protected by the router IP allowlist for every visibility. ' +
-            'public is reserved for a future exposure model.',
+            'Legacy visibility is the identity access mode: internal means anonymous access, while org, acl, owner, ' +
+            'and disabled keep their existing semantics. Network reachability is controlled separately by the Admin-only ' +
+            'exposure policy; exposure is not a user visibility value.',
         },
         SiteUpdateRequest: {
           type: 'object',
           required: ['visibility'],
           properties: {
             visibility: { $ref: '#/components/schemas/SiteVisibility' },
+          },
+        },
+        AdminSiteExposureRequest: {
+          type: 'object',
+          required: ['exposure'],
+          additionalProperties: false,
+          properties: {
+            exposure: {
+              type: 'string',
+              enum: ['internal', 'public'],
+              description: 'Platform-admin network exposure. This field is not accepted by ordinary site policy APIs.',
+            },
+            reason: {
+              type: 'string',
+              maxLength: 500,
+              description: 'Required when enabling public exposure; optional when disabling it.',
+            },
+          },
+        },
+        AdminSiteExposureReason: {
+          type: 'object',
+          required: ['text', 'changedAt'],
+          properties: {
+            text: { type: 'string', maxLength: 500 },
+            changedAt: { type: 'string', format: 'date-time' },
+          },
+        },
+        AdminSiteAccess: {
+          type: 'object',
+          required: ['exposure', 'accessMode', 'visibility', 'aclEntries', 'exposureReason'],
+          properties: {
+            exposure: { type: 'string', enum: ['internal', 'public'] },
+            accessMode: { type: 'string', enum: ['anonymous', 'org', 'acl', 'owner', 'disabled'] },
+            visibility: { $ref: '#/components/schemas/SiteVisibility' },
+            aclEntries: {
+              type: 'array',
+              items: { $ref: '#/components/schemas/SiteAclEntry' },
+            },
+            exposureReason: {
+              oneOf: [
+                { $ref: '#/components/schemas/AdminSiteExposureReason' },
+                { type: 'null' },
+              ],
+            },
+          },
+        },
+        AdminSiteAccessResponse: {
+          type: 'object',
+          required: ['access'],
+          properties: {
+            access: { $ref: '#/components/schemas/AdminSiteAccess' },
+          },
+        },
+        AdminSiteExposureUpdateResponse: {
+          type: 'object',
+          required: ['access', 'auditStatus'],
+          properties: {
+            access: { $ref: '#/components/schemas/AdminSiteAccess' },
+            auditStatus: { type: 'string', enum: ['confirmed', 'unconfirmed'] },
           },
         },
         SiteTransferRequest: {
@@ -371,7 +431,13 @@ export function buildOpenApi(config) {
               },
             },
           },
-          'x-error-codes': ['SITE_VISIBILITY_INVALID', 'SITE_POLICY_FORBIDDEN', 'ROUTE_SNAPSHOT_WRITE_FAILED'],
+          'x-error-codes': [
+            'SITE_VISIBILITY_INVALID',
+            'SITE_EXPOSURE_ADMIN_REQUIRED',
+            'SITE_POLICY_FORBIDDEN',
+            'SITE_POLICY_CONFLICT',
+            'ROUTE_POLICY_REPAIR_REQUIRED',
+          ],
           responses: {
             200: { description: 'Site policy updated' },
             400: { description: 'Invalid visibility' },
@@ -387,6 +453,74 @@ export function buildOpenApi(config) {
           responses: {
             200: { description: 'Site deleted' },
             403: { description: 'Actor cannot manage this site' },
+            404: { description: 'Site not found' },
+          },
+        },
+      },
+      '/.xd-pages/api/console/admin/sites/{id}/exposure': {
+        patch: {
+          summary: 'Update a site network exposure as a platform admin',
+          description:
+            'Admin-only Console BFF operation. exposure is independent from legacy visibility: public changes network reachability, ' +
+            'while visibility continues to select anonymous, org, ACL, owner, or disabled access.',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/AdminSiteExposureRequest' },
+              },
+            },
+          },
+          'x-error-codes': [
+            'INVALID_JSON',
+            'SITE_NOT_FOUND',
+            'PLATFORM_ADMIN_REQUIRED',
+            'SITE_EXPOSURE_INVALID',
+            'SITE_EXPOSURE_REASON_REQUIRED',
+            'SITE_EXPOSURE_REASON_INVALID',
+            'SITE_EXPOSURE_AUDIT_REQUIRED',
+            'SITE_PUBLIC_ROUTE_INACTIVE',
+            'SITE_POLICY_CONFLICT',
+            'SITE_PUBLIC_OFFICE_NET_REMOVE_FAILED',
+            'SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED',
+            'ROUTE_POLICY_REPAIR_REQUIRED',
+            'SITE_EXPOSURE_UPDATE_FAILED',
+          ],
+          responses: {
+            200: {
+              description:
+                'Site exposure updated and effective in the route snapshot. auditStatus is confirmed or unconfirmed.',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/AdminSiteExposureUpdateResponse' },
+                },
+              },
+            },
+            400: { description: 'Invalid exposure or missing reason' },
+            403: { description: 'Platform admin required' },
+            404: { description: 'Site not found' },
+            409: { description: 'Site policy changed while the operation was being applied' },
+            503: { description: 'Worker binding, route snapshot, or policy update failed' },
+          },
+        },
+      },
+      '/.xd-pages/api/console/admin/sites/{id}/access': {
+        get: {
+          summary: 'Read a site access policy as a platform admin',
+          description:
+            'Admin-only Console BFF operation. exposureReason is present only for the currently effective public exposure policy.',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: {
+            200: {
+              description: 'Site access policy',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/AdminSiteAccessResponse' },
+                },
+              },
+            },
+            403: { description: 'Platform admin required' },
             404: { description: 'Site not found' },
           },
         },
@@ -798,6 +932,11 @@ export function buildOpenApi(config) {
             'DEPLOYMENT_VERIFY_FAILED',
             'DEPLOYMENT_STATE_WRITE_FAILED',
             'DEPLOYMENT_CAPACITY_EXHAUSTED',
+            'SITE_POLICY_LOCKED',
+            'SITE_POLICY_CONFLICT',
+            'ROUTE_ACTIVATION_CONFLICT',
+            'SITE_PUBLIC_OFFICE_NET_REMOVE_FAILED',
+            'SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED',
             'RUNTIME_VARS_INVALID',
             'RUNTIME_BINDING_NAME_CONFLICT',
             'RUNTIME_BINDINGS_LIMIT_EXCEEDED',
@@ -853,6 +992,11 @@ export function buildOpenApi(config) {
             'ROLLBACK_FORBIDDEN',
             'ROLLBACK_SITE_MISMATCH',
             'ROLLBACK_VERSION_UNAVAILABLE',
+            'SITE_POLICY_LOCKED',
+            'SITE_POLICY_CONFLICT',
+            'ROLLBACK_ACTIVATION_FAILED',
+            'SITE_PUBLIC_OFFICE_NET_REMOVE_FAILED',
+            'SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED',
             'ROUTE_ACTIVATION_CONFLICT',
             'ROUTE_SNAPSHOT_WRITE_FAILED',
             'IDEMPOTENCY_CONFLICT',

@@ -6,17 +6,17 @@ import {
 } from './console-auth.js';
 import { departmentTeamDisplayName } from './department-path.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
-import { newHexId, newId } from './id.js';
+import { newHexId, nextId } from './id.js';
 import { MAX_SITE_SECRET_VALUE_BYTES, normalizeRuntimeSecretName, normalizeRuntimeVars } from './runtime-config.js';
 import { logRuntimeConfigFailure, readRuntimeConfigErrorDiagnostic } from './runtime-config-diagnostics.js';
 import {
   hostnameForSlug,
   normalizeSlug,
   normalizeAclEntries,
+  mutateUserSiteAccessPolicy,
+  rejectUserExposureMutation,
   refreshActiveRouteSnapshot,
   refreshCurrentRouteSnapshot,
-  restoreSiteAclAfterSnapshotFailure,
-  restoreSiteVisibilityAfterSnapshotFailure,
   buildSiteOwnerTransferAuditEvent,
   enqueueDeletedSiteWfpCleanup,
   siteCreateErrorResponse,
@@ -161,6 +161,9 @@ async function createConsoleSite(request, env, config, store, session) {
   } catch {
     return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
   }
+
+  const exposureError = rejectUserExposureMutation(body);
+  if (exposureError) return exposureError;
 
   const slug = normalizeSlug(body.slug);
   const visibility = body.visibility || 'org';
@@ -427,7 +430,6 @@ async function validateConsoleAuthSession(request, env, config, store) {
 export async function updateSiteAccess(request, env, config, store, session, siteId, options = {}) {
   const site = options.site || (await requireConsoleSiteRole(store, config, session, siteId, 'publisher'));
   if (site instanceof Response) return site;
-  const previousRoute = site.route || (await store.getRouteBySiteId(site.id, config.environment));
   const previousAclEntries = await store.listSiteAclEntries(site.id);
 
   let body;
@@ -436,6 +438,9 @@ export async function updateSiteAccess(request, env, config, store, session, sit
   } catch {
     return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
   }
+
+  const exposureError = rejectUserExposureMutation(body);
+  if (exposureError) return exposureError;
 
   const visibility = typeof body.visibility === 'string' ? body.visibility : site.route?.visibility || site.defaultVisibility;
   if (!VISIBILITIES.has(visibility)) {
@@ -450,37 +455,21 @@ export async function updateSiteAccess(request, env, config, store, session, sit
   const aclEntries = 'aclEntries' in body ? normalizeAclEntries(body.aclEntries, env) : previousAclEntries;
   if (aclEntries instanceof Response) return aclEntries;
 
-  const route = await store.updateSiteVisibility(
-    site.id,
-    {
-      visibility,
-      updatedAt: readNow(env),
-    },
-    config.environment
-  );
-  const nextAclEntries = Array.isArray(body.aclEntries)
-    ? await store.replaceSiteAclEntries(
-        site.id,
-        aclEntries,
-        {
-          createdBy: session.userId,
-          updatedAt: readNow(env),
-        },
-        config.environment
-      )
-    : previousAclEntries;
-
-  const snapshotError = await refreshActiveRouteSnapshot(env, store, site, route, config.environment);
-  if (snapshotError) {
-    await restoreSiteVisibilityAfterSnapshotFailure(store, site.id, site, previousRoute, route, config.environment);
-    await restoreSiteAclAfterSnapshotFailure(store, site.id, previousAclEntries, previousRoute, site, route, config.environment);
-    return snapshotError;
-  }
+  const mutation = await mutateUserSiteAccessPolicy({
+    env,
+    config,
+    store,
+    siteId: site.id,
+    actorUserId: session.userId,
+    visibility,
+    ...(Array.isArray(body.aclEntries) ? { resolveAclEntries: () => aclEntries } : {}),
+  });
+  if (mutation instanceof Response) return mutation;
 
   return jsonOk({
     access: {
-      visibility: route.visibility,
-      aclEntries: nextAclEntries.map(formatAclEntry),
+      visibility: mutation.route.visibility,
+      aclEntries: mutation.aclEntries.map(formatAclEntry),
     },
   });
 }
@@ -996,11 +985,6 @@ function teamOwnerVisibilityUnsupported() {
     400,
     '团队站点请使用 internal、org、acl 或 disabled。'
   );
-}
-
-function nextId(env, prefix) {
-  if (typeof env?.nextId === 'function') return env.nextId(prefix);
-  return newId(prefix);
 }
 
 function nextSiteUuid(env) {

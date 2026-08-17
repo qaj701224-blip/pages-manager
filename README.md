@@ -80,8 +80,8 @@ CLI 会自动识别发布目录：
 ## 安全边界
 
 - 发布必须通过 CLI token 或 API token 强认证。
-- 管理 API 需要认证，所有 `pages-api` 对外管理 API 路由都可从公网访问且只接受 HTTPS；子站访问由 router 执行 IP allowlist、visibility、SSO 和 ACL，Console 暂时继续限制公司网络来源。
-- `internal` 表示公司网络内匿名可访问，不代表互联网公开。
+- 管理 API 需要认证，所有 `pages-api` 对外管理 API 路由都可从公网访问且只接受 HTTPS；子站访问由 router 执行 exposure、IP allowlist、access mode、SSO 和 ACL，Console 暂时继续限制公司网络来源。
+- `visibility=internal` 表示匿名访问模式；默认 `exposure=internal` 才表示公司网络范围。公网 exposure 只能由 Platform Admin 在 Console 中开启，普通 CLI/API 调用保持不变。
 - `acl` 支持邮箱和完整部门路径授权，部门路径默认包含子部门。
 - API token、CLI token、cookie、SSO code、Cloudflare token、secret value 和平台能力不得写入项目文件、日志、README、截图或聊天消息。
 - 站点发布权限是高信任权限：能发布 Worker 代码，也能设置并使用该站点 secrets；只读成员不能创建 deploy-capable access key。

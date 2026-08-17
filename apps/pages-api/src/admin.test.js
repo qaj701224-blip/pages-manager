@@ -75,12 +75,20 @@ test('admin dashboard requires platform admin and returns governance counts', as
           siteId: 'site_console',
           siteSlug: 'console',
           owner: {
+            state: 'persisted',
             type: 'team',
             id: 'team_console',
             email: null,
             displayName: 'Console Team',
             departmentPath: null,
             teamType: 'custom',
+          },
+          actor: {
+            type: 'user',
+            id: 'usr_owner',
+            userId: 'usr_owner',
+            email: 'owner@example.com',
+            displayName: null,
           },
           status: 'failed',
           source: 'cli',
@@ -89,6 +97,56 @@ test('admin dashboard requires platform admin and returns governance counts', as
         },
       ],
     },
+  });
+});
+
+test('admin dashboard distinguishes an uncreated site from its deployment actor', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await seedConsoleUser(store, 'usr_cindy', {
+    email: 'actor@example.com',
+    realname: 'Actor',
+    createdSource: 'cindy',
+  });
+  await store.createDeploymentForIdempotency({
+    id: 'dep_site_create_failed',
+    environment: 'production',
+    siteId: 'site_pending',
+    actorId: 'usr_cindy',
+    actorUserId: 'usr_cindy',
+    actorType: 'access_key',
+    source: 'cli',
+    operation: 'deploy',
+    status: 'failed',
+    idempotencyKey: 'site-create-failed-1',
+    requestHash: 'hash-site-create-failed-1',
+    errorCode: 'SITE_CREATE_FAILED',
+    errorMessage: 'Site creation failed.',
+    failureStage: 'deployment_operation',
+  });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/dashboard', { userId: 'usr_root', admin: true }),
+    env(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const deployment = (await response.json()).dashboard.failedDeployments[0];
+  assert.deepEqual(deployment.owner, {
+    state: 'not_created',
+    type: null,
+    id: null,
+    email: null,
+    displayName: null,
+    departmentPath: null,
+    teamType: null,
+  });
+  assert.deepEqual(deployment.actor, {
+    type: 'access_key',
+    id: 'usr_cindy',
+    userId: 'usr_cindy',
+    email: 'actor@example.com',
+    displayName: 'Actor',
   });
 });
 
@@ -1266,12 +1324,20 @@ test('admin site deployment list exposes redacted failure diagnostics for review
         siteId: 'site_console',
         siteSlug: 'console',
         owner: {
+          state: 'persisted',
           type: 'team',
           id: 'team_console',
           email: null,
           displayName: 'Console Team',
           departmentPath: null,
           teamType: 'custom',
+        },
+        actor: {
+          type: 'user',
+          id: 'usr_root',
+          userId: 'usr_root',
+          email: 'root@example.com',
+          displayName: null,
         },
         status: 'failed',
         source: 'cli',
@@ -3143,6 +3209,620 @@ test('admin sites expose the active deployment shape without crossing site versi
   assert.equal((await detail.json()).site.deploymentShape, 'worker-only');
 });
 
+test('admin site projections expose network exposure separately from legacy visibility', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await seedTeamSite(store, { id: 'site_public', slug: 'public', teamId: 'team_console', visibility: 'internal' });
+  await activateSite(store, 'site_public', { workerName: 'pages-v2-public', visibility: 'internal' });
+  await store.acquireSiteCommitLock('production', 'site_public', { lockId: 'test_public_projection' });
+  const lease = await store.getSiteCommitLock('production', 'site_public');
+  await store.updateSiteAccessPolicy({
+    environment: 'production',
+    siteId: 'site_public',
+    exposure: 'public',
+    expected: {
+      policyVersion: 1,
+      routeGeneration: 1,
+      activeVersionId: 'ver_site_public',
+      runtimeConfigGeneration: 0,
+    },
+    lease,
+    updatedAt: '2026-07-02T00:00:00.000Z',
+  });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites', { userId: 'usr_root', admin: true }),
+    env(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const listed = (await response.json()).sites.find((site) => site.id === 'site_public');
+  assert.equal(listed.exposure, 'public');
+  assert.equal(listed.visibility, 'internal');
+});
+
+test('admin sites filter returns only public exposure sites', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await seedTeamSite(store, { id: 'site_filter_public', slug: 'filter-public', teamId: 'team_console' });
+  const publicRoute = await activateSite(store, 'site_filter_public');
+  store.routes.get(publicRoute.id).exposure = 'public';
+  store.sites.get('site_filter_public').defaultExposure = 'public';
+  await seedTeamSite(store, { id: 'site_filter_internal', slug: 'filter-internal', teamId: 'team_console' });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites?exposure=public', {
+      userId: 'usr_root',
+      admin: true,
+    }),
+    env(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.deepEqual(body.sites.map((site) => site.id), ['site_filter_public']);
+  assert.ok(body.sites.every((site) => site.exposure === 'public'));
+});
+
+test('admin sites filter returns internal and legacy sites without exposure data', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await seedTeamSite(store, { id: 'site_filter_public', slug: 'filter-public', teamId: 'team_console' });
+  const publicRoute = await activateSite(store, 'site_filter_public');
+  store.routes.get(publicRoute.id).exposure = 'public';
+  store.sites.get('site_filter_public').defaultExposure = 'public';
+  await seedTeamSite(store, { id: 'site_filter_internal', slug: 'filter-internal', teamId: 'team_console' });
+  await seedTeamSite(store, { id: 'site_filter_legacy', slug: 'filter-legacy', teamId: 'team_console' });
+  delete store.routes.get('route_site_filter_legacy').exposure;
+  delete store.sites.get('site_filter_legacy').defaultExposure;
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites?exposure=internal', {
+      userId: 'usr_root',
+      admin: true,
+    }),
+    env(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.deepEqual(
+    body.sites.map((site) => site.id).sort(),
+    ['site_filter_internal', 'site_filter_legacy']
+  );
+  assert.ok(body.sites.every((site) => site.exposure === 'internal'));
+});
+
+test('admin sites filter rejects an invalid exposure', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites?exposure=external', {
+      userId: 'usr_root',
+      admin: true,
+    }),
+    env(store)
+  );
+
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error.code, 'SITE_EXPOSURE_INVALID');
+});
+
+test('platform admin can enable public exposure while preserving visibility and removing OfficeNet', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await seedTeamSite(store, { id: 'site_public', slug: 'public', teamId: 'team_console', visibility: 'internal' });
+  await activateSite(store, 'site_public', { workerName: 'pages-v2-public', visibility: 'internal' });
+  const snapshotStore = createSnapshotStore();
+  const actions = [];
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_public/exposure', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'PATCH',
+      body: { exposure: 'public', reason: 'staging 公网验收' },
+    }),
+    env(store, {
+      ROUTE_SNAPSHOTS: snapshotStore,
+      WFP_PROVIDER: {
+        removeOfficeNetBinding: async ({ workerName }) => actions.push(['remove', workerName]),
+        verifyOfficeNetAbsent: async ({ workerName }) => {
+          actions.push(['verify', workerName]);
+          return true;
+        },
+      },
+    })
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.auditStatus, 'confirmed');
+  assert.equal(body.access.exposure, 'public');
+  assert.equal(body.access.visibility, 'internal');
+  assert.deepEqual(body.access.exposureReason, {
+    text: 'staging 公网验收',
+    changedAt: '2026-07-02T00:00:00.000Z',
+  });
+  assert.deepEqual(actions, [
+    ['remove', 'pages-v2-public'],
+    ['verify', 'pages-v2-public'],
+  ]);
+  const route = await store.getRouteBySiteId('site_public', 'production');
+  assert.equal(route.exposure, 'public');
+  assert.equal(route.visibility, 'internal');
+  const pointer = snapshotStore.read('production:route_pointer:public.workers.xd.team');
+  assert.ok(pointer, 'route pointer should be written');
+  const snapshot = snapshotStore.read(pointer.snapshotKey);
+  assert.ok(snapshot, 'route snapshot should be written');
+  assert.equal(snapshot.exposure, 'public');
+  const audits = await store.listAuditEvents({ environment: 'production', siteId: 'site_public' });
+  assert.ok(audits.some((event) => event.eventType === 'admin.site.exposure' && event.metadata?.reason === 'staging 公网验收'));
+  const operationId = audits.find((event) => event.metadata?.stage === 'attempted')?.metadata?.operationId;
+  assert.equal(audits.find((event) => event.metadata?.stage === 'attempted')?.traceId, operationId);
+  const operationAudits = audits.filter((event) => event.metadata?.operationId === operationId);
+  assert.ok(operationAudits.some((event) => event.metadata?.stage === 'office_net_removed_verified'));
+  const policyCommitted = operationAudits.find((event) => event.metadata?.stage === 'policy_committed');
+  assert.equal(policyCommitted?.metadata?.activationState, 'pending_activation');
+  assert.equal(
+    operationAudits.find((event) => event.metadata?.stage === 'office_net_removed_verified')?.metadata?.officeNetBindingVerified,
+    true
+  );
+  const effectiveSuccess = operationAudits.find((event) => event.metadata?.stage === 'effective_success');
+  assert.ok(effectiveSuccess);
+  assert.equal(effectiveSuccess.metadata.pointerConfirmed, false);
+  assert.equal(effectiveSuccess.metadata.pointerWriteCommitted, true);
+});
+
+test('platform admin exposure update succeeds when a missing KV pointer is negatively cached', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await seedTeamSite(store, { id: 'site_public', slug: 'public', teamId: 'team_console', visibility: 'internal' });
+  await activateSite(store, 'site_public', { workerName: 'pages-v2-public', visibility: 'internal' });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_public/exposure', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'PATCH',
+      body: { exposure: 'public', reason: 'negative pointer cache test' },
+    }),
+    env(store, {
+      ROUTE_SNAPSHOTS: negativePointerSnapshotStore(),
+      WFP_PROVIDER: {
+        removeOfficeNetBinding: async () => {},
+        verifyOfficeNetAbsent: async () => true,
+      },
+    })
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.equal((await store.getRouteBySiteId('site_public', 'production')).exposure, 'public');
+});
+
+test('platform admin can disable public exposure without changing visibility or restoring OfficeNet', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await seedTeamSite(store, { id: 'site_public', slug: 'public', teamId: 'team_console', visibility: 'acl' });
+  const route = await activateSite(store, 'site_public', { workerName: 'pages-v2-public', visibility: 'acl' });
+  store.routes.get(route.id).exposure = 'public';
+  store.sites.get('site_public').defaultExposure = 'public';
+  const snapshotStore = createSnapshotStore();
+  const actions = [];
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_public/exposure', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'PATCH',
+      body: { exposure: 'internal' },
+    }),
+    env(store, {
+      ROUTE_SNAPSHOTS: snapshotStore,
+      WFP_PROVIDER: {
+        removeOfficeNetBinding: async () => actions.push('remove'),
+        verifyOfficeNetAbsent: async () => {
+          actions.push('verify');
+          return true;
+        },
+      },
+    })
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.access.exposure, 'internal');
+  assert.equal(body.access.visibility, 'acl');
+  assert.equal(body.access.exposureReason, null);
+  assert.deepEqual(actions, []);
+  const updatedRoute = await store.getRouteBySiteId('site_public', 'production');
+  assert.equal(updatedRoute.exposure, 'internal');
+  assert.equal(updatedRoute.visibility, 'acl');
+  const pointer = snapshotStore.read('production:route_pointer:public.workers.xd.team');
+  assert.equal(snapshotStore.read(pointer.snapshotKey).exposure, 'internal');
+});
+
+test('admin site access returns the latest successful public exposure reason', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await seedTeamSite(store, { id: 'site_public', slug: 'public', teamId: 'team_console', visibility: 'acl' });
+  const route = await activateSite(store, 'site_public', { workerName: 'pages-v2-public', visibility: 'acl' });
+  store.routes.get(route.id).exposure = 'public';
+  store.sites.get('site_public').defaultExposure = 'public';
+  await store.recordAuditEvent({
+    id: 'op_public:effective_success',
+    environment: 'production',
+    eventType: 'admin.site.exposure',
+    actorUserId: 'usr_root',
+    actorType: 'platform_admin',
+    siteId: 'site_public',
+    routeId: route.id,
+    decision: 'allow',
+    statusCode: 200,
+    metadata: {
+      operationId: 'op_public',
+      requestedExposure: 'public',
+      effectiveExposure: 'public',
+      stage: 'effective_success',
+      reason: '最近一次成功开启理由',
+    },
+    createdAt: '2026-08-10T01:00:00.000Z',
+  });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_public/access', {
+      userId: 'usr_root',
+      admin: true,
+    }),
+    env(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const access = (await response.json()).access;
+  assert.equal(access.exposure, 'public');
+  assert.equal(access.accessMode, 'acl');
+  assert.equal(access.visibility, 'acl');
+  assert.deepEqual(access.exposureReason, {
+    text: '最近一次成功开启理由',
+    changedAt: '2026-08-10T01:00:00.000Z',
+  });
+});
+
+test('admin site access hides policy-committed reason while the exposure transaction is locked', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await seedTeamSite(store, { id: 'site_public', slug: 'public', teamId: 'team_console', visibility: 'acl' });
+  const route = await activateSite(store, 'site_public', { workerName: 'pages-v2-public', visibility: 'acl' });
+  store.routes.get(route.id).exposure = 'public';
+  store.sites.get('site_public').defaultExposure = 'public';
+  await store.recordAuditEvent({
+    id: 'op_pending:policy_committed',
+    environment: 'production',
+    eventType: 'admin.site.exposure',
+    actorUserId: 'usr_root',
+    actorType: 'platform_admin',
+    siteId: 'site_public',
+    routeId: route.id,
+    decision: 'allow',
+    statusCode: 200,
+    metadata: {
+      operationId: 'op_pending',
+      requestedExposure: 'public',
+      authorityExposure: 'public',
+      stage: 'policy_committed',
+      reason: '快照仍在写入',
+    },
+    createdAt: '2026-07-02T00:00:00.000Z',
+  });
+  assert.ok(await store.acquireSiteCommitLock('production', 'site_public', { lockId: 'pendinglock' }));
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_public/access', {
+      userId: 'usr_root',
+      admin: true,
+    }),
+    env(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const access = (await response.json()).access;
+  assert.equal(access.exposure, 'public');
+  assert.equal(access.exposureReason, null);
+});
+
+test('admin site access hides the reason for internal exposure without querying audit history', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await seedTeamSite(store, { id: 'site_internal', slug: 'internal', teamId: 'team_console', visibility: 'org' });
+  let reasonReadCount = 0;
+  store.getLatestAdminSitePublicExposureReason = async () => {
+    reasonReadCount += 1;
+    throw new Error('must not read audit history for internal exposure');
+  };
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_internal/access', {
+      userId: 'usr_root',
+      admin: true,
+    }),
+    env(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.equal((await response.json()).access.exposureReason, null);
+  assert.equal(reasonReadCount, 0);
+});
+
+test('admin site access degrades safely when public exposure reason history cannot be read', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await seedTeamSite(store, { id: 'site_public', slug: 'public', teamId: 'team_console', visibility: 'acl' });
+  const route = await activateSite(store, 'site_public', { workerName: 'pages-v2-public', visibility: 'acl' });
+  store.routes.get(route.id).exposure = 'public';
+  store.sites.get('site_public').defaultExposure = 'public';
+  store.getLatestAdminSitePublicExposureReason = async () => {
+    throw new Error('sensitive database detail');
+  };
+  const warnings = [];
+  const originalWarn = globalThis.console.warn;
+  globalThis.console.warn = (...values) => warnings.push(values.join(' '));
+
+  let response;
+  try {
+    response = await worker.fetch(
+      internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_public/access', {
+        userId: 'usr_root',
+        admin: true,
+      }),
+      env(store)
+    );
+  } finally {
+    globalThis.console.warn = originalWarn;
+  }
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const access = (await response.json()).access;
+  assert.equal(access.exposure, 'public');
+  assert.equal(access.accessMode, 'acl');
+  assert.equal(access.visibility, 'acl');
+  assert.equal(access.exposureReason, null);
+  assert.equal(warnings.some((entry) => entry.includes('SITE_EXPOSURE_REASON_READ_UNCONFIRMED')), true);
+  assert.equal(warnings.some((entry) => entry.includes('sensitive database detail')), false);
+});
+
+test('public exposure snapshot failure compensates the authority policy to internal', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await seedTeamSite(store, { id: 'site_public', slug: 'public', teamId: 'team_console', visibility: 'internal' });
+  await activateSite(store, 'site_public', { workerName: 'pages-v2-public', visibility: 'internal' });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_public/exposure', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'PATCH',
+      body: { exposure: 'public', reason: 'snapshot failure test' },
+    }),
+    env(store, {
+      ROUTE_SNAPSHOTS: failingSnapshotStore(),
+      WFP_PROVIDER: {
+        removeOfficeNetBinding: async () => {},
+        verifyOfficeNetAbsent: async () => true,
+      },
+    })
+  );
+
+  assert.equal(response.status, 503, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'ROUTE_POLICY_REPAIR_REQUIRED');
+  const route = await store.getRouteBySiteId('site_public', 'production');
+  assert.equal(route.exposure, 'internal');
+  const audits = await store.listAuditEvents({ environment: 'production', siteId: 'site_public' });
+  assert.ok(audits.some((event) => event.metadata?.stage === 'compensation_failed'));
+});
+
+test('public exposure does not start when the required attempted audit cannot be written', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await seedTeamSite(store, { id: 'site_public', slug: 'public', teamId: 'team_console', visibility: 'internal' });
+  await activateSite(store, 'site_public', { workerName: 'pages-v2-public', visibility: 'internal' });
+  store.recordAuditEvent = async () => {
+    throw new Error('audit unavailable');
+  };
+  const actions = [];
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_public/exposure', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'PATCH',
+      body: { exposure: 'public', reason: 'required audit failure test' },
+    }),
+    env(store, {
+      ROUTE_SNAPSHOTS: createSnapshotStore(),
+      WFP_PROVIDER: {
+        removeOfficeNetBinding: async () => actions.push('remove'),
+        verifyOfficeNetAbsent: async () => {
+          actions.push('verify');
+          return true;
+        },
+      },
+    })
+  );
+
+  assert.equal(response.status, 503, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'SITE_EXPOSURE_AUDIT_REQUIRED');
+  assert.deepEqual(actions, []);
+  assert.equal((await store.getRouteBySiteId('site_public', 'production')).exposure, 'internal');
+});
+
+test('public exposure reports a final audit failure without misreporting the effective route state', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await seedTeamSite(store, { id: 'site_public', slug: 'public', teamId: 'team_console', visibility: 'internal' });
+  await activateSite(store, 'site_public', { workerName: 'pages-v2-public', visibility: 'internal' });
+  const originalRecordAuditEvent = store.recordAuditEvent.bind(store);
+  store.recordAuditEvent = async (input) => {
+    if (input.metadata?.stage === 'effective_success') throw new Error('final audit unavailable');
+    return originalRecordAuditEvent(input);
+  };
+  const snapshotStore = createSnapshotStore();
+  const warnings = [];
+  const originalWarn = globalThis.console.warn;
+  globalThis.console.warn = (...values) => warnings.push(values.join(' '));
+
+  let response;
+  try {
+    response = await worker.fetch(
+      internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_public/exposure', {
+        userId: 'usr_root',
+        admin: true,
+        method: 'PATCH',
+        body: { exposure: 'public', reason: 'audit failure test' },
+      }),
+      env(store, {
+        ROUTE_SNAPSHOTS: snapshotStore,
+        WFP_PROVIDER: {
+          removeOfficeNetBinding: async () => {},
+          verifyOfficeNetAbsent: async () => true,
+        },
+      })
+    );
+  } finally {
+    globalThis.console.warn = originalWarn;
+  }
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.access.exposure, 'public');
+  assert.equal(body.auditStatus, 'unconfirmed');
+  assert.equal((await store.getRouteBySiteId('site_public', 'production')).exposure, 'public');
+  const pointer = snapshotStore.read('production:route_pointer:public.workers.xd.team');
+  assert.equal(snapshotStore.read(pointer.snapshotKey).exposure, 'public');
+  const audits = await store.listAuditEvents({ environment: 'production', siteId: 'site_public' });
+  assert.equal(audits.some((event) => event.decision === 'deny'), false);
+  assert.equal(audits.some((event) => event.metadata?.stage === 'partial_failed'), false);
+  assert.equal(warnings.some((entry) => entry.includes('SITE_EXPOSURE_AUDIT_UNCONFIRMED')), true);
+  assert.equal(warnings.some((entry) => entry.includes('final audit unavailable')), false);
+});
+
+test('public exposure OfficeNet failure records a sanitized failed audit stage', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await seedTeamSite(store, { id: 'site_public', slug: 'public', teamId: 'team_console', visibility: 'internal' });
+  await activateSite(store, 'site_public', { workerName: 'pages-v2-public', visibility: 'internal' });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_public/exposure', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'PATCH',
+      body: { exposure: 'public', reason: 'office net failure test' },
+    }),
+    env(store, {
+      WFP_PROVIDER: {
+        removeOfficeNetBinding: async () => {
+          throw new Error('secret provider response: token=do-not-record');
+        },
+        verifyOfficeNetAbsent: async () => true,
+      },
+    })
+  );
+
+  assert.equal(response.status, 503, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'SITE_PUBLIC_OFFICE_NET_REMOVE_FAILED');
+  const audits = await store.listAuditEvents({ environment: 'production', siteId: 'site_public' });
+  const failed = audits.find((event) => event.metadata?.stage === 'failed');
+  assert.ok(failed);
+  assert.equal(JSON.stringify(failed.metadata).includes('do-not-record'), false);
+  assert.equal((await store.getRouteBySiteId('site_public', 'production')).exposure, 'internal');
+});
+
+test('effective public exposure reports an audit failure without rolling back the effective route', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await seedTeamSite(store, { id: 'site_public', slug: 'public', teamId: 'team_console', visibility: 'org' });
+  await activateSite(store, 'site_public', { workerName: 'pages-v2-public', visibility: 'org' });
+  const recordAuditEvent = store.recordAuditEvent.bind(store);
+  store.recordAuditEvent = async (input) => {
+    if (input.metadata?.stage === 'effective_success') throw new Error('audit unavailable');
+    return recordAuditEvent(input);
+  };
+  const warnings = [];
+  const originalWarn = globalThis.console.warn;
+  globalThis.console.warn = (...values) => warnings.push(values.join(' '));
+
+  let response;
+  try {
+    response = await worker.fetch(
+      internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_public/exposure', {
+        userId: 'usr_root',
+        admin: true,
+        method: 'PATCH',
+        body: { exposure: 'public', reason: 'audit failure test' },
+      }),
+      env(store, {
+        ROUTE_SNAPSHOTS: createSnapshotStore(),
+        WFP_PROVIDER: {
+          removeOfficeNetBinding: async () => {},
+          verifyOfficeNetAbsent: async () => true,
+        },
+      })
+    );
+  } finally {
+    globalThis.console.warn = originalWarn;
+  }
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.auditStatus, 'unconfirmed');
+  assert.equal(body.access.exposure, 'public');
+  assert.equal(warnings.some((entry) => entry.includes('SITE_EXPOSURE_AUDIT_UNCONFIRMED')), true);
+  assert.equal((await store.getRouteBySiteId('site_public', 'production')).exposure, 'public');
+});
+
+test('admin exposure enable requires a reason and platform admin', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedConsoleUser(store, 'usr_user');
+  await seedTeamSite(store, { id: 'site_public', slug: 'public', teamId: 'team_console' });
+
+  const forbidden = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_public/exposure', {
+      userId: 'usr_user',
+      method: 'PATCH',
+      body: { exposure: 'public', reason: 'not allowed' },
+    }),
+    env(store)
+  );
+  assert.equal(forbidden.status, 403);
+  assert.equal((await forbidden.json()).error.code, 'PLATFORM_ADMIN_REQUIRED');
+
+  await seedPlatformAdmin(store);
+  const missingReason = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_public/exposure', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'PATCH',
+      body: { exposure: 'public' },
+    }),
+    env(store)
+  );
+  assert.equal(missingReason.status, 400);
+  assert.equal((await missingReason.json()).error.code, 'SITE_EXPOSURE_REASON_REQUIRED');
+
+  const inactiveRoute = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_public/exposure', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'PATCH',
+      body: { exposure: 'public', reason: 'inactive route test' },
+    }),
+    env(store)
+  );
+  assert.equal(inactiveRoute.status, 409);
+  assert.equal((await inactiveRoute.json()).error.code, 'SITE_PUBLIC_ROUTE_INACTIVE');
+});
+
 test('platform admin can edit admin-scope site settings without asset membership', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
   await seedPlatformAdmin(store);
@@ -3578,6 +4258,43 @@ test('admin audit events include readable actor profile', async () => {
   });
 });
 
+test('admin audit events order exposure stages deterministically when timestamps tie', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  const stages = ['attempted', 'policy_committed', 'effective_success'];
+  for (const stage of stages) {
+    await store.recordAuditEvent({
+      id: `op_order:${stage}`,
+      environment: 'production',
+      traceId: 'op_order',
+      eventType: 'admin.site.exposure',
+      actorUserId: 'usr_root',
+      actorType: 'platform_admin',
+      decision: 'allow',
+      statusCode: 200,
+      metadata: { operationId: 'op_order', stage },
+      createdAt: '2026-07-02T00:00:00.000Z',
+    });
+  }
+  const listAuditEvents = store.listAuditEvents.bind(store);
+  store.listAuditEvents = async (input) => listAuditEvents(input);
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/audit', { userId: 'usr_root', admin: true }),
+    env(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.events.find((event) => event.metadata?.operationId === 'op_order')?.traceId, 'op_order');
+  assert.deepEqual(
+    body.events
+      .filter((event) => event.metadata?.operationId === 'op_order')
+      .map((event) => event.metadata.stage),
+    ['effective_success', 'policy_committed', 'attempted']
+  );
+});
+
 test('worker orphan scan failure surfaces a sanitized cause code without upstream details', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
   await seedPlatformAdmin(store);
@@ -3866,6 +4583,18 @@ function createSnapshotStore() {
     put: async (key, value) => values.set(key, JSON.parse(value)),
     get: async (key) => (values.has(key) ? JSON.stringify(values.get(key)) : null),
     read: (key) => values.get(key),
+  };
+}
+
+function negativePointerSnapshotStore() {
+  const values = new Map();
+  return {
+    put: async (key, value) => values.set(key, value),
+    get: async (key) => (key.includes(':route_pointer:') ? null : values.get(key) || null),
+    read: (key) => {
+      const value = values.get(key);
+      return value && typeof value === 'string' ? JSON.parse(value) : value;
+    },
   };
 }
 

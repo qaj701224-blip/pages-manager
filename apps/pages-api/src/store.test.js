@@ -84,6 +84,8 @@ test('createSite creates owner membership and inactive route authority record', 
     slotId: null,
     activeVersionId: null,
     visibility: 'acl',
+    exposure: 'internal',
+    accessMode: 'acl',
     policyVersion: 1,
     routeGeneration: 0,
     runtimeConfigGeneration: 0,
@@ -92,6 +94,41 @@ test('createSite creates owner membership and inactive route authority record', 
     createdAt: '2026-06-15T00:00:00.000Z',
     updatedAt: '2026-06-15T00:00:00.000Z',
   });
+});
+
+test('D1 audit statements bind omitted nullable fields as null', () => {
+  let bound = [];
+  const db = {
+    prepare() {
+      return {
+        bind(...args) {
+          bound = args;
+          return this;
+        },
+      };
+    },
+  };
+  const store = new D1PagesStore(db);
+
+  store.auditEventStatement({
+    id: 'audit_1',
+    environment: 'staging',
+    eventType: 'admin.site.exposure',
+    actorUserId: 'usr_admin',
+    actorType: 'platform_admin',
+    siteId: 'site_1',
+    routeId: 'route_1',
+    decision: 'allow',
+    statusCode: 200,
+    metadata: { stage: 'policy_committed' },
+    createdAt: '2026-08-07T10:00:00.000Z',
+  });
+
+  assert.equal(bound.includes(undefined), false);
+  assert.equal(bound[2], null);
+  assert.equal(bound[8], null);
+  assert.equal(bound[11], null);
+  assert.equal(bound[12], null);
 });
 
 test('D1 store filters audit events by environment', async () => {
@@ -153,6 +190,50 @@ test('D1 store filters audit events by environment', async () => {
       },
     },
   ]);
+});
+
+test('D1 store reads the latest public exposure reason with site and environment filters', async () => {
+  let capturedSql = '';
+  let capturedArgs = [];
+  const db = {
+    prepare(sql) {
+      capturedSql = sql;
+      return {
+        bind(...args) {
+          capturedArgs = args;
+          return {
+            all: async () => ({
+              results: [
+                {
+                  id: 'op_public:effective_success',
+                  event_type: 'admin.site.exposure',
+                  metadata_json: JSON.stringify({
+                    operationId: 'op_public',
+                    requestedExposure: 'public',
+                    effectiveExposure: 'public',
+                    stage: 'effective_success',
+                    reason: 'staging 公网验收',
+                  }),
+                  created_at: '2026-08-10T01:00:00.000Z',
+                },
+              ],
+            }),
+          };
+        },
+      };
+    },
+  };
+  const store = new D1PagesStore(db);
+
+  const reason = await store.getLatestAdminSitePublicExposureReason({
+    environment: 'staging',
+    siteId: 'site_public',
+    currentExposure: 'public',
+  });
+
+  assert.match(capturedSql, /WHERE environment = \? AND site_id = \? AND event_type = \?/);
+  assert.deepEqual(capturedArgs, ['staging', 'site_public', 'admin.site.exposure']);
+  assert.deepEqual(reason, { text: 'staging 公网验收', changedAt: '2026-08-10T01:00:00.000Z' });
 });
 
 test('D1 store admin and route lookups avoid unjoined team member aliases', async () => {
@@ -223,25 +304,26 @@ test('D1 store admin list queries are bounded and site detail can be fetched by 
     prepare(sql) {
       const call = { sql, args: [] };
       calls.push(call);
-      return {
+      const statement = {
+        first: async () => null,
+        all: async () => ({ results: [] }),
         bind(...args) {
           call.args = args;
-          return {
-            all: async () => ({ results: [] }),
-            first: async () => null,
-          };
+          return statement;
         },
       };
+      return statement;
     },
   };
   const store = new D1PagesStore(db, { now: () => '2026-07-02T00:00:00.000Z' });
 
   await store.listAdminSites({ environment: 'production' });
   await store.listAdminSiteDeployments({ environment: 'production', siteId: 'site_1' });
+  await store.getAdminDashboard({ environment: 'production' });
   await store.listAdminTeams({ environment: 'production' });
   await store.getAdminSiteById('site_1', 'production');
 
-  const [sites, deployments, teams, siteDetail] = calls;
+  const [sites, deployments] = calls;
   assert.match(sites.sql, /LIMIT \?/);
   assert.match(
     sites.sql,
@@ -251,6 +333,20 @@ test('D1 store admin list queries are bounded and site detail can be fetched by 
   assert.deepEqual(sites.args, ['production', 200]);
   assert.match(deployments.sql, /LIMIT \?/);
   assert.deepEqual(deployments.args, ['production', 'site_1', 100]);
+  assert.match(deployments.sql, /sites\.id AS joined_site_id/);
+  assert.match(deployments.sql, /LEFT JOIN users AS actor_users/);
+  assert.match(deployments.sql, /actor_users\.email AS actor_user_email/);
+  assert.match(deployments.sql, /actor_users\.realname AS actor_user_realname/);
+  const dashboardDeployments = calls.find(
+    (call) => call.sql.includes('SELECT deployments.*') && call.sql.includes('status = \'failed\'')
+  );
+  assert.ok(dashboardDeployments);
+  assert.match(dashboardDeployments.sql, /sites\.id AS joined_site_id/);
+  assert.match(dashboardDeployments.sql, /LEFT JOIN users AS actor_users/);
+  assert.match(dashboardDeployments.sql, /actor_users\.email AS actor_user_email/);
+  assert.match(dashboardDeployments.sql, /actor_users\.realname AS actor_user_realname/);
+  const teams = calls.find((call) => call.sql.includes('SELECT * FROM teams'));
+  const siteDetail = calls.find((call) => call.sql.includes('WHERE sites.id = ? AND sites.environment ='));
   assert.match(teams.sql, /LIMIT \?/);
   assert.deepEqual(teams.args, ['production', 200]);
   assert.match(siteDetail.sql, /WHERE sites\.id = \? AND sites\.environment = \?/);
@@ -4909,7 +5005,16 @@ function fakeTransferSiteOwnerDb({ site, members = [] } = {}) {
             },
             run: async () => {
               if (/UPDATE sites\s+SET owner_type = \?/.test(sql)) {
-                const [ownerType, ownerId, ownerUserId, defaultVisibility, updatedAt, siteId, environment] = args;
+                const [
+                  ownerType,
+                  ownerId,
+                  ownerUserId,
+                  defaultVisibility,
+                  defaultAccessMode,
+                  updatedAt,
+                  siteId,
+                  environment,
+                ] = args;
                 if (state.site?.id !== siteId || state.site?.environment !== environment || state.site?.deleted_at) {
                   return { meta: { changes: 0 } };
                 }
@@ -4918,6 +5023,7 @@ function fakeTransferSiteOwnerDb({ site, members = [] } = {}) {
                   owner_id: ownerId,
                   owner_user_id: ownerUserId,
                   default_visibility: defaultVisibility,
+                  default_access_mode: defaultAccessMode,
                   updated_at: updatedAt,
                 });
                 return { meta: { changes: 1 } };
@@ -5052,6 +5158,8 @@ function fakeSiteDeleteRestoreRun(state, sql, args) {
       dispatchBindingName,
       slotId,
       visibility,
+      exposure,
+      accessMode,
       policyVersion,
       routeGeneration,
       runtimeConfigGeneration,
@@ -5074,6 +5182,8 @@ function fakeSiteDeleteRestoreRun(state, sql, args) {
       dispatch_binding_name: dispatchBindingName,
       slot_id: slotId,
       visibility,
+      exposure,
+      access_mode: accessMode,
       policy_version: policyVersion,
       route_generation: routeGeneration,
       runtime_config_generation: runtimeConfigGeneration,

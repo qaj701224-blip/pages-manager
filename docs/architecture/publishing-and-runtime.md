@@ -2,17 +2,24 @@
 
 > 本文从 `docs/pages-v2-wfp-architecture.md` 拆分而来，用于控制单篇文档长度。
 
-## 站点可见性模型
+## 站点访问策略模型
 
-建议第一版支持：
+站点策略由网络 exposure 与身份 access mode 两个正交维度组成：
 
-| visibility | 含义                       | 是否需要登录 | 典型用途             |
-| ---------- | -------------------------- | ------------ | -------------------- |
-| `internal` | 公司网络内免登录访问       | 否           | 内部报告、demo       |
-| `org`      | 公司 SSO active 用户可访问 | 是           | 默认内部站点         |
-| `acl`      | 指定邮箱可访问，owner 隐式可访问 | 是      | 项目私有预览         |
-| `owner`    | active owner 可访问        | 是           | 管理预览、敏感站点   |
-| `disabled` | 暂停访问                   | 不适用       | 下线、风控、事故处理 |
+| exposure | 含义 |
+| -------- | ---- |
+| `internal` | 请求必须命中公司网络 IP allowlist |
+| `public` | 互联网可达，但仍执行身份与 ACL 门禁 |
+
+现有 CLI/API 继续使用 visibility，并由兼容层映射到 access mode：
+
+| visibility | access mode | 是否需要登录 | 典型用途 |
+| ---------- | ----------- | ------------ | -------- |
+| `internal` | `anonymous` | 否 | 免登录报告、demo |
+| `org` | `org` | 是 | 企业成员站点 |
+| `acl` | `acl` | 是 | 项目私有预览 |
+| `owner` | `owner` | 是 | 管理预览、敏感站点 |
+| `disabled` | `disabled` | 不适用 | 下线、风控、事故处理 |
 
 发布权限与访问权限必须分开：
 
@@ -25,8 +32,10 @@ access permission: 谁能访问子站内容
 
 - 新站点默认 `org`，比 `internal` 更安全。
 - CLI 支持显式 `--visibility internal|org|acl|owner|disabled`。
+- CLI 和普通用户 API 不接受 exposure；只有 Platform Admin 可在 Console 中开启或关闭公网。
+- 用户后续修改 visibility/ACL 只改变 access mode，保留 Admin 已设置的 exposure。
 
-第一版所有 visibility 都受 `pages-router` IP allowlist 约束。`internal` 只是跳过 SSO/ACL，不跳过公司网络限制。public 保留给未来公网 exposure，不是第一版 visibility。
+只有 schema v3 route snapshot 显式声明 `exposure=public` 才能绕过 Router IP allowlist。旧 v2 snapshot、缺失或非法 exposure 安全降级为 internal；旧的 `visibility=public` 仍是非法策略并 fail closed。
 
 ## SSO 登录链路
 
@@ -34,8 +43,8 @@ access permission: 谁能访问子站内容
 
 ```text
 1. Browser -> https://foo.workers.xd.team/
-2. pages-router 校验客户端 IP 命中公司 allowlist
-3. pages-router 读取 route snapshot，发现需要登录
+2. pages-router 读取可信 route snapshot；internal exposure 校验客户端 IP，public exposure 跳过 IP 门禁
+3. pages-router 发现 access mode 需要登录
 4. pages-router 检查当前 host 的 site_session，未命中
 5. 302 -> pages-auth 登录入口，带 return_to 和 state
 6. pages-auth 检查 auth_session
@@ -62,9 +71,9 @@ access permission: 谁能访问子站内容
 
 ```text
 1. Browser -> https://foo.workers.xd.team/
-2. pages-router 校验客户端 IP 命中公司 allowlist
+2. pages-router 读取 L1/KV route snapshot并判断 exposure；internal exposure 校验客户端 IP
 3. pages-router 本地校验 site_session
-4. pages-router 读取 L1/KV route snapshot
+4. pages-router 校验 access mode
 5. pages-router 对比 site_session.policyVersion 和 route snapshot.policyVersion
 6. pages-router 生成 30-60 秒内部 JWT
 7. dispatch 到 foo 对应 user Worker
@@ -101,7 +110,7 @@ absolute TTL: 30 天
 - 删除站点。
 - 创建或查看 access key。
 - 修改 owner、collaborators 或 ACL。
-- 将站点可见性改为 `internal` 或未来公网 exposure。
+- 将站点 access mode 改为匿名，或修改高风险网络 exposure。当前 Admin exposure 操作要求平台管理员、理由和确认，但暂不强制 recent login。
 
 Cindy(原 XDMaker)插件 `xd-sites` 的请求不走换证：Cindy Desktop 宿主为每个 `/.xd-pages/api/*` 请求携带短时效 connection 断言(RS256 JWT,`typ=connection`,TTL 30 分钟),`pages-api` 逐请求经 Cindy JWKS 验签并按 `sub`(membershipId)映射/落库用户。断言 actor 只持有 `deploy:site`、`read:site`、`rollback:site` scope,不能创建或查看 access key;Console 创建/查看 key 的 recent-login 语义不因此改变。详见 `docs/api-boundary.md` 的「Cindy Connections 断言鉴权」。
 
@@ -409,7 +418,7 @@ CF-Platform-Version: <version-id>
 CF-Platform-Trace-Id: <trace-id>
 ```
 
-`CF-Platform-Email`、`CF-Platform-Name`、`CF-Platform-Groups` 等独立 profile header 不注入。当前用户站点统一受平台 IP Check 保护；对于通过站点访问策略的已登录请求，router 默认在 `internal_worker_jwt.user` 中注入 email、accountId、name、完整部门路径数组和 employeeStatus，匿名请求注入 `user: null`。User Worker 通过 Worker SDK 读取这些业务上下文，不能把它们当作平台授权结论。未来开放 public 站点前必须重新评估身份披露边界。
+`CF-Platform-Email`、`CF-Platform-Name`、`CF-Platform-Groups` 等独立 profile header 不注入。internal exposure 继续受平台 IP Check 保护，public exposure 仅绕过网络门禁；对于通过站点访问策略的已登录请求，router 默认在 `internal_worker_jwt.user` 中注入 email、accountId、name、完整部门路径数组和 employeeStatus，匿名请求注入 `user: null`。User Worker 通过 Worker SDK 读取这些业务上下文，不能把它们当作平台授权结论。
 
 安全规则：
 

@@ -1,5 +1,6 @@
 import { sha256HexForText } from './crypto.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
+import { nextId } from './id.js';
 import { assertSafeWebhookUrl, dispatchWebhook, nextRetryAt } from './webhook-dispatcher.js';
 import {
   buildStandardWebhookPayload,
@@ -435,13 +436,6 @@ function templateErrorResponse(error) {
 
 function methodNotAllowed() {
   return jsonError('METHOD_NOT_ALLOWED', 'Method not allowed.', 405, 'Use a supported HTTP method.');
-}
-
-function nextId(env, prefix) {
-  if (typeof env?.nextId === 'function') return env.nextId(prefix);
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  return `${prefix}_${[...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('')}`;
 }
 
 function readWebhookUrlEncryptionKey(env) {
