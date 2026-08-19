@@ -3517,6 +3517,45 @@ button {
   font-size: 13px;
 }
 
+.checkbox-row label > span {
+  display: grid;
+  gap: 2px;
+}
+
+.checkbox-row label small {
+  color: var(--xd-muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.historical-webhook-events {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(180, 83, 9, 0.3);
+  border-radius: 8px;
+  color: #92400e;
+  background: #fff7ed;
+}
+
+.historical-webhook-events > div {
+  display: grid;
+  gap: 4px;
+}
+
+.historical-webhook-events .tag button {
+  display: inline-grid;
+  place-items: center;
+  margin-left: 4px;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+
 .plain-checkbox-row {
   gap: 14px;
 }
@@ -3643,6 +3682,77 @@ button {
 .dialog-actions {
   justify-content: flex-end;
   padding-top: 2px;
+}
+
+.audit-detail-panel {
+  width: min(520px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+}
+
+.audit-detail-panel .dialog-body {
+  min-width: 0;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.detail-field {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+  color: var(--xd-muted);
+  font-size: 12px;
+}
+
+.detail-field strong {
+  min-width: 0;
+  color: var(--xd-text);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.detail-field-copy > div {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 6px;
+}
+
+.detail-field-copy strong {
+  flex: 1;
+}
+
+.audit-detail-metadata {
+  max-width: 100%;
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
+@media (max-width: 520px) {
+  .audit-detail-panel {
+    width: calc(100vw - 16px);
+  }
+
+  .detail-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (min-width: 768px) {
+  .audit-detail-panel {
+    width: min(620px, calc(100vw - 48px));
+  }
+}
+
+@media (min-width: 1280px) {
+  .audit-detail-panel {
+    width: 680px;
+  }
 }
 
 .delivery-panel {
