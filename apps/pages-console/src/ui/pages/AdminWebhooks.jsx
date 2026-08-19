@@ -8,14 +8,11 @@ import {
   listAdminWebhooks,
   updateAdminWebhook,
 } from '../api.js';
-
-const EVENT_OPTIONS = [
-  { value: 'site.deployed', label: 'site.deployed' },
-];
+import { getTemplateVariableWarnings } from '../admin-webhook-model.js';
 
 const DEFAULT_TEMPLATE = JSON.stringify(
   {
-    text: 'XD Cell: {{site.slug}} {{deployment.status}} by {{actor.email}}',
+    text: 'XD Cell: {{event.type}} {{site.slug}}',
   },
   null,
   2
@@ -78,10 +75,15 @@ const TEMPLATE_PREVIEW_VALUES = new Map([
   ['deployment.operation', '<deployment.operation>'],
   ['deployment.createdAt', '<deployment.createdAt>'],
   ['deployment.completedAt', '<deployment.completedAt>'],
+  ['deployment.failureStage', '<deployment.failureStage>'],
+  ['deployment.errorCode', '<deployment.errorCode>'],
+  ['change.field', '<change.field>'],
+  ['change.previousValue', '<change.previousValue>'],
+  ['change.currentValue', '<change.currentValue>'],
 ]);
 
 export function AdminWebhooks() {
-  const [state, setState] = useState({ status: 'loading', webhooks: [], error: null });
+  const [state, setState] = useState({ status: 'loading', webhooks: [], supportedEvents: [], error: null });
   const [dialog, setDialog] = useState(null);
   const [deliveries, setDeliveries] = useState({ status: 'idle', webhook: null, items: [], error: null });
 
@@ -89,10 +91,10 @@ export function AdminWebhooks() {
     setState((current) => ({ ...current, status: 'loading', error: null }));
     return listAdminWebhooks()
       .then((data) => {
-        setState({ status: 'ready', webhooks: data.webhooks || [], error: null });
+        setState({ status: 'ready', webhooks: data.webhooks || [], supportedEvents: data.supportedEvents || [], error: null });
       })
       .catch((error) => {
-        setState({ status: 'error', webhooks: [], error });
+        setState({ status: 'error', webhooks: [], supportedEvents: [], error });
       });
   }, []);
 
@@ -100,10 +102,11 @@ export function AdminWebhooks() {
     let active = true;
     listAdminWebhooks()
       .then((data) => {
-        if (active) setState({ status: 'ready', webhooks: data.webhooks || [], error: null });
+        if (active)
+          setState({ status: 'ready', webhooks: data.webhooks || [], supportedEvents: data.supportedEvents || [], error: null });
       })
       .catch((error) => {
-        if (active) setState({ status: 'error', webhooks: [], error });
+        if (active) setState({ status: 'error', webhooks: [], supportedEvents: [], error });
       });
     return () => {
       active = false;
@@ -160,6 +163,7 @@ export function AdminWebhooks() {
       ) : (
         <WebhookTable
           webhooks={state.webhooks}
+          supportedEvents={state.supportedEvents}
           onEdit={(webhook) => setDialog({ mode: 'edit', webhook })}
           onDeliveries={openDeliveries}
           onDisable={handleDisable}
@@ -176,6 +180,7 @@ export function AdminWebhooks() {
       {dialog ? (
         <WebhookDialog
           dialog={dialog}
+          supportedEvents={state.supportedEvents}
           onClose={() => setDialog(null)}
           onSaved={async () => {
             setDialog(null);
@@ -187,7 +192,8 @@ export function AdminWebhooks() {
   );
 }
 
-function WebhookTable({ webhooks, onEdit, onDeliveries, onDisable }) {
+function WebhookTable({ webhooks, supportedEvents, onEdit, onDeliveries, onDisable }) {
+  const labels = new Map(supportedEvents.map((event) => [event.type, event.label]));
   return (
     <div className="table-shell">
       <table className="admin-table">
@@ -214,7 +220,7 @@ function WebhookTable({ webhooks, onEdit, onDeliveries, onDisable }) {
                 <div className="chip-row">
                   {webhook.events.map((event) => (
                     <span className="tag muted" key={event}>
-                      {event}
+                      {labels.get(event) || event}
                     </span>
                   ))}
                 </div>
@@ -247,15 +253,34 @@ function WebhookTable({ webhooks, onEdit, onDeliveries, onDisable }) {
   );
 }
 
-function WebhookDialog({ dialog, onClose, onSaved }) {
+function WebhookDialog({ dialog, supportedEvents, onClose, onSaved }) {
   const editing = dialog.mode === 'edit';
   const [form, setForm] = useState(() => initialForm(dialog.webhook));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
-  const preview = useMemo(
-    () => buildTemplatePreview(form.payloadMode, form.restrictedTemplate),
-    [form.payloadMode, form.restrictedTemplate]
+  const [previewEvent, setPreviewEvent] = useState(() => dialog.webhook?.events?.[0] || 'site.deployed');
+  const supportedEventMap = useMemo(() => new Map(supportedEvents.map((item) => [item.type, item])), [supportedEvents]);
+  const unsupportedEvents = useMemo(
+    () => form.events.filter((event) => !supportedEventMap.has(event)),
+    [form.events, supportedEventMap]
   );
+  const selectedDescriptor =
+    supportedEventMap.get(previewEvent) || supportedEventMap.get(form.events.find((event) => supportedEventMap.has(event)));
+  const preview = useMemo(
+    () => buildTemplatePreview(form.payloadMode, form.restrictedTemplate, selectedDescriptor),
+    [form.payloadMode, form.restrictedTemplate, selectedDescriptor]
+  );
+  const templateWarnings = useMemo(
+    () =>
+      form.payloadMode === 'template' ? getTemplateVariableWarnings(form.restrictedTemplate, form.events, supportedEvents) : [],
+    [form.payloadMode, form.restrictedTemplate, form.events, supportedEvents]
+  );
+
+  useEffect(() => {
+    if (!form.events.includes(previewEvent) || !supportedEventMap.has(previewEvent)) {
+      setPreviewEvent(form.events.find((event) => supportedEventMap.has(event)) || 'site.deployed');
+    }
+  }, [form.events, previewEvent, supportedEventMap]);
 
   const setField = (name, value) => setForm((current) => ({ ...current, [name]: value }));
   const toggleEvent = (event) => {
@@ -265,6 +290,10 @@ function WebhookDialog({ dialog, onClose, onSaved }) {
         : [...current.events, event];
       return { ...current, events: nextEvents };
     });
+  };
+
+  const removeUnsupportedEvent = (event) => {
+    setForm((current) => ({ ...current, events: current.events.filter((item) => item !== event) }));
   };
 
   const submit = async (event) => {
@@ -319,17 +348,37 @@ function WebhookDialog({ dialog, onClose, onSaved }) {
           <fieldset className="field-set">
             <legend>订阅事件</legend>
             <div className="checkbox-row">
-              {EVENT_OPTIONS.map((option) => (
-                <label key={option.value}>
-                  <input
-                    checked={form.events.includes(option.value)}
-                    type="checkbox"
-                    onChange={() => toggleEvent(option.value)}
-                  />
-                  <span>{option.label}</span>
+              {supportedEvents.map((option) => (
+                <label key={option.type}>
+                  <input checked={form.events.includes(option.type)} type="checkbox" onChange={() => toggleEvent(option.type)} />
+                  <span>
+                    <strong>{option.label}</strong>
+                    <small>
+                      {option.type} · {option.description}
+                    </small>
+                  </span>
                 </label>
               ))}
             </div>
+            {unsupportedEvents.length ? (
+              <div className="form-warning historical-webhook-events" role="alert">
+                <AlertTriangle size={15} />
+                <div>
+                  <strong>历史不支持事件</strong>
+                  <span>请先移除后再保存此订阅。</span>
+                  <div className="chip-row">
+                    {unsupportedEvents.map((event) => (
+                      <span className="tag tag-disabled" key={event}>
+                        {event}
+                        <button type="button" onClick={() => removeUnsupportedEvent(event)} aria-label={`移除历史事件 ${event}`}>
+                          <X size={12} />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ) : null}
           </fieldset>
 
           <div className="segmented webhook-payload-mode" role="tablist" aria-label="Payload mode">
@@ -357,11 +406,42 @@ function WebhookDialog({ dialog, onClose, onSaved }) {
                   value={form.restrictedTemplate}
                   onChange={(event) => setField('restrictedTemplate', event.target.value)}
                 />
+                {templateWarnings.length ? (
+                  <div className="form-warning historical-webhook-events" role="alert">
+                    <AlertTriangle size={15} />
+                    <div>
+                      <strong>模板变量可能缺失</strong>
+                      <span>以下变量在列出的事件中可能不存在，使用精确变量模板时该次投递会失败：</span>
+                      <ul>
+                        {templateWarnings.map(({ path, events }) => (
+                          <li key={path}>
+                            <code>{`{{${path}}}`}</code>：{events.map((event) => `${event.label} (${event.type})`).join('、')}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                ) : null}
               </label>
             ) : (
               <div className="field">
                 <span>标准 payload</span>
-                <pre className="code-preview">{STANDARD_PAYLOAD_PREVIEW}</pre>
+                {form.events.filter((event) => supportedEventMap.has(event)).length > 1 ? (
+                  <select
+                    value={previewEvent}
+                    onChange={(event) => setPreviewEvent(event.target.value)}
+                    aria-label="选择预览事件"
+                  >
+                    {form.events
+                      .filter((event) => supportedEventMap.has(event))
+                      .map((event) => (
+                        <option key={event} value={event}>
+                          {supportedEventMap.get(event).label} · {event}
+                        </option>
+                      ))}
+                  </select>
+                ) : null}
+                <pre className="code-preview">{preview.standardText}</pre>
               </div>
             )}
             <div className="field">
@@ -376,7 +456,11 @@ function WebhookDialog({ dialog, onClose, onSaved }) {
             <button className="secondary-button" type="button" onClick={onClose}>
               取消
             </button>
-            <button className="primary-button" type="submit" disabled={saving}>
+            <button
+              className="primary-button"
+              type="submit"
+              disabled={saving || unsupportedEvents.length > 0 || form.events.length === 0}
+            >
               <CheckCircle2 size={15} />
               <span>{saving ? '保存中' : '保存'}</span>
             </button>
@@ -450,20 +534,35 @@ function buildSubmitBody(form, { editing }) {
   return body;
 }
 
-function buildTemplatePreview(payloadMode, templateText) {
-  if (payloadMode === 'standard') return { text: STANDARD_PAYLOAD_PREVIEW, error: false };
+function buildTemplatePreview(payloadMode, templateText, descriptor) {
+  const standardText = descriptor ? JSON.stringify(buildStandardPreview(descriptor), null, 2) : STANDARD_PAYLOAD_PREVIEW;
+  if (payloadMode === 'standard') return { text: standardText, standardText, error: false };
   try {
     const parsed = JSON.parse(templateText || '{}');
     return {
       text: JSON.stringify(renderPreviewValue(parsed), null, 2),
+      standardText,
       error: false,
     };
   } catch {
     return {
       text: 'JSON_INVALID',
+      standardText,
       error: true,
     };
   }
+}
+
+function buildStandardPreview(descriptor) {
+  const payload = {};
+  const paths = [...(descriptor.requiredTemplateVariables || []), ...(descriptor.optionalTemplateVariables || [])];
+  for (const path of paths) {
+    const parts = path.split('.');
+    let cursor = payload;
+    for (const part of parts.slice(0, -1)) cursor = cursor[part] ||= {};
+    cursor[parts.at(-1)] = TEMPLATE_PREVIEW_VALUES.get(path) || `<${path}>`;
+  }
+  return payload;
 }
 
 function renderPreviewValue(value) {

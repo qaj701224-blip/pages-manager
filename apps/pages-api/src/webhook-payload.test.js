@@ -79,6 +79,60 @@ test('standard webhook payload keeps only public allowlisted fields', async () =
   assert.match(await payloadHash(payload), /^sha256:[a-f0-9]{64}$/);
 });
 
+test('lifecycle payloads expose only safe failure and visibility-change fields', () => {
+  const failed = buildStandardWebhookPayload({
+    id: 'evt_failed',
+    type: 'site.failed',
+    environment: 'production',
+    occurredAt: '2026-07-01T00:00:00.000Z',
+    site: { id: 'site_1', slug: 'docs', ownerType: 'user' },
+    deployment: {
+      id: 'dep_1',
+      status: 'failed',
+      operation: 'deploy',
+      failureStage: 'upload_worker',
+      errorCode: 'DEPLOYMENT_UPLOAD_FAILED',
+      errorMessage: 'raw provider failure',
+      failureDiagnostics: { workerName: 'provider-worker' },
+    },
+    errorMessage: 'raw event failure',
+  });
+  assert.equal(failed.deployment.failureStage, 'upload_worker');
+  assert.equal(failed.deployment.errorCode, 'DEPLOYMENT_UPLOAD_FAILED');
+  assert.equal(failed.deployment.errorMessage, undefined);
+  assert.equal(failed.deployment.failureDiagnostics, undefined);
+  assert.equal(failed.site.status, undefined);
+
+  const disabled = buildStandardWebhookPayload({
+    id: 'evt_disabled',
+    type: 'site.disabled',
+    environment: 'production',
+    occurredAt: '2026-07-01T00:00:00.000Z',
+    actor: { type: 'user', userId: 'usr_1' },
+    site: { id: 'site_1', slug: 'docs', ownerType: 'user', visibility: 'disabled' },
+    change: { field: 'visibility', previousValue: 'org', currentValue: 'disabled', routeId: 'route_1' },
+  });
+  assert.deepEqual(disabled.change, {
+    field: 'visibility',
+    previousValue: 'org',
+    currentValue: 'disabled',
+  });
+  assert.equal(disabled.change.routeId, undefined);
+
+  const deleted = buildStandardWebhookPayload({
+    id: 'evt_deleted',
+    type: 'site.deleted',
+    environment: 'production',
+    occurredAt: '2026-07-01T00:00:00.000Z',
+    actor: { type: 'user', userId: 'usr_1' },
+    site: { id: 'site_1', slug: 'docs', ownerType: 'user', status: 'deleted', providerResourceId: 'provider-1' },
+    cleanupTaskId: 'cleanup-1',
+  });
+  assert.equal(deleted.site.status, 'deleted');
+  assert.equal(deleted.site.providerResourceId, undefined);
+  assert.equal(deleted.cleanupTaskId, undefined);
+});
+
 test('restricted template renders Slack Incoming Webhook payloads', () => {
   const payload = buildStandardWebhookPayload({
     id: 'evt_1',

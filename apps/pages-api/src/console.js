@@ -24,12 +24,13 @@ import {
   syncActiveWfpSecret,
   validateSlug,
 } from './sites.js';
+import { emitSiteDeletedWebhook, emitSiteDisabledWebhook } from './lifecycle-webhooks.js';
 
 const CONSOLE_PREFIX = '/.xd-pages/api/console';
 const DEFAULT_REUSE_HOLD_SECONDS = 300;
 const VISIBILITIES = new Set(['internal', 'org', 'acl', 'owner', 'disabled']);
 
-export async function handleConsoleApi(request, env, config, store) {
+export async function handleConsoleApi(request, env, config, store, ctx) {
   if (!isConsoleBffRequest(request)) return null;
 
   const url = new URL(request.url);
@@ -83,7 +84,7 @@ export async function handleConsoleApi(request, env, config, store) {
   if (siteAccessMatch && request.method === 'PATCH') {
     const session = await requireConsoleUserSession(request, env, config, store);
     if (session instanceof Response) return session;
-    return updateSiteAccess(request, env, config, store, session, siteAccessMatch[1]);
+    return updateSiteAccess(request, env, config, store, session, siteAccessMatch[1], { ctx });
   }
 
   const siteVarMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/sites\/([^/]+)\/config\/vars\/([^/]+)$/);
@@ -125,7 +126,7 @@ export async function handleConsoleApi(request, env, config, store) {
     });
     if (!site) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
 
-    if (!subresource && request.method === 'DELETE') return deleteConsoleSite(env, config, store, site);
+    if (!subresource && request.method === 'DELETE') return deleteConsoleSite(env, config, store, site, { actor: session, ctx });
     if (request.method !== 'GET') return methodNotAllowed();
     if (!subresource) return jsonOk({ site: formatSiteDetail(site) });
     if (subresource === 'deployments') {
@@ -259,6 +260,16 @@ export async function deleteConsoleSite(env, config, store, site, options = {}) 
     if (snapshotError) return snapshotError;
   }
   await enqueueDeletedSiteWfpCleanup(store, env, config, site, previousRoute, reuseHoldUntil);
+  await emitSiteDeletedWebhook({
+    store,
+    env,
+    config,
+    ctx: options.ctx,
+    actor: options.actor,
+    site: deleted,
+    previousRoute,
+    route,
+  });
   return jsonOk({ site: formatWorkspaceSite({ ...deleted, route }) });
 }
 
@@ -430,6 +441,7 @@ async function validateConsoleAuthSession(request, env, config, store) {
 export async function updateSiteAccess(request, env, config, store, session, siteId, options = {}) {
   const site = options.site || (await requireConsoleSiteRole(store, config, session, siteId, 'publisher'));
   if (site instanceof Response) return site;
+  const previousRoute = site.route || (await store.getRouteBySiteId(site.id, config.environment));
   const previousAclEntries = await store.listSiteAclEntries(site.id);
 
   let body;
@@ -465,6 +477,17 @@ export async function updateSiteAccess(request, env, config, store, session, sit
     ...(Array.isArray(body.aclEntries) ? { resolveAclEntries: () => aclEntries } : {}),
   });
   if (mutation instanceof Response) return mutation;
+
+  await emitSiteDisabledWebhook({
+    store,
+    env,
+    config,
+    ctx: options.ctx,
+    actor: session,
+    site: mutation.site,
+    previousRoute,
+    route: mutation.route,
+  });
 
   return jsonOk({
     access: {

@@ -4,6 +4,7 @@ import test from 'node:test';
 import worker from './index.js';
 import { markRuntimeConfigError } from './runtime-config-diagnostics.js';
 import { createTestPagesStore } from './test-store.js';
+import { seedLifecycleWebhook, TEST_WEBHOOK_URL_ENCRYPTION_KEY } from './lifecycle-webhook-test-fixtures.js';
 
 test('public API host cannot use forged console identity headers', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
@@ -1076,6 +1077,61 @@ test('site config writes allow publisher access policy and runtime config', asyn
   });
 });
 
+test('Console access emits site.disabled only for the visibility transition', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  const requests = [];
+  await seedSite(store, {
+    id: 'site_mine',
+    slug: 'mine',
+    ownerUserId: 'usr_me',
+    visibility: 'org',
+  });
+  await activateSite(store, 'site_mine', { visibility: 'org' });
+  await seedLifecycleWebhook(store, 'site.disabled');
+  const testEnvironment = env(store, {
+    ROUTE_SNAPSHOTS: createSnapshotStore(),
+    WEBHOOK_URL_ENCRYPTION_KEY: TEST_WEBHOOK_URL_ENCRYPTION_KEY,
+    resolveWebhookHost: async () => ['8.8.8.8'],
+    WEBHOOK_FETCH: async (request) => {
+      requests.push(request);
+      return new Response('ok', { status: 200 });
+    },
+  });
+
+  const aclOnly = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/access', {
+      userId: 'usr_me',
+      method: 'PATCH',
+      body: {
+        visibility: 'org',
+        aclEntries: [{ subjectType: 'email', subjectValue: 'viewer@example.com', accessRole: 'viewer' }],
+      },
+    }),
+    testEnvironment
+  );
+  assert.equal(aclOnly.status, 200, await aclOnly.clone().text());
+  assert.equal(requests.length, 0);
+
+  const disabled = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/access', {
+      userId: 'usr_me',
+      method: 'PATCH',
+      body: { visibility: 'disabled' },
+    }),
+    testEnvironment
+  );
+  assert.equal(disabled.status, 200, await disabled.clone().text());
+  assert.equal(requests.length, 1);
+  const payload = await requests[0].json();
+  assert.equal(payload.event.type, 'site.disabled');
+  assert.equal(payload.actor.userId, 'usr_me');
+  assert.deepEqual(payload.change, {
+    field: 'visibility',
+    previousValue: 'org',
+    currentValue: 'disabled',
+  });
+});
+
 test('Console runtime vars accept long runtime var names without deriving record ids from them', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   await seedConsoleUser(store, 'usr_me');
@@ -1422,17 +1478,20 @@ test('site admin secret update reports active WFP worker sync failures', async (
   assert.equal(response.status, 502, await response.clone().text());
   assert.equal((await response.json()).error.code, 'SECRET_ACTIVE_WORKER_SYNC_FAILED');
   assert.equal((await store.listEnabledSiteSecrets('production', 'site_mine'))[0].name, 'API_TOKEN');
-  assert.deepEqual(lines.map((line) => JSON.parse(line)), [
-    {
-      event: 'pages_runtime_config_failure',
-      operation: 'secret_sync',
-      environment: 'production',
-      siteId: 'site_mine',
-      stage: 'provider_sync',
-      reason: 'provider_request_failed',
-      errorCode: 'SECRET_ACTIVE_WORKER_SYNC_FAILED',
-    },
-  ]);
+  assert.deepEqual(
+    lines.map((line) => JSON.parse(line)),
+    [
+      {
+        event: 'pages_runtime_config_failure',
+        operation: 'secret_sync',
+        environment: 'production',
+        siteId: 'site_mine',
+        stage: 'provider_sync',
+        reason: 'provider_request_failed',
+        errorCode: 'SECRET_ACTIVE_WORKER_SYNC_FAILED',
+      },
+    ]
+  );
 });
 
 test('site admin secret writes map binding conflicts and quotas to stable errors', async () => {
@@ -1621,17 +1680,20 @@ test('site admin secret writes map store failures to runtime config errors', asy
   assert.equal(response.status, 503, await response.clone().text());
   assert.equal((await response.json()).error.code, 'RUNTIME_CONFIG_UNSUPPORTED');
   assert.deepEqual(await store.listEnabledSiteSecrets('production', 'site_mine'), []);
-  assert.deepEqual(lines.map((line) => JSON.parse(line)), [
-    {
-      event: 'pages_runtime_config_failure',
-      operation: 'secret_put',
-      environment: 'production',
-      siteId: 'site_mine',
-      stage: 'unknown',
-      reason: 'store_operation_failed',
-      errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
-    },
-  ]);
+  assert.deepEqual(
+    lines.map((line) => JSON.parse(line)),
+    [
+      {
+        event: 'pages_runtime_config_failure',
+        operation: 'secret_put',
+        environment: 'production',
+        siteId: 'site_mine',
+        stage: 'unknown',
+        reason: 'store_operation_failed',
+        errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+      },
+    ]
+  );
 });
 
 test('site admin secret deletes map store failures to runtime config errors', async () => {
@@ -1669,17 +1731,20 @@ test('site admin secret deletes map store failures to runtime config errors', as
   assert.equal(response.status, 503, await response.clone().text());
   assert.equal((await response.json()).error.code, 'RUNTIME_CONFIG_UNSUPPORTED');
   assert.equal((await store.listEnabledSiteSecrets('production', 'site_mine'))[0].name, 'API_TOKEN');
-  assert.deepEqual(lines.map((line) => JSON.parse(line)), [
-    {
-      event: 'pages_runtime_config_failure',
-      operation: 'secret_delete',
-      environment: 'production',
-      siteId: 'site_mine',
-      stage: 'unknown',
-      reason: 'store_operation_failed',
-      errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
-    },
-  ]);
+  assert.deepEqual(
+    lines.map((line) => JSON.parse(line)),
+    [
+      {
+        event: 'pages_runtime_config_failure',
+        operation: 'secret_delete',
+        environment: 'production',
+        siteId: 'site_mine',
+        stage: 'unknown',
+        reason: 'store_operation_failed',
+        errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+      },
+    ]
+  );
 });
 
 test('site admin can update access policy and delete runtime config entries', async () => {
@@ -1814,9 +1879,7 @@ test('console access update commits visibility and ACL once while preserving pub
   const snapshot = snapshots.read(pointer.snapshotKey);
   assert.equal(snapshot.exposure, 'public');
   assert.equal(snapshot.accessMode, 'acl');
-  assert.deepEqual(snapshot.acl, [
-    { effect: 'allow', subjectType: 'email', subjectValue: 'teammate@example.com' },
-  ]);
+  assert.deepEqual(snapshot.acl, [{ effect: 'allow', subjectType: 'email', subjectValue: 'teammate@example.com' }]);
 });
 
 test('console access update returns a stable conflict while the site lease is held', async () => {
@@ -1887,7 +1950,16 @@ test('console access snapshot failure compensates visibility and ACL while prese
   assert.equal(route.exposure, 'public');
   assert.equal(route.policyVersion, initialRoute.policyVersion + 2);
   assert.deepEqual(await store.listSiteAclEntries(site.id), [
-    { id: 'acl_existing', siteId: site.id, subjectType: 'email', subjectValue: 'existing@example.com', accessRole: 'viewer', effect: 'allow', createdBy: 'usr_me', createdAt: '2026-06-15T00:00:00.000Z' },
+    {
+      id: 'acl_existing',
+      siteId: site.id,
+      subjectType: 'email',
+      subjectValue: 'existing@example.com',
+      accessRole: 'viewer',
+      effect: 'allow',
+      createdBy: 'usr_me',
+      createdAt: '2026-06-15T00:00:00.000Z',
+    },
   ]);
 });
 
@@ -1920,19 +1992,30 @@ test('regular console access API rejects explicit exposure changes', async () =>
 
 test('site owner can delete a site from console settings', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  const requests = [];
   await seedSite(store, {
     id: 'site_mine',
     slug: 'mine',
     ownerUserId: 'usr_me',
     visibility: 'org',
   });
+  await activateSite(store, 'site_mine', { visibility: 'org' });
+  await seedLifecycleWebhook(store, 'site.deleted');
 
   const response = await worker.fetch(
     internalConsoleRequest('/.xd-pages/api/console/sites/site_mine', {
       userId: 'usr_me',
       method: 'DELETE',
     }),
-    env(store)
+    env(store, {
+      ROUTE_SNAPSHOTS: createSnapshotStore(),
+      WEBHOOK_URL_ENCRYPTION_KEY: TEST_WEBHOOK_URL_ENCRYPTION_KEY,
+      resolveWebhookHost: async () => ['8.8.8.8'],
+      WEBHOOK_FETCH: async (request) => {
+        requests.push(request);
+        return new Response('ok', { status: 200 });
+      },
+    })
   );
 
   assert.equal(response.status, 200, await response.clone().text());
@@ -1945,6 +2028,93 @@ test('site owner can delete a site from console settings', async () => {
     siteId: 'site_mine',
   });
   assert.equal(detail, null);
+  assert.equal(requests.length, 1);
+  const payload = await requests[0].json();
+  assert.equal(payload.event.type, 'site.deleted');
+  assert.equal(payload.actor.userId, 'usr_me');
+  assert.equal(payload.site.status, 'deleted');
+});
+
+test('console delete does not emit site.deleted when the deleted route snapshot fails', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  const requests = [];
+  await seedSite(store, {
+    id: 'site_mine',
+    slug: 'mine',
+    ownerUserId: 'usr_me',
+    visibility: 'org',
+  });
+  await activateSite(store, 'site_mine', { visibility: 'org' });
+  await seedLifecycleWebhook(store, 'site.deleted');
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/sites/site_mine', {
+      userId: 'usr_me',
+      method: 'DELETE',
+    }),
+    env(store, {
+      ROUTE_SNAPSHOTS: failingSnapshotStore(),
+      WEBHOOK_URL_ENCRYPTION_KEY: TEST_WEBHOOK_URL_ENCRYPTION_KEY,
+      resolveWebhookHost: async () => ['8.8.8.8'],
+      WEBHOOK_FETCH: async (request) => {
+        requests.push(request);
+        return new Response('ok', { status: 200 });
+      },
+    })
+  );
+
+  assert.equal(response.status, 503, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'ROUTE_SNAPSHOT_WRITE_FAILED');
+  assert.equal(requests.length, 0);
+});
+
+test('console missing and repeated deletes do not emit site.deleted', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  const requests = [];
+  await seedSite(store, {
+    id: 'site_mine',
+    slug: 'mine',
+    ownerUserId: 'usr_me',
+    visibility: 'org',
+  });
+  await activateSite(store, 'site_mine', { visibility: 'org' });
+  await seedLifecycleWebhook(store, 'site.deleted');
+  const deleteEnv = env(store, {
+    ROUTE_SNAPSHOTS: createSnapshotStore(),
+    WEBHOOK_URL_ENCRYPTION_KEY: TEST_WEBHOOK_URL_ENCRYPTION_KEY,
+    resolveWebhookHost: async () => ['8.8.8.8'],
+    WEBHOOK_FETCH: async (request) => {
+      requests.push(request);
+      return new Response('ok', { status: 200 });
+    },
+  });
+
+  const missing = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/sites/site_missing', {
+      userId: 'usr_me',
+      method: 'DELETE',
+    }),
+    deleteEnv
+  );
+  const first = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/sites/site_mine', {
+      userId: 'usr_me',
+      method: 'DELETE',
+    }),
+    deleteEnv
+  );
+  const repeated = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/sites/site_mine', {
+      userId: 'usr_me',
+      method: 'DELETE',
+    }),
+    deleteEnv
+  );
+
+  assert.equal(missing.status, 404, await missing.clone().text());
+  assert.equal(first.status, 200, await first.clone().text());
+  assert.equal(repeated.status, 404, await repeated.clone().text());
+  assert.equal(requests.length, 1);
 });
 
 test('site publisher can transfer site owner from console settings to an active user', async () => {

@@ -68,7 +68,7 @@ test('console admin rejects template payload mode without a restricted template'
   assert.equal((await response.json()).error.code, 'WEBHOOK_TEMPLATE_REQUIRED');
 });
 
-test('console admin rejects webhook events that are not delivered yet', async () => {
+test('console admin accepts catalog events and rejects events without producers', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-01T00:00:00.000Z' });
   await seedPlatformAdmin(store);
   const create = await worker.fetch(
@@ -77,15 +77,15 @@ test('console admin rejects webhook events that are not delivered yet', async ()
       body: {
         name: 'Unsupported events',
         url: FULL_WEBHOOK_URL,
-        events: ['site.deployed', 'site.failed'],
+        events: ['site.deployed', 'site.failed', 'site.disabled', 'site.deleted'],
         payloadMode: 'standard',
       },
     }),
     env(store)
   );
 
-  assert.equal(create.status, 400);
-  assert.equal((await create.json()).error.code, 'WEBHOOK_EVENTS_INVALID');
+  assert.equal(create.status, 201, await create.clone().text());
+  assert.deepEqual((await create.json()).webhook.events, ['site.deployed', 'site.failed', 'site.disabled', 'site.deleted']);
 
   await store.createWebhookSubscription({
     id: 'wh_1',
@@ -111,7 +111,9 @@ test('console admin rejects webhook events that are not delivered yet', async ()
   );
 
   assert.equal(update.status, 400);
-  assert.equal((await update.json()).error.code, 'WEBHOOK_EVENTS_INVALID');
+  const updateBody = await update.json();
+  assert.equal(updateBody.error.code, 'WEBHOOK_EVENTS_INVALID');
+  assert.match(updateBody.error.action, /site\.deployed/);
 });
 
 test('console admin can add a restricted template without resending payloadMode on update', async () => {
@@ -295,6 +297,10 @@ test('console admin lists and disables webhook subscriptions without exposing ta
   assert.equal(listBody.webhooks[0].urlHost, 'hooks.slack.com');
   assert.equal(listBody.webhooks[0].url, undefined);
   assert.equal(listBody.webhooks[0].encryptedUrlCiphertext, undefined);
+  assert.deepEqual(
+    listBody.supportedEvents.map((event) => event.type),
+    ['site.deployed', 'site.failed', 'site.disabled', 'site.deleted']
+  );
 
   const disabled = await worker.fetch(
     internalConsoleRequest('/.xd-pages/api/console/admin/webhooks/wh_1', {

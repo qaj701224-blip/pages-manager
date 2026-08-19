@@ -26,7 +26,7 @@ Webhook 事件范围曾出现过没有真实生产者的 UI 占位项，随后�
 ## 非目标
 
 - 不把 `audit_events` 直接转换成通用 Webhook 事件流。
-- 不增加站点创建、重新启用、Owner 转移、团队成员、Access Key、Secret 或管理员治理 Webhook。
+- 不增加站点创建、重新启用、Owner 转移、团队成员、Access Key、Secret 或管理员治理 Webhook。platform-admin 的 force DELETE 仍属于 `site.deleted` 生命周期事件生产者，不新增独立的管理员治理事件。现有 deploy owner-transfer 只作为既有部署路径中的一个事件来源，不在本设计中重新定义其状态机。
 - 不增加普通用户或团队自助 Webhook。
 - 不增加签名 Secret、HMAC、持久化 outbox、严格 exactly-once、自动重试执行器或手动重试 API。
 - 不修改数据库 schema、公开 OpenAPI、CLI help、pages skill 或 v1 legacy API。
@@ -99,7 +99,7 @@ Console 和 pages-api 分别增加相同事件常量，业务路径补充投递�
 - 团队合并：`team_a → team_b；站点 2 / Access Key 1 / 成员 5`。
 - 到期清理：`处理 4；成功 3 / 失败 1 / 跳过 0`。
 - v1 站点退役：`demo；阶段 KV 删除；demo.workers.xd.team`。
-- 连接拒绝：`actor@example.com；原因 membership_inactive`。
+- 连接拒绝：`actor@example.com；原因 PAGES_USER_INACTIVE`。
 
 未知事件从顶层资源 ID 和 metadata 中选择最多三个可安全序列化的 primitive 值。对象或数组使用有界摘要，例如字段数量、项目数量或一层关键计数；不能再只显示“X 个字段”而没有详情入口。
 
@@ -144,15 +144,16 @@ event id 和资源 ID 提供复制操作。metadata 可以整体复制，但复�
 }
 ```
 
-`audit_events.metadata_json` 的写入器仍承担第一层安全责任：每个生产者只能写排障所需的安全摘要，不能写 Secret、token、cookie、session、完整 Webhook URL 或 provider 凭证。为了让未知和未来事件也能安全进入详情层，`formatAuditEvent` 在返回 Console 前必须再调用统一的防御性 sanitizer：
+`audit_events.metadata_json` 的写入器仍承担第一层安全责任：每个生产者只能写排障所需的安全摘要，不能写 Secret、token、cookie、session、完整 Webhook URL 或 provider 凭证。为了让未知和未来事件也能安全进入详情层，`formatAuditEvent` 在返回 Console 前必须再调用统一的防御性 sanitizer；本次只增加通用 denylist 和结构上限，不新增按事件类型维护的第二套 metadata 目录。
 
 - 只接受 JSON primitive、array 和 plain object；其它值丢弃或替换为明确占位符。
 - 递归处理嵌套对象，对 key 名大小写不敏感地拦截 `token`、`secret`、`password`、`authorization`、`cookie`、`session`、`ciphertext`、`privateKey`、`apiKey`、`accessKeyHash`、`accessKeyPlaintext`、`webhookUrl` 等敏感字段，并将值替换为 `[REDACTED]`。
+- 无论 eventType 为何，都必须 omit 或替换 `workerName`、`resourceRef`、`providerResourceId`、`accountId`、`zoneId`、`namespaceId`、`databaseId`、`routeRef`、`cleanupResourceRef` 等 provider resource reference；这些字段不能出现在详情、搜索或整体复制结果中。
 - HTTP/HTTPS URL 字符串只保留 origin/hostname 级摘要，不返回 query、fragment 或可能充当 bearer secret 的 path 尾部。
 - 对递归深度、对象 key 数、数组长度和字符串长度设置固定上限；超限内容以 `[TRUNCATED]` 标识。具体上限在实现计划中按现有响应体规模选择，并通过测试锁定。
 - 中文摘要、客户端搜索、详情展示和复制都只消费 sanitizer 的输出，不能继续引用原始 metadata。
 
-不返回 `traceId`、IP hash、user-agent hash 或新的内部 provider 信息。该变化属于 Console internal API，不修改 `apps/pages-api/src/openapi.js`。
+保留现有 `traceId` 作为多阶段审计操作的关联字段；不返回 IP hash、user-agent hash 或新的内部 provider 信息。该变化属于 Console internal API，不修改 `apps/pages-api/src/openapi.js`。
 
 ## Webhook 事件目录
 
@@ -165,29 +166,31 @@ pages-api 新增聚焦的 Webhook 事件目录模块。每个事件描述至少�
   type: 'site.failed',
   label: '部署失败',
   description: '站点部署或回滚进入失败终态时触发',
-  templateVariables: [
+  requiredTemplateVariables: [
     'event.id',
     'event.type',
     'event.environment',
     'event.occurredAt',
+    'site.id',
+    'site.slug',
+    'site.ownerType',
+    'deployment.id',
+    'deployment.status',
+    'deployment.operation'
+  ],
+  optionalTemplateVariables: [
     'actor.type',
     'actor.userId',
     'actor.email',
     'actor.name',
-    'site.id',
-    'site.slug',
     'site.hostname',
-    'site.ownerType',
     'site.ownerId',
     'site.visibility',
     'site.status',
     'team.id',
     'team.name',
     'team.teamType',
-    'deployment.id',
-    'deployment.status',
     'deployment.source',
-    'deployment.operation',
     'deployment.createdAt',
     'deployment.completedAt',
     'deployment.failureStage',
@@ -196,7 +199,7 @@ pages-api 新增聚焦的 Webhook 事件目录模块。每个事件描述至少�
 }
 ```
 
-`templateVariables` 不是示例子集，而是该事件可能提供给标准 Payload 和受限模板的完整字段上界。字段可以因为 actor 类型、owner 类型或数据可用性而在单次事件中缺失，但不能出现目录没有声明的模板字段。服务端全局模板 allowlist 是所有事件 `templateVariables` 的并集。
+目录源码只维护互不重叠的 `requiredTemplateVariables` 和 `optionalTemplateVariables`；导出管理 API 与构建服务端全局 allowlist 时，再机械派生 `templateVariables = required ∪ optional`。required 字段必须在该事件的每个标准 Payload 中存在；optional 字段可以因为 actor 类型、owner 类型或数据可用性而在单次事件中缺失。例如 pending site creation 失败时没有 route，因此 `site.status` 对 `site.failed` 是 optional。目录测试必须断言两组无交集、派生并集完整且每个 producer Payload 满足 required invariant。
 
 `site.deployed` 必须完整保留当前 `ALLOWED_VARIABLE_PATHS` 中已有的 event、actor、site、team 和 deployment 字段；事件目录上线不能使任何现有合法模板变成变量非法。新增事件只能在此基础上增加安全字段，不能借机收缩旧 allowlist。
 
@@ -207,7 +210,7 @@ pages-api 新增聚焦的 Webhook 事件目录模块。每个事件描述至少�
 - `GET /.xd-pages/api/console/admin/webhooks` 返回的 `supportedEvents`。
 - Console 的事件复选框、中文说明和事件级标准 Payload 预览。
 
-管理 API 响应变为：
+管理 API 响应变为（示例省略了由两组变量机械派生的 `templateVariables` 数组）：
 
 ```json
 {
@@ -217,22 +220,24 @@ pages-api 新增聚焦的 Webhook 事件目录模块。每个事件描述至少�
       "type": "site.deployed",
       "label": "部署成功",
       "description": "站点部署成功并激活后触发",
-      "templateVariables": [
+      "requiredTemplateVariables": [
         "event.id",
         "event.type",
         "event.environment",
         "event.occurredAt",
+        "site.id",
+        "site.slug",
+        "site.ownerType",
+        "site.status"
+      ],
+      "optionalTemplateVariables": [
         "actor.type",
         "actor.userId",
         "actor.email",
         "actor.name",
-        "site.id",
-        "site.slug",
         "site.hostname",
-        "site.ownerType",
         "site.ownerId",
         "site.visibility",
-        "site.status",
         "team.id",
         "team.name",
         "team.teamType",
@@ -259,7 +264,7 @@ Console 不再用独立 `EVENT_OPTIONS` 判断可选事件。目录外的历史�
 新增：
 
 - `site.failed`：持久化 deployment 首次进入 `failed` 终态。包含 `deploy` 和 `rollback` operation；Payload 中的 operation 用于区分。
-- `site.disabled`：route visibility 从任意非 `disabled` 值成功变为 `disabled`。
+- `site.disabled`：既有 access-policy 操作完成后，route visibility 从任意非 `disabled` 值变为 `disabled`；生产者包括 Console access 更新、CLI-managed sites visibility 更新，以及现有 deploy owner-transfer 部署路径。
 - `site.deleted`：站点删除操作成功完成。
 
 早期 Console 曾展示过 `site.failed` 和 `site.disabled`，因此恢复这两个枚举可以兼容可能残留的历史 subscription。`team.member.updated` 没有本次生产者，继续不支持。
@@ -335,40 +340,40 @@ Payload 包含：
 - `site.status = "deleted"`。
 - owner 为 team 时的可选 `team` 摘要。
 
-Payload 不包含已删除 Worker、route snapshot、cleanup task 或 hostname claim 的内部引用。删除后的 WFP cleanup 仍是 best-effort 维护，不影响 `site.deleted` 的协议语义。
+Payload 不包含已删除 Worker、route snapshot、cleanup task 或 hostname claim 的内部引用。workspace Console DELETE、platform-admin force DELETE 和 CLI-managed DELETE 都是该事件的生产者；每条路径都必须把已认证的 session/actor 传给事件构造，不生成 actorless Payload。删除后的 WFP cleanup 仍是 best-effort 维护，不影响 `site.deleted` 的协议语义。
+
+### 事件变量目录
+
+除 `site.failed` 外，事件目录按以下规则定义 required/optional 变量；目录源码仍只维护两组互不重叠的数组，并机械派生 `templateVariables`：
+
+| 事件            | requiredTemplateVariables                                                                                                                                                                                   | optionalTemplateVariables                                                                                                                |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `site.disabled` | `event.id`, `event.type`, `event.environment`, `event.occurredAt`, `actor.type`, `site.id`, `site.slug`, `site.ownerType`, `site.visibility`, `change.field`, `change.previousValue`, `change.currentValue` | `actor.userId`, `actor.email`, `actor.name`, `site.hostname`, `site.ownerId`, `site.status`, `team.id`, `team.name`, `team.teamType`     |
+| `site.deleted`  | `event.id`, `event.type`, `event.environment`, `event.occurredAt`, `actor.type`, `site.id`, `site.slug`, `site.ownerType`, `site.status`                                                                    | `actor.userId`, `actor.email`, `actor.name`, `site.hostname`, `site.ownerId`, `site.visibility`, `team.id`, `team.name`, `team.teamType` |
+
+`change.*` 是本次新增的三个安全模板路径，只用于 `site.disabled`；其它事件不能使用。所有三个删除入口和三个停用入口都必须提供 required 字段，team 摘要和其它上下文字段按 optional 规则处理。
 
 ## 生产者与提交时机
 
 ### 部署失败
 
-`apps/pages-api/src/deployments.js` 使用统一 failure-finalize helper 收敛现有失败终态分支。helper 的职责是：
+在现有部署和回滚失败收尾逻辑将 deployment 持久化为 `failed` 后，若该请求确实完成首次失败终态转换，则构造并投递一次 `site.failed`。幂等请求读取已失败 terminal deployment 时返回现有 failed terminal deployment envelope（当前重放语义为 HTTP 200），不重复投递，也不把首次失败的 4xx/5xx 响应重新返回。
 
-1. 将 deployment 持久化为 `failed`，保存现有安全的 failureStage 和 errorCode。
-2. 确认该请求确实完成从非终态到失败终态的转换。
-3. 基于当前 actor、site 和更新后的 deployment 构造事件。
-4. 使用与成功部署相同的调度模式投递 Webhook。
-5. 返回原有业务错误响应，不因 Webhook 结果改写响应。
-
-幂等请求读到已经失败的 terminal deployment 时只重放原响应，不再次产生事件。若失败状态本身无法持久化，不产生 `site.failed`。
-
-该 helper 是对失败收尾逻辑的定向收敛，不重写部署状态机或改变现有错误码。
+不在本设计中新增 deployment 状态机、terminal CAS 或 reconcile 机制；沿用现有实现的终态和幂等语义。若失败状态无法持久化，则不产生 `site.failed`。
 
 ### 站点停用
 
-Console access 更新和 CLI-managed sites API 的 visibility 更新路径都需要：
+Console access 更新、CLI-managed sites visibility 更新和现有 deploy owner-transfer 路径继续使用各自已有的 access-policy、route snapshot 和 route pointer 提交流程。本设计只增加事件判断：在既有业务操作确认最终 route snapshot/pointer 已成功提交后，若 visibility 从非 `disabled` 变为 `disabled`，投递一次 `site.disabled`。
 
-1. 保存 previous visibility。
-2. 更新 D1 route visibility。
-3. 成功刷新 active route snapshot。
-4. 仅当 previous visibility 不是 `disabled` 且 current visibility 是 `disabled` 时投递事件。
-
-snapshot 失败并回滚时不投递。Webhook 失败不触发 visibility 回滚。
+ACL-only 更新、重复保存 `disabled`、snapshot/pointer 提交失败以及既有流程判定为回滚或未提交成功的操作不产生事件。Webhook 结果不能改变原有业务响应或触发额外 route 回滚。
 
 ### 站点删除
 
-Console 删除和 CLI-managed sites API 删除路径都在删除流程返回成功前调度事件。事件只在删除状态和必要的 deleted route snapshot 成功后产生；清理任务入队仍按现有逻辑 best-effort 执行。
+Console 删除和 CLI-managed sites API 删除继续使用现有删除、deleted route snapshot、hostname claim 和 cleanup 流程。本设计只在既有删除流程确认成功完成后投递一次 `site.deleted`；not found、重复删除、snapshot/pointer 提交失败或既有流程未确认成功时不产生事件。
 
-重复删除返回 not found 时不产生事件。若删除流程返回 snapshot 错误，则不产生事件；本次不借机调整现有删除回滚行为。
+### Route lifecycle 依赖边界
+
+本设计不重新定义 D1、KV immutable snapshot、route pointer、ACL、owner-transfer、hostname claim、reconciliation 或 rollback 协议。它们沿用现有架构与实现语义：KV route pointer 是 router 可见的提交点；pointer 状态不确定时由既有业务错误和 reconciliation 机制处理。Webhook 生产者只消费业务路径已经确认的最终结果，不自行回滚或修复 route 状态。
 
 ## 投递与一致性语义
 
@@ -384,7 +389,8 @@ Webhook 投递继续复用：
 
 - 投递、模板渲染或 delivery 记录失败不能回滚原业务操作。
 - 当前设计不使用事务 outbox，因此不承诺严格 exactly-once。
-- 同一业务状态转换在正常请求路径中只调度一次；Worker 在提交后、调度前异常仍可能导致漏发。
+- 新生产者复用现有成功部署 Webhook 的构造、投递和异步调度模式：有 `ExecutionContext` 时使用现有 `ctx.waitUntil(promise)`，没有 `ctx` 时沿用现有 await fallback。允许从 Worker fetch 入口把可选 `ctx` 透传到 versions、sites 和 Console handler；这是既有接线扩展，不新增 delivery helper、重试器、超时协议或另一套上下文传递约定。
+- 同一请求中的事件构造或投递异常继续由现有 producer 隔离；Webhook 结果不能改变原有业务响应。并发、重复请求和 pointer 状态不确定性沿用各业务路径与 route lifecycle 的既有语义。
 - 接收方继续使用 `X-XD-Cell-Delivery` 做幂等，并用 `X-XD-Cell-Event` 区分事件。
 
 ## Console Webhook 体验
@@ -403,7 +409,7 @@ Webhook 投递继续复用：
 }
 ```
 
-编辑已有 subscription 时不自动改写模板。模板变量校验继续执行安全全局 allowlist；Console 根据所选事件标识某变量在哪些事件中可能不存在。字符串插值缺失值变为空字符串、精确变量缺失导致 render failed 的现有语义保持不变。
+编辑已有 subscription 时不自动改写模板。模板变量校验继续执行安全全局 allowlist；Console 根据所选事件的 `requiredTemplateVariables` / `optionalTemplateVariables` 标识某变量在哪些事件中可能不存在。字符串插值缺失值变为空字符串、精确变量缺失导致 render failed 的现有语义保持不变。
 
 ## 错误处理
 
@@ -429,7 +435,7 @@ Webhook 投递继续复用：
 ### 审计 API 与 UI
 
 - `apps/pages-api/src/admin.test.js` 断言 audit response 包含 nullable resource ids，且不新增敏感字段。
-- pages-api focused 测试断言防御性 sanitizer 能递归遮盖敏感 key、收敛完整 URL、限制异常深度/长度，并保证摘要、搜索和详情只收到 sanitizer 输出。
+- pages-api focused 测试断言防御性 sanitizer 能递归遮盖敏感 key 和 provider resource reference、收敛完整 URL、限制异常深度/长度，并保证摘要、搜索和详情只收到 sanitizer 输出。
 - Console focused 测试断言中文标题、英文次级枚举、详情入口和 metadata 详情容器存在。
 - 手工验证长 ID、长 metadata 以及 `390px`、`768px`、`1280px` 布局。
 
@@ -445,6 +451,7 @@ Webhook 投递继续复用：
 - `site.disabled` 包含 visibility change。
 - `site.deleted` 不包含 provider 和 cleanup 引用。
 - 模板预览变量目录与服务端 allowlist 一致。
+- required/optional 变量目录能让 Console 对 personal site、team-owned site、pending site creation failure 和无 actor 的事件显示准确的可能缺失字段告警；目录测试断言两组无交集、`templateVariables` 派生并集与 producer required invariant。
 - 目录迁移前所有现有合法 `site.deployed` 模板变量在迁移后仍能通过校验。
 - Webhook 编辑 UI 收到含 `team.member.updated` 等目录外历史事件的 subscription 时，显式显示警告和移除操作；移除前保存禁用，移除后可以保存，查看和停用不受影响。
 
@@ -454,13 +461,13 @@ focused 测试覆盖：
 
 - 代表性的部署失败阶段产生一次 `site.failed`。
 - deploy 和 rollback failure 都携带正确 operation。
-- 幂等重放失败 deployment 不重复投递。
+- 幂等重放失败 deployment 返回现有 HTTP 200 failed terminal envelope 且不重复投递。
 - 失败状态无法持久化时不投递。
-- Console 和 CLI-managed API 的首次停用都产生 `site.disabled`。
-- 重复 `disabled`、ACL-only 更新和 snapshot 回滚不投递。
-- Console 和 CLI-managed API 的成功删除都产生 `site.deleted`。
+- Console、CLI-managed API 和 deploy owner-transfer 的首次停用都产生 `site.disabled`。
+- 重复 `disabled`、ACL-only 更新、pointer 状态不确定或既有流程未确认成功的操作不投递事件。
+- workspace Console DELETE、platform-admin force DELETE 和 CLI-managed API 的成功删除都产生 `site.deleted`，且事件均带认证 actor。
 - not found、snapshot error 和重复删除不投递。
-- delivery 抛错或返回 failed 时，部署失败、停用和删除接口维持原业务结果。
+- Webhook 投递异常时，部署失败、停用和删除接口维持原业务结果，并复用现有异步调度测试。
 
 完整验证执行仓库根目录：
 
@@ -498,6 +505,8 @@ pnpm test
 - 说明每个事件的精确触发时机。
 - 说明安全 Payload 字段和禁止字段。
 - 说明 best-effort、非 exactly-once 和接收方幂等责任。
+- 说明新生产者复用现有 Webhook 投递和异步调度语义，不引入新的 route lifecycle 或 delivery 协议。
+- 说明 workspace Console DELETE、platform-admin force DELETE 和 CLI-managed DELETE 都属于 `site.deleted` 生产路径。
 - 说明历史 `site.failed` / `site.disabled` subscription 的启用行为。
 
 审计展示属于 Console 内部交互，可在同一文档的管理员审计段补充“中文名称 + 原始枚举 + 摘要 + 详情”的展示约定。不更新 OpenAPI、CLI 文档或 pages skill。

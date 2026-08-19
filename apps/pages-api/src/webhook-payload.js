@@ -1,31 +1,7 @@
-const encoder = new globalThis.TextEncoder();
+import { getWebhookTemplateVariablePaths } from './webhook-events.js';
 
-const ALLOWED_VARIABLE_PATHS = new Set([
-  'event.id',
-  'event.type',
-  'event.environment',
-  'event.occurredAt',
-  'actor.type',
-  'actor.userId',
-  'actor.email',
-  'actor.name',
-  'site.id',
-  'site.slug',
-  'site.hostname',
-  'site.ownerType',
-  'site.ownerId',
-  'site.visibility',
-  'site.status',
-  'team.id',
-  'team.name',
-  'team.teamType',
-  'deployment.id',
-  'deployment.status',
-  'deployment.source',
-  'deployment.operation',
-  'deployment.createdAt',
-  'deployment.completedAt',
-]);
+const encoder = new globalThis.TextEncoder();
+const ALLOWED_VARIABLE_PATHS = getWebhookTemplateVariablePaths();
 
 const VARIABLE_PATTERN = /{{\s*([A-Za-z0-9_.]+)\s*}}/g;
 const EXACT_VARIABLE_PATTERN = /^{{\s*([A-Za-z0-9_.]+)\s*}}$/;
@@ -73,8 +49,17 @@ export function buildStandardWebhookPayload(event = {}) {
     operation: event.deployment?.operation,
     createdAt: event.deployment?.createdAt,
     completedAt: event.deployment?.completedAt,
+    failureStage: event.deployment?.failureStage,
+    errorCode: event.deployment?.errorCode,
   });
   if (Object.keys(deployment).length > 0) payload.deployment = deployment;
+
+  const change = pickDefined({
+    field: event.change?.field,
+    previousValue: event.change?.previousValue,
+    currentValue: event.change?.currentValue,
+  });
+  if (Object.keys(change).length > 0) payload.change = change;
 
   return payload;
 }

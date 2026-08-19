@@ -238,7 +238,9 @@ XD Cell event
   -> 记录 delivery metadata
 ```
 
-第一版只支持订阅 `site.deployed`。其它平台事件需要等 pages-api 真实产生并投递对应事件后再开放到 Admin Webhook 配置。
+Admin Webhook 当前支持四类真实生命周期事件：`site.deployed`、`site.failed`、`site.disabled` 和 `site.deleted`。事件目录由 pages-api 返回，Console 不维护第二份事件清单。`site.failed` 在 deploy/rollback 首次失败终态持久化后触发；`site.disabled` 由 Console access 更新、CLI-managed visibility 更新和 deploy owner-transfer 三类既有路径产生，且只在非 `disabled` → `disabled` 的访问策略变更及既有 route snapshot/pointer 成功后触发；`site.deleted` 覆盖 workspace Console、platform-admin force DELETE 和 CLI-managed DELETE，且携带认证 actor。成功 rollback 不重复发送 `site.deployed`。
+
+这些事件只复用既有 deployment、access-policy、route snapshot/pointer、delete 和 cleanup 流程；Webhook 不新增 route lifecycle、回滚、reconciliation、CAS、outbox 或 delivery 协议。投递仍是 best-effort：有 `ExecutionContext` 时使用 `ctx.waitUntil`，否则等待现有投递 Promise；业务响应不因投递失败改变。Payload 只包含安全业务字段，不包含 error message/diagnostics、provider reference、cleanup task 或完整 URL。
 
 第一版不提供额外 signing secret 或 HMAC 签名。`webhookUrl` 自身按 bearer secret 处理：
 

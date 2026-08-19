@@ -6,6 +6,7 @@ import worker from './index.js';
 import { markRuntimeConfigError } from './runtime-config-diagnostics.js';
 import { syncActiveWfpPlainTextBindings, syncActiveWfpSecret } from './sites.js';
 import { createTestPagesStore } from './test-store.js';
+import { seedLifecycleWebhook, TEST_WEBHOOK_URL_ENCRYPTION_KEY } from './lifecycle-webhook-test-fixtures.js';
 
 const BEARER_USR_1 = createAccessKeyPlaintext({
   environment: 'production',
@@ -461,6 +462,8 @@ test('gets a site by id for members and hides unknown sites', async () => {
 
 test('deletes owned site by soft-deleting site and holding hostname claim for reuse protection', async () => {
   const store = await createSeededStore();
+  const requests = [];
+  await seedLifecycleWebhook(store, 'site.deleted');
   await store.createSite({
     id: 'site_1',
     slug: 'guide',
@@ -474,7 +477,15 @@ test('deletes owned site by soft-deleting site and holding hostname claim for re
 
   const response = await worker.fetch(
     authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1', {}, { method: 'DELETE' }),
-    testEnv(store, { now: () => '2026-06-15T00:00:00.000Z' })
+    testEnv(store, {
+      now: () => '2026-06-15T00:00:00.000Z',
+      WEBHOOK_URL_ENCRYPTION_KEY: TEST_WEBHOOK_URL_ENCRYPTION_KEY,
+      resolveWebhookHost: async () => ['8.8.8.8'],
+      WEBHOOK_FETCH: async (request) => {
+        requests.push(request);
+        return new Response('ok', { status: 200 });
+      },
+    })
   );
   const getAfterDelete = await worker.fetch(authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1'), testEnv(store));
   const listAfterDelete = await worker.fetch(authRequest('https://api.pages.xd.team/.xd-pages/api/sites'), testEnv(store));
@@ -489,6 +500,54 @@ test('deletes owned site by soft-deleting site and holding hostname claim for re
   assert.equal(claim.status, 'held');
   assert.equal(claim.releaseReason, 'site_deleted');
   assert.equal(claim.reuseHoldUntil, '2026-06-15T00:05:00.000Z');
+  assert.equal(requests.length, 1);
+  const payload = await requests[0].json();
+  assert.equal(payload.event.type, 'site.deleted');
+  assert.equal(payload.actor.userId, 'usr_1');
+  assert.equal(payload.site.status, 'deleted');
+});
+
+test('CLI missing and repeated deletes do not emit site.deleted', async () => {
+  const store = await createSeededStore();
+  const requests = [];
+  await seedLifecycleWebhook(store, 'site.deleted');
+  await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.workers.xd.team',
+  });
+  const deleteEnv = testEnv(store, {
+    ROUTE_SNAPSHOTS: createSnapshotStore(),
+    WEBHOOK_URL_ENCRYPTION_KEY: TEST_WEBHOOK_URL_ENCRYPTION_KEY,
+    resolveWebhookHost: async () => ['8.8.8.8'],
+    WEBHOOK_FETCH: async (request) => {
+      requests.push(request);
+      return new Response('ok', { status: 200 });
+    },
+  });
+
+  const missing = await worker.fetch(
+    authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_missing', {}, { method: 'DELETE' }),
+    deleteEnv
+  );
+  const first = await worker.fetch(
+    authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1', {}, { method: 'DELETE' }),
+    deleteEnv
+  );
+  const repeated = await worker.fetch(
+    authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1', {}, { method: 'DELETE' }),
+    deleteEnv
+  );
+
+  assert.equal(missing.status, 404, await missing.clone().text());
+  assert.equal(first.status, 200, await first.clone().text());
+  assert.equal(repeated.status, 404, await repeated.clone().text());
+  assert.equal(requests.length, 1);
 });
 
 test('site deletion enqueues managed route and active-version Workers for cleanup without blocking deletion', async () => {
@@ -565,10 +624,13 @@ test('site deletion enqueues managed route and active-version Workers for cleanu
 
   assert.equal(response.status, 200, await response.clone().text());
   const tasks = await store.listDeploymentResourceCleanupTasks({ environment: 'production' });
-  assert.deepEqual(tasks.map((task) => [task.resourceRef, task.cleanupReason, task.cleanupAfter]), [
-    ['pages-v2-route-worker', 'site_deleted', '2026-06-15T00:05:00.000Z'],
-    ['pages-v2-previous-worker', 'site_deleted', '2026-06-15T00:05:00.000Z'],
-  ]);
+  assert.deepEqual(
+    tasks.map((task) => [task.resourceRef, task.cleanupReason, task.cleanupAfter]),
+    [
+      ['pages-v2-route-worker', 'site_deleted', '2026-06-15T00:05:00.000Z'],
+      ['pages-v2-previous-worker', 'site_deleted', '2026-06-15T00:05:00.000Z'],
+    ]
+  );
 
   const failingStore = await createSeededStore();
   await failingStore.createSite({
@@ -626,9 +688,13 @@ test('site delete rejects read-only access keys and non-owner members', async ()
     testEnv(store)
   );
   const accessKeyDelete = await worker.fetch(
-    authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1', {
-      Authorization: `Bearer ${readKey}`,
-    }, { method: 'DELETE' }),
+    authRequest(
+      'https://api.pages.xd.team/.xd-pages/api/sites/site_1',
+      {
+        Authorization: `Bearer ${readKey}`,
+      },
+      { method: 'DELETE' }
+    ),
     testEnv(store)
   );
 
@@ -780,10 +846,15 @@ test('personal access token can transfer a managed team site to the token user',
   const key = await seedAccessKey(store, 'ak_publish', ['deploy:site'], null);
 
   const response = await worker.fetch(
-    jsonMethodRequest('POST', 'https://api.pages.xd.team/.xd-pages/api/sites/site_team/transfer', {
-      ownerType: 'user',
-      ownerId: 'usr_1',
-    }, { Authorization: `Bearer ${key}` }),
+    jsonMethodRequest(
+      'POST',
+      'https://api.pages.xd.team/.xd-pages/api/sites/site_team/transfer',
+      {
+        ownerType: 'user',
+        ownerId: 'usr_1',
+      },
+      { Authorization: `Bearer ${key}` }
+    ),
     testEnv(store)
   );
 
@@ -936,10 +1007,15 @@ test('team access token cannot transfer a team site to a personal owner', async 
   });
 
   const response = await worker.fetch(
-    jsonMethodRequest('POST', 'https://api.pages.xd.team/.xd-pages/api/sites/site_team/transfer', {
-      ownerType: 'user',
-      ownerId: 'usr_1',
-    }, { Authorization: `Bearer ${key}` }),
+    jsonMethodRequest(
+      'POST',
+      'https://api.pages.xd.team/.xd-pages/api/sites/site_team/transfer',
+      {
+        ownerType: 'user',
+        ownerId: 'usr_1',
+      },
+      { Authorization: `Bearer ${key}` }
+    ),
     testEnv(store)
   );
 
@@ -1000,6 +1076,8 @@ test('allows deploy scope to read sites while keeping unrelated scopes read-only
 
 test('updates site visibility and bumps policy version for active routes', async () => {
   const store = await createSeededStore();
+  const requests = [];
+  await seedLifecycleWebhook(store, 'site.disabled');
   const site = await store.createSite({
     id: 'site_1',
     slug: 'guide',
@@ -1015,7 +1093,15 @@ test('updates site visibility and bumps policy version for active routes', async
 
   const response = await worker.fetch(
     patchJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1', { visibility: 'disabled' }),
-    testEnv(store, { ROUTE_SNAPSHOTS: snapshots })
+    testEnv(store, {
+      ROUTE_SNAPSHOTS: snapshots,
+      WEBHOOK_URL_ENCRYPTION_KEY: TEST_WEBHOOK_URL_ENCRYPTION_KEY,
+      resolveWebhookHost: async () => ['8.8.8.8'],
+      WEBHOOK_FETCH: async (request) => {
+        requests.push(request);
+        return new Response('ok', { status: 200 });
+      },
+    })
   );
 
   assert.equal(response.status, 200);
@@ -1026,6 +1112,28 @@ test('updates site visibility and bumps policy version for active routes', async
   assert.equal((await store.getRouteBySiteId('site_1')).cacheTier, 'strict');
   assert.equal(snapshots.read('production:route_pointer:guide.pages.xd.team').policyVersion, 2);
   assert.equal(snapshots.read('production:route_pointer:guide.pages.xd.team').routeGeneration, 1);
+
+  const repeated = await worker.fetch(
+    patchJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1', { visibility: 'disabled' }),
+    testEnv(store, {
+      ROUTE_SNAPSHOTS: snapshots,
+      WEBHOOK_URL_ENCRYPTION_KEY: TEST_WEBHOOK_URL_ENCRYPTION_KEY,
+      resolveWebhookHost: async () => ['8.8.8.8'],
+      WEBHOOK_FETCH: async (request) => {
+        requests.push(request);
+        return new Response('ok', { status: 200 });
+      },
+    })
+  );
+  assert.equal(repeated.status, 200, await repeated.clone().text());
+  assert.equal(requests.length, 1);
+  const payload = await requests[0].json();
+  assert.equal(payload.event.type, 'site.disabled');
+  assert.deepEqual(payload.change, {
+    field: 'visibility',
+    previousValue: 'org',
+    currentValue: 'disabled',
+  });
 });
 
 test('regular visibility update uses the site lease and preserves an existing public exposure', async () => {
@@ -1128,6 +1236,8 @@ test('regular site visibility API rejects explicit exposure changes', async () =
 
 test('rolls back visibility changes when active route snapshot write fails', async () => {
   const store = await createSeededStore();
+  const requests = [];
+  await seedLifecycleWebhook(store, 'site.disabled');
   const site = await store.createSite({
     id: 'site_1',
     slug: 'guide',
@@ -1142,7 +1252,15 @@ test('rolls back visibility changes when active route snapshot write fails', asy
 
   const response = await worker.fetch(
     patchJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1', { visibility: 'disabled' }),
-    testEnv(store, { ROUTE_SNAPSHOTS: failingSnapshotStore() })
+    testEnv(store, {
+      ROUTE_SNAPSHOTS: failingSnapshotStore(),
+      WEBHOOK_URL_ENCRYPTION_KEY: TEST_WEBHOOK_URL_ENCRYPTION_KEY,
+      resolveWebhookHost: async () => ['8.8.8.8'],
+      WEBHOOK_FETCH: async (request) => {
+        requests.push(request);
+        return new Response('ok', { status: 200 });
+      },
+    })
   );
 
   assert.equal(response.status, 503);
@@ -1150,10 +1268,13 @@ test('rolls back visibility changes when active route snapshot write fails', asy
   assert.equal((await store.getSite('site_1')).defaultVisibility, 'org');
   assert.equal((await store.getRouteBySiteId('site_1')).visibility, 'org');
   assert.equal((await store.getRouteBySiteId('site_1')).policyVersion, 3);
+  assert.equal(requests.length, 0);
 });
 
 test('rolls back active site deletes when route snapshot write fails', async () => {
   const store = await createSeededStore();
+  const requests = [];
+  await seedLifecycleWebhook(store, 'site.deleted');
   const site = await store.createSite({
     id: 'site_1',
     slug: 'guide',
@@ -1168,7 +1289,15 @@ test('rolls back active site deletes when route snapshot write fails', async () 
 
   const response = await worker.fetch(
     authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1', {}, { method: 'DELETE' }),
-    testEnv(store, { ROUTE_SNAPSHOTS: failingSnapshotStore() })
+    testEnv(store, {
+      ROUTE_SNAPSHOTS: failingSnapshotStore(),
+      WEBHOOK_URL_ENCRYPTION_KEY: TEST_WEBHOOK_URL_ENCRYPTION_KEY,
+      resolveWebhookHost: async () => ['8.8.8.8'],
+      WEBHOOK_FETCH: async (request) => {
+        requests.push(request);
+        return new Response('ok', { status: 200 });
+      },
+    })
   );
 
   assert.equal(response.status, 503);
@@ -1177,6 +1306,7 @@ test('rolls back active site deletes when route snapshot write fails', async () 
   assert.equal((await store.getRouteBySiteId('site_1')).routeStatus, 'active');
   assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, 'ver_1');
   assert.equal((await store.getHostnameClaim('guide.pages.xd.team')).status, 'active');
+  assert.equal(requests.length, 0);
 });
 
 test('rolls back visibility changes when snapshot write fails after runtime config changes', async () => {
@@ -1724,17 +1854,20 @@ test('secrets put reports when active WFP worker sync fails after saving secret'
   assert.equal(response.status, 502);
   assert.equal(body.error.code, 'SECRET_ACTIVE_WORKER_SYNC_FAILED');
   assert.equal((await store.listEnabledSiteSecrets('production', 'site_1'))[0].name, 'API_TOKEN');
-  assert.deepEqual(lines.map((line) => JSON.parse(line)), [
-    {
-      event: 'pages_runtime_config_failure',
-      operation: 'secret_sync',
-      environment: 'production',
-      siteId: 'site_1',
-      stage: 'provider_sync',
-      reason: 'provider_request_failed',
-      errorCode: 'SECRET_ACTIVE_WORKER_SYNC_FAILED',
-    },
-  ]);
+  assert.deepEqual(
+    lines.map((line) => JSON.parse(line)),
+    [
+      {
+        event: 'pages_runtime_config_failure',
+        operation: 'secret_sync',
+        environment: 'production',
+        siteId: 'site_1',
+        stage: 'provider_sync',
+        reason: 'provider_request_failed',
+        errorCode: 'SECRET_ACTIVE_WORKER_SYNC_FAILED',
+      },
+    ]
+  );
   assert.doesNotMatch(lines[0], /private|SENSITIVE|API_TOKEN|guide/);
 });
 
@@ -1768,26 +1901,29 @@ test('runtime provider setup failures log safe vars and secret diagnostics', asy
   assert.equal((await varsResult.json()).error.code, 'RUNTIME_VAR_ACTIVE_WORKER_SYNC_FAILED');
   assert.equal(secretResult.status, 502);
   assert.equal((await secretResult.json()).error.code, 'SECRET_ACTIVE_WORKER_SYNC_FAILED');
-  assert.deepEqual(lines.map((line) => JSON.parse(line)), [
-    {
-      event: 'pages_runtime_config_failure',
-      operation: 'plain_text_sync',
-      environment: 'production',
-      siteId: 'site_1',
-      stage: 'provider_setup',
-      reason: 'provider_configuration_failed',
-      errorCode: 'RUNTIME_VAR_ACTIVE_WORKER_SYNC_FAILED',
-    },
-    {
-      event: 'pages_runtime_config_failure',
-      operation: 'secret_sync',
-      environment: 'production',
-      siteId: 'site_1',
-      stage: 'provider_setup',
-      reason: 'provider_configuration_failed',
-      errorCode: 'SECRET_ACTIVE_WORKER_SYNC_FAILED',
-    },
-  ]);
+  assert.deepEqual(
+    lines.map((line) => JSON.parse(line)),
+    [
+      {
+        event: 'pages_runtime_config_failure',
+        operation: 'plain_text_sync',
+        environment: 'production',
+        siteId: 'site_1',
+        stage: 'provider_setup',
+        reason: 'provider_configuration_failed',
+        errorCode: 'RUNTIME_VAR_ACTIVE_WORKER_SYNC_FAILED',
+      },
+      {
+        event: 'pages_runtime_config_failure',
+        operation: 'secret_sync',
+        environment: 'production',
+        siteId: 'site_1',
+        stage: 'provider_setup',
+        reason: 'provider_configuration_failed',
+        errorCode: 'SECRET_ACTIVE_WORKER_SYNC_FAILED',
+      },
+    ]
+  );
   assert.doesNotMatch(lines.join('\n'), /sensitive|SENSITIVE|VAR_NAME|SECRET_NAME|VALUE/);
 });
 
@@ -1814,26 +1950,29 @@ test('runtime provider target read failures log safe vars and secret diagnostics
   assert.equal((await varsResult.json()).error.code, 'RUNTIME_VAR_ACTIVE_WORKER_SYNC_FAILED');
   assert.equal(secretResult.status, 502);
   assert.equal((await secretResult.json()).error.code, 'SECRET_ACTIVE_WORKER_SYNC_FAILED');
-  assert.deepEqual(lines.map((line) => JSON.parse(line)), [
-    {
-      event: 'pages_runtime_config_failure',
-      operation: 'plain_text_sync',
-      environment: 'production',
-      siteId: 'site_1',
-      stage: 'route_state_read',
-      reason: 'store_operation_failed',
-      errorCode: 'RUNTIME_VAR_ACTIVE_WORKER_SYNC_FAILED',
-    },
-    {
-      event: 'pages_runtime_config_failure',
-      operation: 'secret_sync',
-      environment: 'production',
-      siteId: 'site_1',
-      stage: 'route_state_read',
-      reason: 'store_operation_failed',
-      errorCode: 'SECRET_ACTIVE_WORKER_SYNC_FAILED',
-    },
-  ]);
+  assert.deepEqual(
+    lines.map((line) => JSON.parse(line)),
+    [
+      {
+        event: 'pages_runtime_config_failure',
+        operation: 'plain_text_sync',
+        environment: 'production',
+        siteId: 'site_1',
+        stage: 'route_state_read',
+        reason: 'store_operation_failed',
+        errorCode: 'RUNTIME_VAR_ACTIVE_WORKER_SYNC_FAILED',
+      },
+      {
+        event: 'pages_runtime_config_failure',
+        operation: 'secret_sync',
+        environment: 'production',
+        siteId: 'site_1',
+        stage: 'route_state_read',
+        reason: 'store_operation_failed',
+        errorCode: 'SECRET_ACTIVE_WORKER_SYNC_FAILED',
+      },
+    ]
+  );
   assert.doesNotMatch(lines.join('\n'), /sensitive|SENSITIVE|VAR_NAME|SECRET_NAME|VALUE|ROUTE_READ/);
 });
 
@@ -2336,13 +2475,9 @@ test('runtime vars legacy provider fallback receives a timeout signal', async ()
     },
   });
 
-  const result = await syncActiveWfpPlainTextBindings(
-    store,
-    environment,
-    { environment: 'production' },
-    site,
-    { API_BASE: 'https://api.example.com' }
-  );
+  const result = await syncActiveWfpPlainTextBindings(store, environment, { environment: 'production' }, site, {
+    API_BASE: 'https://api.example.com',
+  });
 
   assert.deepEqual(result, { appliesTo: 'active_worker' });
   assert.equal(receivedSignal instanceof globalThis.AbortSignal, true);
@@ -2448,17 +2583,20 @@ test('runtime secret sync does not hide a put failure when a stale delete conver
 
   assert.equal(result.status, 502);
   assert.equal((await result.json()).error.code, 'SECRET_ACTIVE_WORKER_SYNC_FAILED');
-  assert.deepEqual(lines.map((line) => JSON.parse(line)), [
-    {
-      event: 'pages_runtime_config_failure',
-      operation: 'secret_sync',
-      environment: 'production',
-      siteId: 'site_1',
-      stage: 'provider_sync',
-      reason: 'provider_request_failed',
-      errorCode: 'SECRET_ACTIVE_WORKER_SYNC_FAILED',
-    },
-  ]);
+  assert.deepEqual(
+    lines.map((line) => JSON.parse(line)),
+    [
+      {
+        event: 'pages_runtime_config_failure',
+        operation: 'secret_sync',
+        environment: 'production',
+        siteId: 'site_1',
+        stage: 'provider_sync',
+        reason: 'provider_request_failed',
+        errorCode: 'SECRET_ACTIVE_WORKER_SYNC_FAILED',
+      },
+    ]
+  );
   assert.doesNotMatch(lines[0], /SENSITIVE|API_TOKEN|latest-secret-value/);
 });
 
@@ -2505,13 +2643,7 @@ test('runtime provider sync passes the lease abort signal to vars and secret ope
     },
   });
 
-  const varsResult = await syncActiveWfpPlainTextBindings(
-    store,
-    environment,
-    { environment: 'production' },
-    site,
-    mutation
-  );
+  const varsResult = await syncActiveWfpPlainTextBindings(store, environment, { environment: 'production' }, site, mutation);
   const secretResult = await syncActiveWfpSecret(store, environment, { environment: 'production' }, site, {
     operation: 'put',
     name: 'API_TOKEN',
@@ -2521,7 +2653,10 @@ test('runtime provider sync passes the lease abort signal to vars and secret ope
   assert.deepEqual(varsResult, { appliesTo: 'active_worker' });
   assert.equal(secretResult, null);
   assert.equal(signals.length, 2);
-  assert.equal(signals.every((signal) => signal instanceof globalThis.AbortSignal), true);
+  assert.equal(
+    signals.every((signal) => signal instanceof globalThis.AbortSignal),
+    true
+  );
   assert.notEqual(signals[0], controller.signal);
   assert.notEqual(signals[1], controller.signal);
 });
@@ -2548,22 +2683,32 @@ test('runtime plain-text sync acquires the site lease before the runtime setting
   const workerNames = [];
   store.withSiteCommitLock = async (...args) => {
     siteLockCalls += 1;
-    return originalSiteLock(args[0], args[1], async (lease) => {
-      siteLockHeld = true;
-      try {
-        return await args[2](lease);
-      } finally {
-        siteLockHeld = false;
-      }
-    }, args[3]);
+    return originalSiteLock(
+      args[0],
+      args[1],
+      async (lease) => {
+        siteLockHeld = true;
+        try {
+          return await args[2](lease);
+        } finally {
+          siteLockHeld = false;
+        }
+      },
+      args[3]
+    );
   };
   store.withRuntimeConfigLock = async (...args) => {
     runtimeLockCalls += 1;
     assert.equal(siteLockHeld, true);
-    return originalRuntimeLock(args[0], args[1], async (lock) => {
-      assert.equal(siteLockHeld, true);
-      return args[2](lock);
-    }, args[3]);
+    return originalRuntimeLock(
+      args[0],
+      args[1],
+      async (lock) => {
+        assert.equal(siteLockHeld, true);
+        return args[2](lock);
+      },
+      args[3]
+    );
   };
 
   const environment = testEnv(store, {
@@ -2571,13 +2716,10 @@ test('runtime plain-text sync acquires the site lease before the runtime setting
       replacePlainTextBindings: async ({ workerName }) => workerNames.push(workerName),
     },
   });
-  const result = await syncActiveWfpPlainTextBindings(
-    store,
-    environment,
-    { environment: 'production' },
-    site,
-    { vars: [{ name: 'API_BASE', value: 'https://api.example.com' }], generation: 1 }
-  );
+  const result = await syncActiveWfpPlainTextBindings(store, environment, { environment: 'production' }, site, {
+    vars: [{ name: 'API_BASE', value: 'https://api.example.com' }],
+    generation: 1,
+  });
 
   assert.deepEqual(result, { appliesTo: 'active_worker' });
   assert.equal(siteLockCalls, 1);
@@ -2701,10 +2843,7 @@ test('runtime vars reject malformed bodies and do not expose stored values throu
     }),
     env
   );
-  const array = await worker.fetch(
-    jsonMethodRequest('PUT', 'https://api.pages.xd.team/.xd-pages/api/sites/guide/vars', []),
-    env
-  );
+  const array = await worker.fetch(jsonMethodRequest('PUT', 'https://api.pages.xd.team/.xd-pages/api/sites/guide/vars', []), env);
   const missingValue = await worker.fetch(
     putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/guide/vars', { name: 'API_BASE' }),
     env
@@ -2763,17 +2902,20 @@ test('runtime vars report active Worker provider failures after preserving the c
   assert.equal(JSON.parse(text).error.code, 'RUNTIME_VAR_ACTIVE_WORKER_SYNC_FAILED');
   assert.doesNotMatch(text, /provider-failure-private-value|SENSITIVE_PROVIDER_VAR_ERROR/);
   assert.equal((await store.listEnabledSiteVars('production', 'site_1'))[0].value, 'provider-failure-private-value');
-  assert.deepEqual(lines.map((line) => JSON.parse(line)), [
-    {
-      event: 'pages_runtime_config_failure',
-      operation: 'plain_text_sync',
-      environment: 'production',
-      siteId: 'site_1',
-      stage: 'provider_sync',
-      reason: 'provider_request_failed',
-      errorCode: 'RUNTIME_VAR_ACTIVE_WORKER_SYNC_FAILED',
-    },
-  ]);
+  assert.deepEqual(
+    lines.map((line) => JSON.parse(line)),
+    [
+      {
+        event: 'pages_runtime_config_failure',
+        operation: 'plain_text_sync',
+        environment: 'production',
+        siteId: 'site_1',
+        stage: 'provider_sync',
+        reason: 'provider_request_failed',
+        errorCode: 'RUNTIME_VAR_ACTIVE_WORKER_SYNC_FAILED',
+      },
+    ]
+  );
   assert.doesNotMatch(lines[0], /private|SENSITIVE|API_BASE|guide/);
 });
 
@@ -2926,22 +3068,13 @@ test('runtime vars enforce deploy scope and access key owner and site boundaries
       Authorization: `Bearer ${key}`,
     });
 
-  const deploy = await worker.fetch(
-    requestWithKey(deployKey, { name: 'FEATURE_FLAG', value: 'on' }),
-    testEnv(store)
-  );
-  const readOnly = await worker.fetch(
-    requestWithKey(readKey, { name: 'READ_ATTEMPT', value: 'blocked' }),
-    testEnv(store)
-  );
+  const deploy = await worker.fetch(requestWithKey(deployKey, { name: 'FEATURE_FLAG', value: 'on' }), testEnv(store));
+  const readOnly = await worker.fetch(requestWithKey(readKey, { name: 'READ_ATTEMPT', value: 'blocked' }), testEnv(store));
   const wrongSite = await worker.fetch(
     requestWithKey(wrongSiteKey, { name: 'WRONG_SITE_ATTEMPT', value: 'blocked' }),
     testEnv(store)
   );
-  const ownerWide = await worker.fetch(
-    requestWithKey(ownerKey, { name: 'FEATURE_FLAG' }, 'DELETE'),
-    testEnv(store)
-  );
+  const ownerWide = await worker.fetch(requestWithKey(ownerKey, { name: 'FEATURE_FLAG' }, 'DELETE'), testEnv(store));
 
   assert.equal(deploy.status, 200, await deploy.clone().text());
   assert.equal(readOnly.status, 403);

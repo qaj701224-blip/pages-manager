@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import worker from './index.js';
 import { createTestPagesStore } from './test-store.js';
+import { seedLifecycleWebhook, TEST_WEBHOOK_URL_ENCRYPTION_KEY } from './lifecycle-webhook-test-fixtures.js';
 
 test('admin dashboard requires platform admin and returns governance counts', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
@@ -345,10 +346,7 @@ test('admin worker orphan scan rejects inventories above the configured safety l
       PAGES_WFP_ORPHAN_SCAN_MAX_WORKERS: '1',
       WFP_RESOURCE_ADMIN_CLIENT: {
         listWorkers: async () => ({
-          workers: [
-            { name: 'pages-v2-one' },
-            { name: 'pages-v2-two' },
-          ],
+          workers: [{ name: 'pages-v2-one' }, { name: 'pages-v2-two' }],
           completeness: 'complete',
           scannedCount: 2,
           namespaceScriptCount: 2,
@@ -467,21 +465,24 @@ test('admin v1 sites inventory reports unknown and platform-reserved Workers sep
 
   assert.equal(response.status, 200, await response.clone().text());
   const body = await response.json();
-  assert.deepEqual(body.sites.find((site) => site.name === 'api'), {
-    name: 'api',
-    url: 'https://api.workers.xd.team',
-    preset: null,
-    ipRestrict: null,
-    updatedAt: null,
-    workerName: 'pages-api',
-    workerModifiedOn: '2026-06-03T00:00:00.000Z',
-    migratedCandidate: false,
-    canRetire: false,
-    token: null,
-    platformReserved: true,
-    retireBlockedReason: 'platform_reserved',
-    classification: 'platform_reserved',
-  });
+  assert.deepEqual(
+    body.sites.find((site) => site.name === 'api'),
+    {
+      name: 'api',
+      url: 'https://api.workers.xd.team',
+      preset: null,
+      ipRestrict: null,
+      updatedAt: null,
+      workerName: 'pages-api',
+      workerModifiedOn: '2026-06-03T00:00:00.000Z',
+      migratedCandidate: false,
+      canRetire: false,
+      token: null,
+      platformReserved: true,
+      retireBlockedReason: 'platform_reserved',
+      classification: 'platform_reserved',
+    }
+  );
   assert.deepEqual(body.unregisteredWorkers, [
     {
       workerName: 'pages-console',
@@ -706,9 +707,7 @@ test('admin v1 retirement hard-refuses reserved Worker names before Cloudflare d
   assert.ok(
     audits.some(
       (event) =>
-        event.eventType === 'admin.v1_site_retire' &&
-        event.decision === 'deny' &&
-        event.metadata?.stage === 'platform_reserved'
+        event.eventType === 'admin.v1_site_retire' && event.decision === 'deny' && event.metadata?.stage === 'platform_reserved'
     )
   );
 });
@@ -726,9 +725,7 @@ test('admin v1 retirement rejects malformed or cross-site script metadata before
       }),
       env(store, {
         V1_SITES_ADMIN_CLIENT: {
-          listSites: async () => [
-            { name: 'legacy', metadata: { scriptName, url: 'https://legacy.workers.xd.team' } },
-          ],
+          listSites: async () => [{ name: 'legacy', metadata: { scriptName, url: 'https://legacy.workers.xd.team' } }],
           deleteWorker: async () => actions.push('worker'),
           unbindRoute: async () => actions.push('route'),
           deleteSite: async () => actions.push('kv'),
@@ -743,9 +740,7 @@ test('admin v1 retirement rejects malformed or cross-site script metadata before
     assert.ok(
       audits.some(
         (event) =>
-          event.eventType === 'admin.v1_site_retire' &&
-          event.decision === 'deny' &&
-          event.metadata?.stage === 'metadata_read'
+          event.eventType === 'admin.v1_site_retire' && event.decision === 'deny' && event.metadata?.stage === 'metadata_read'
       )
     );
   }
@@ -1155,21 +1150,27 @@ test('admin orphan backfill revalidates managed names and creates only unreferen
 
   assert.equal(response.status, 200, await response.clone().text());
   const body = await response.json();
-  assert.deepEqual(body.results.map((item) => [item.workerName, item.status, item.reason || null]), [
-    ['pages-v2-orphan', 'created', null],
-    ['pages-v2-active', 'skipped', 'active_route_reference'],
-    ['pages-v2-existing', 'skipped', 'cleanup_task_exists'],
-    ['pages-staging-nope', 'skipped', 'worker_not_managed'],
-    ['pages-v2-deleted', 'created', null],
-    ['pages-v2-rollback', 'created', null],
-    ['pages-v2-production-slot-1', 'skipped', 'worker_not_managed'],
-  ]);
+  assert.deepEqual(
+    body.results.map((item) => [item.workerName, item.status, item.reason || null]),
+    [
+      ['pages-v2-orphan', 'created', null],
+      ['pages-v2-active', 'skipped', 'active_route_reference'],
+      ['pages-v2-existing', 'skipped', 'cleanup_task_exists'],
+      ['pages-staging-nope', 'skipped', 'worker_not_managed'],
+      ['pages-v2-deleted', 'created', null],
+      ['pages-v2-rollback', 'created', null],
+      ['pages-v2-production-slot-1', 'skipped', 'worker_not_managed'],
+    ]
+  );
   const tasks = await store.listDeploymentResourceCleanupTasks({ environment: 'production' });
-  assert.deepEqual(tasks.map((task) => [task.resourceRef, task.cleanupReason, task.siteId, task.versionId]), [
-    ['pages-v2-orphan', 'orphan_backfill', null, null],
-    ['pages-v2-deleted', 'site_deleted_backfill', 'site_deleted', 'ver_deleted'],
-    ['pages-v2-rollback', 'orphan_backfill', 'site_rollback', 'ver_rollback'],
-  ]);
+  assert.deepEqual(
+    tasks.map((task) => [task.resourceRef, task.cleanupReason, task.siteId, task.versionId]),
+    [
+      ['pages-v2-orphan', 'orphan_backfill', null, null],
+      ['pages-v2-deleted', 'site_deleted_backfill', 'site_deleted', 'ver_deleted'],
+      ['pages-v2-rollback', 'orphan_backfill', 'site_rollback', 'ver_rollback'],
+    ]
+  );
   assert.equal(body.results.find((item) => item.workerName === 'pages-v2-rollback').rollbackEligible, true);
 });
 
@@ -1426,15 +1427,18 @@ test('admin users list supports sanitized pagination and server-side filters', a
   await seedConsoleUser(store, 'usr_active_2', { email: 'active-2@example.com' });
 
   const page = await worker.fetch(
-    internalConsoleRequest(
-      '/.xd-pages/api/console/admin/users?limit=bogus&offset=-4&admin=admin&status=active',
-      { userId: 'usr_root', admin: true }
-    ),
+    internalConsoleRequest('/.xd-pages/api/console/admin/users?limit=bogus&offset=-4&admin=admin&status=active', {
+      userId: 'usr_root',
+      admin: true,
+    }),
     env(store)
   );
   assert.equal(page.status, 200, await page.clone().text());
   const pageBody = await page.json();
-  assert.deepEqual(pageBody.users.map((user) => user.id), ['usr_admin_1', 'usr_root']);
+  assert.deepEqual(
+    pageBody.users.map((user) => user.id),
+    ['usr_admin_1', 'usr_root']
+  );
   assert.deepEqual(pageBody.pagination, { total: 2, limit: 50, offset: 0 });
 
   const outOfRange = await worker.fetch(
@@ -2351,10 +2355,7 @@ test('admin rejects unsafe v1 SITES KV cleanup resource refs before deletion', a
     assert.equal(response.status, 409, await response.clone().text());
     assert.equal((await response.json()).error.code, 'CLEANUP_RESOURCE_UNSUPPORTED');
     assert.equal(deleteCount, 0);
-    assert.equal(
-      (await store.getDeploymentResourceCleanupTask(`cln_v1_kv_unsafe_${index}`, 'production')).status,
-      'pending'
-    );
+    assert.equal((await store.getDeploymentResourceCleanupTask(`cln_v1_kv_unsafe_${index}`, 'production')).status, 'pending');
   }
 });
 
@@ -2459,10 +2460,7 @@ test('admin rejects a deferred v1 Worker that does not exactly match its site sl
   assert.equal(response.status, 409, await response.clone().text());
   assert.equal((await response.json()).error.code, 'CLEANUP_RESOURCE_UNSUPPORTED');
   assert.equal(cloudflareCalls, 0);
-  assert.equal(
-    (await store.getDeploymentResourceCleanupTask('cln_v1_worker_mismatch', 'production')).status,
-    'pending'
-  );
+  assert.equal((await store.getDeploymentResourceCleanupTask('cln_v1_worker_mismatch', 'production')).status, 'pending');
 });
 
 test('admin never treats a protected platform Worker as a deferred v1 site Worker', async () => {
@@ -3090,10 +3088,11 @@ for (const ownershipKind of ['route', 'version']) {
     });
 
     const response = await worker.fetch(
-      internalConsoleRequest(
-        `/.xd-pages/api/console/admin/deployment-cleanups/cln_cross_environment_${ownershipKind}/run`,
-        { userId: 'usr_root', admin: true, method: 'POST' }
-      ),
+      internalConsoleRequest(`/.xd-pages/api/console/admin/deployment-cleanups/cln_cross_environment_${ownershipKind}/run`, {
+        userId: 'usr_root',
+        admin: true,
+        method: 'POST',
+      }),
       env(store, {
         WFP_RESOURCE_ADMIN_CLIENT: {
           deleteWorker: async ({ workerName: deletedWorkerName }) => deletedWorkers.push(deletedWorkerName),
@@ -3260,7 +3259,10 @@ test('admin sites filter returns only public exposure sites', async () => {
 
   assert.equal(response.status, 200, await response.clone().text());
   const body = await response.json();
-  assert.deepEqual(body.sites.map((site) => site.id), ['site_filter_public']);
+  assert.deepEqual(
+    body.sites.map((site) => site.id),
+    ['site_filter_public']
+  );
   assert.ok(body.sites.every((site) => site.exposure === 'public'));
 });
 
@@ -3286,10 +3288,7 @@ test('admin sites filter returns internal and legacy sites without exposure data
 
   assert.equal(response.status, 200, await response.clone().text());
   const body = await response.json();
-  assert.deepEqual(
-    body.sites.map((site) => site.id).sort(),
-    ['site_filter_internal', 'site_filter_legacy']
-  );
+  assert.deepEqual(body.sites.map((site) => site.id).sort(), ['site_filter_internal', 'site_filter_legacy']);
   assert.ok(body.sites.every((site) => site.exposure === 'internal'));
 });
 
@@ -3587,8 +3586,14 @@ test('admin site access degrades safely when public exposure reason history cann
   assert.equal(access.accessMode, 'acl');
   assert.equal(access.visibility, 'acl');
   assert.equal(access.exposureReason, null);
-  assert.equal(warnings.some((entry) => entry.includes('SITE_EXPOSURE_REASON_READ_UNCONFIRMED')), true);
-  assert.equal(warnings.some((entry) => entry.includes('sensitive database detail')), false);
+  assert.equal(
+    warnings.some((entry) => entry.includes('SITE_EXPOSURE_REASON_READ_UNCONFIRMED')),
+    true
+  );
+  assert.equal(
+    warnings.some((entry) => entry.includes('sensitive database detail')),
+    false
+  );
 });
 
 test('public exposure snapshot failure compensates the authority policy to internal', async () => {
@@ -3700,10 +3705,22 @@ test('public exposure reports a final audit failure without misreporting the eff
   const pointer = snapshotStore.read('production:route_pointer:public.workers.xd.team');
   assert.equal(snapshotStore.read(pointer.snapshotKey).exposure, 'public');
   const audits = await store.listAuditEvents({ environment: 'production', siteId: 'site_public' });
-  assert.equal(audits.some((event) => event.decision === 'deny'), false);
-  assert.equal(audits.some((event) => event.metadata?.stage === 'partial_failed'), false);
-  assert.equal(warnings.some((entry) => entry.includes('SITE_EXPOSURE_AUDIT_UNCONFIRMED')), true);
-  assert.equal(warnings.some((entry) => entry.includes('final audit unavailable')), false);
+  assert.equal(
+    audits.some((event) => event.decision === 'deny'),
+    false
+  );
+  assert.equal(
+    audits.some((event) => event.metadata?.stage === 'partial_failed'),
+    false
+  );
+  assert.equal(
+    warnings.some((entry) => entry.includes('SITE_EXPOSURE_AUDIT_UNCONFIRMED')),
+    true
+  );
+  assert.equal(
+    warnings.some((entry) => entry.includes('final audit unavailable')),
+    false
+  );
 });
 
 test('public exposure OfficeNet failure records a sanitized failed audit stage', async () => {
@@ -3777,7 +3794,10 @@ test('effective public exposure reports an audit failure without rolling back th
   const body = await response.json();
   assert.equal(body.auditStatus, 'unconfirmed');
   assert.equal(body.access.exposure, 'public');
-  assert.equal(warnings.some((entry) => entry.includes('SITE_EXPOSURE_AUDIT_UNCONFIRMED')), true);
+  assert.equal(
+    warnings.some((entry) => entry.includes('SITE_EXPOSURE_AUDIT_UNCONFIRMED')),
+    true
+  );
   assert.equal((await store.getRouteBySiteId('site_public', 'production')).exposure, 'public');
 });
 
@@ -3944,6 +3964,56 @@ test('platform admin site detail and settings avoid full admin site scans', asyn
   assert.equal((await detail.json()).site.id, 'site_personal');
   assert.equal(settings.status, 200, await settings.clone().text());
   assert.equal((await settings.json()).site.owner.id, 'usr_target');
+});
+
+test('platform-admin force DELETE emits site.deleted with the admin actor', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  const requests = [];
+  await seedPlatformAdmin(store);
+  await store.createUser({
+    userId: 'usr_owner',
+    email: 'owner@example.com',
+    employeeStatus: 'active',
+  });
+  await store.createSite({
+    id: 'site_personal',
+    slug: 'personal',
+    ownerUserId: 'usr_owner',
+    ownerType: 'user',
+    ownerId: 'usr_owner',
+    siteUuid: 'uuid_site_personal',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_site_personal',
+    hostname: 'personal.workers.xd.team',
+  });
+  await activateSite(store, 'site_personal', { visibility: 'org' });
+  await seedLifecycleWebhook(store, 'site.deleted');
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_personal', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'DELETE',
+    }),
+    env(store, {
+      ROUTE_SNAPSHOTS: createSnapshotStore(),
+      WEBHOOK_URL_ENCRYPTION_KEY: TEST_WEBHOOK_URL_ENCRYPTION_KEY,
+      resolveWebhookHost: async () => ['8.8.8.8'],
+      WEBHOOK_FETCH: async (request) => {
+        requests.push(request);
+        return new Response('ok', { status: 200 });
+      },
+    })
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.equal((await response.json()).site.status, 'deleted');
+  assert.equal(requests.length, 1);
+  const payload = await requests[0].json();
+  assert.equal(payload.event.type, 'site.deleted');
+  assert.equal(payload.actor.userId, 'usr_root');
+  assert.equal(payload.site.status, 'deleted');
 });
 
 test('platform admin site owner transfer refreshes active route snapshot', async () => {
@@ -4288,11 +4358,74 @@ test('admin audit events order exposure stages deterministically when timestamps
   const body = await response.json();
   assert.equal(body.events.find((event) => event.metadata?.operationId === 'op_order')?.traceId, 'op_order');
   assert.deepEqual(
-    body.events
-      .filter((event) => event.metadata?.operationId === 'op_order')
-      .map((event) => event.metadata.stage),
+    body.events.filter((event) => event.metadata?.operationId === 'op_order').map((event) => event.metadata.stage),
     ['effective_success', 'policy_committed', 'attempted']
   );
+});
+
+test('admin audit API returns resource ids, trace correlation, and sanitized metadata', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await store.recordAuditEvent({
+    id: 'audit_sanitized',
+    environment: 'production',
+    eventType: 'admin.site.exposure',
+    actorUserId: 'usr_root',
+    actorType: 'user',
+    siteId: 'site_1',
+    routeId: 'route_1',
+    versionId: 'ver_1',
+    traceId: 'trace_internal',
+    ipHash: 'ip_internal',
+    userAgentHash: 'ua_internal',
+    decision: 'allow',
+    statusCode: 200,
+    metadata: {
+      workerName: 'provider-worker',
+      reason: 'See https://hooks.example.test/bearer-secret?token=abc#fragment before approval',
+      sessionId: 'session-secret',
+      providerResourceIds: ['provider-resource-secret'],
+      authTokenValue: 'auth-token-secret',
+      nested: { Authorization: 'Bearer secret', siteSlug: 'demo' },
+    },
+  });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/audit', { userId: 'usr_root', admin: true }),
+    env(store)
+  );
+  assert.equal(response.status, 200, await response.clone().text());
+  const event = (await response.json()).events.find((item) => item.id === 'audit_sanitized');
+  assert.deepEqual(
+    {
+      siteId: event.siteId,
+      routeId: event.routeId,
+      versionId: event.versionId,
+    },
+    { siteId: 'site_1', routeId: 'route_1', versionId: 'ver_1' }
+  );
+  assert.equal(event.metadata.workerName, '[REDACTED]');
+  assert.equal(event.metadata.reason, 'See https://hooks.example.test before approval');
+  assert.equal(event.metadata.sessionId, '[REDACTED]');
+  assert.equal(event.metadata.providerResourceIds, '[REDACTED]');
+  assert.equal(event.metadata.authTokenValue, '[REDACTED]');
+  assert.equal(event.metadata.nested.Authorization, '[REDACTED]');
+  assert.equal(event.metadata.nested.siteSlug, 'demo');
+  assert.equal(event.traceId, 'trace_internal');
+  const serializedEvent = JSON.stringify(event);
+  for (const sensitiveValue of [
+    'provider-worker',
+    'bearer-secret',
+    'token=abc',
+    'session-secret',
+    'provider-resource-secret',
+    'auth-token-secret',
+    'Bearer secret',
+    'ip_internal',
+    'ua_internal',
+  ]) {
+    assert.equal(serializedEvent.includes(sensitiveValue), false, sensitiveValue);
+  }
 });
 
 test('worker orphan scan failure surfaces a sanitized cause code without upstream details', async () => {
@@ -4395,12 +4528,7 @@ async function seedPlatformAdmin(store, userId = 'usr_root') {
 
 async function seedV1WorkerCleanupTask(
   store,
-  {
-    taskId,
-    slug = 'guide',
-    resourceRef = `pages-${slug}`,
-    cleanupReason = 'v1_email_takeover_worker_delete_failed',
-  }
+  { taskId, slug = 'guide', resourceRef = `pages-${slug}`, cleanupReason = 'v1_email_takeover_worker_delete_failed' }
 ) {
   const siteId = `site_${slug}`;
   await store.createSite({
