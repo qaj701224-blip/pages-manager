@@ -1,4 +1,5 @@
 import { isConsoleBffRequest, requireConsoleUserSession } from './console-auth.js';
+import { sanitizeAuditMetadata } from './audit-sanitizer.js';
 import { jsonResponse } from '@xd/worker-kit';
 import { accessModeFromVisibility } from '@xd/pages-access-policy';
 import {
@@ -26,10 +27,7 @@ import { buildRouteSnapshot, clearRoutePointerIfCurrent, readRouteSnapshotState 
 import { createDeploymentProvider } from './execution-provider.js';
 import { ensurePublicWorkerOfficeNetAbsent } from './deployments.js';
 import { ensureCanChangeTeamAdminRole, ensureCanRemoveTeamMember } from './teams.js';
-import {
-  cleanupDeferredLegacyV1WorkerScript,
-  resolveDeferredLegacyV1WorkerTarget,
-} from './legacy-v1/deferred-worker-cleanup.js';
+import { cleanupDeferredLegacyV1WorkerScript, resolveDeferredLegacyV1WorkerTarget } from './legacy-v1/deferred-worker-cleanup.js';
 import { createWfpClient, readWfpConfig } from '@xd/wfp-client';
 import {
   buildWorkerOrphanScan,
@@ -57,7 +55,7 @@ const CLEANUP_TASK_LOCK_SECONDS = 5 * 60;
 const CLEANUP_TASK_FAILED_CODE = 'CLEANUP_TASK_FAILED';
 const CLEANUP_TASK_FAILED_MESSAGE = 'Cleanup task failed unexpectedly.';
 
-export async function handleConsoleAdminApi(request, env, config, store) {
+export async function handleConsoleAdminApi(request, env, config, store, ctx) {
   if (!isConsoleBffRequest(request)) return null;
 
   const url = new URL(request.url);
@@ -173,7 +171,7 @@ export async function handleConsoleAdminApi(request, env, config, store) {
   if (adminSiteAccessMatch) {
     const site = await getAdminSite(config, store, decodeURIComponent(adminSiteAccessMatch[1]));
     if (site instanceof Response) return site;
-    if (request.method === 'PATCH') return updateSiteAccess(request, env, config, store, session, site.id, { site });
+    if (request.method === 'PATCH') return updateSiteAccess(request, env, config, store, session, site.id, { site, ctx });
     if (request.method !== 'GET') return methodNotAllowed();
     const aclEntries = typeof store.listSiteAclEntries === 'function' ? await store.listSiteAclEntries(site.id) : [];
     const exposure = site.route?.exposure || site.defaultExposure || 'internal';
@@ -238,7 +236,7 @@ export async function handleConsoleAdminApi(request, env, config, store) {
     const site = await getAdminSite(config, store, decodeURIComponent(adminSiteMatch[1]));
     if (site instanceof Response) return site;
     if (request.method === 'GET') return jsonOk({ site: formatAdminSiteDetail(site) });
-    if (request.method === 'DELETE') return deleteConsoleSite(env, config, store, site, { force: true });
+    if (request.method === 'DELETE') return deleteConsoleSite(env, config, store, site, { force: true, actor: session, ctx });
     return methodNotAllowed();
   }
 
@@ -387,8 +385,7 @@ function cloudflareFailureCause(error) {
   const candidates = [error?.code, error?.message];
   const code = candidates.find((value) => typeof value === 'string' && /^[A-Z][A-Z0-9_]{2,63}$/.test(value));
   const status = Number.isInteger(error?.status) ? ` (HTTP ${error.status})` : '';
-  const detail =
-    typeof error?.detail === 'string' && /^[a-zA-Z0-9_,. -]{1,160}$/.test(error.detail) ? ` [${error.detail}]` : '';
+  const detail = typeof error?.detail === 'string' && /^[a-zA-Z0-9_,. -]{1,160}$/.test(error.detail) ? ` [${error.detail}]` : '';
   return `${code || 'UNEXPECTED'}${status}${detail}`;
 }
 
@@ -655,10 +652,7 @@ async function retireV1SiteRecord({ env, config, store, session, record, client 
   const workerName = resolvedScriptName.workerName;
   const expectedWorkerName = expectedV1WorkerName(record.name, config.environment);
   const earlyBase = { name: record.name, workerName: expectedWorkerName, hostname: null };
-  if (
-    reservedWorkerNames.has(expectedWorkerName) ||
-    reservedWorkerNames.has(String(workerName || '').toLowerCase())
-  ) {
+  if (reservedWorkerNames.has(expectedWorkerName) || reservedWorkerNames.has(String(workerName || '').toLowerCase())) {
     await recordV1RetireAuditSafe(store, env, config, session, earlyBase, 'platform_reserved', 'deny', 409);
     return v1RetireFailure(
       record.name,
@@ -725,16 +719,7 @@ async function retireV1SiteRecord({ env, config, store, session, record, client 
   try {
     existingClaim = await store.getHostnameClaim(hostname);
   } catch {
-    await recordV1RetireAuditSafe(
-      store,
-      env,
-      config,
-      session,
-      base,
-      'hostname_claim_validation',
-      'deny',
-      502
-    );
+    await recordV1RetireAuditSafe(store, env, config, session, base, 'hostname_claim_validation', 'deny', 502);
     return v1RetireFailure(
       record.name,
       'hostname_claim_validation',
@@ -745,16 +730,7 @@ async function retireV1SiteRecord({ env, config, store, session, record, client 
     );
   }
   if (existingClaim && !v1HostnameClaimMatches(existingClaim, config, record, workerName)) {
-    await recordV1RetireAuditSafe(
-      store,
-      env,
-      config,
-      session,
-      base,
-      'hostname_claim_validation',
-      'deny',
-      409
-    );
+    await recordV1RetireAuditSafe(store, env, config, session, base, 'hostname_claim_validation', 'deny', 409);
     return v1RetireFailure(
       record.name,
       'hostname_claim_validation',
@@ -1187,12 +1163,11 @@ async function backfillAdminWorkerOrphans(request, env, config, store, session) 
     }
     const versions = versionsByWorker.get(workerName) || [];
     const latestVersion = latestWorkerVersion(versions);
-    const rollbackEligible = versions.some(
-      (version) => !version.siteDeletedAt && version.artifactAvailability === 'active'
-    );
-    const cleanupReason = versions.length > 0 && versions.every((version) => Boolean(version.siteDeletedAt))
-      ? 'site_deleted_backfill'
-      : 'orphan_backfill';
+    const rollbackEligible = versions.some((version) => !version.siteDeletedAt && version.artifactAvailability === 'active');
+    const cleanupReason =
+      versions.length > 0 && versions.every((version) => Boolean(version.siteDeletedAt))
+        ? 'site_deleted_backfill'
+        : 'orphan_backfill';
     try {
       await store.createDeploymentResourceCleanupTask({
         id: newId('cln'),
@@ -1299,10 +1274,13 @@ function backfillSkipReason({ workerName, environment, inventoryNames, activeRou
 }
 
 function latestWorkerVersion(versions) {
-  return [...versions].sort(
-    (left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')) ||
-      String(right.id || '').localeCompare(String(left.id || ''))
-  )[0] || null;
+  return (
+    [...versions].sort(
+      (left, right) =>
+        String(right.createdAt || '').localeCompare(String(left.createdAt || '')) ||
+        String(right.id || '').localeCompare(String(left.id || ''))
+    )[0] || null
+  );
 }
 
 async function runDeploymentCleanupTask(env, config, store, session, taskId) {
@@ -1573,14 +1551,10 @@ async function validateCleanupWfpOwnership(store, config, task) {
       workerName: task.resourceRef,
       environment: config.environment,
     });
-    const ownershipRecords = [
-      ...(ownershipReferences?.routes || []),
-      ...(ownershipReferences?.versions || []),
-    ];
+    const ownershipRecords = [...(ownershipReferences?.routes || []), ...(ownershipReferences?.versions || [])];
     if (
       ownershipRecords.some(
-        (record) =>
-          record.ownershipEnvironment !== config.environment || !isWfpWorkerResource(record, config.environment)
+        (record) => record.ownershipEnvironment !== config.environment || !isWfpWorkerResource(record, config.environment)
       )
     ) {
       return {
@@ -1606,11 +1580,7 @@ async function validateCleanupWfpOwnership(store, config, task) {
         };
       }
       const version = await store.getSiteVersion(task.versionId, config.environment);
-      if (
-        !version ||
-        version.workerName !== task.resourceRef ||
-        !isWfpWorkerResource(version, config.environment)
-      ) {
+      if (!version || version.workerName !== task.resourceRef || !isWfpWorkerResource(version, config.environment)) {
         return {
           ok: false,
           error: cleanupTaskError(
@@ -1898,11 +1868,7 @@ function createWfpScanAdminClient(env, config) {
 }
 
 function isValidV1SitesKvResourceRef(value) {
-  return (
-    typeof value === 'string' &&
-    value === value.toLowerCase() &&
-    /^[a-z0-9](?:[a-z0-9-]{0,48}[a-z0-9])?$/.test(value)
-  );
+  return typeof value === 'string' && value === value.toLowerCase() && /^[a-z0-9](?:[a-z0-9-]{0,48}[a-z0-9])?$/.test(value);
 }
 
 async function deleteAdminNormalWorker(request, env, config, store, session, slotId) {
@@ -2272,7 +2238,12 @@ async function updateAdminSiteExposure(request, env, config, store, session, sit
   }
   const reason = normalizeNullableString(body?.reason);
   if (exposure === 'public' && !reason) {
-    return jsonError('SITE_EXPOSURE_REASON_REQUIRED', 'A reason is required to enable public exposure.', 400, 'Provide a reason.');
+    return jsonError(
+      'SITE_EXPOSURE_REASON_REQUIRED',
+      'A reason is required to enable public exposure.',
+      400,
+      'Provide a reason.'
+    );
   }
   if (reason && reason.length > 500) {
     return jsonError('SITE_EXPOSURE_REASON_INVALID', 'Exposure reason is too long.', 400, 'Use at most 500 characters.');
@@ -2429,13 +2400,7 @@ async function updateAdminSiteExposure(request, env, config, store, session, sit
       const committedVersion = committedRoute.activeVersionId
         ? await store.getSiteVersion(committedRoute.activeVersionId, config.environment)
         : null;
-      const snapshotResult = await writeAdminExposureSnapshot(
-        env,
-        store,
-        committedSite,
-        committedRoute,
-        config.environment
-      );
+      const snapshotResult = await writeAdminExposureSnapshot(env, store, committedSite, committedRoute, config.environment);
       if (snapshotResult.error) {
         let restoredRoute = null;
         let compensationError = null;
@@ -2561,10 +2526,7 @@ async function updateAdminSiteExposure(request, env, config, store, session, sit
           accessMode: committedRoute.accessMode,
           visibility: committedRoute.visibility,
           aclEntries: (mutation.aclEntries || []).map(formatAclEntry),
-          exposureReason:
-            committedRoute.exposure === 'public' && reason
-              ? { text: reason, changedAt: now }
-              : null,
+          exposureReason: committedRoute.exposure === 'public' && reason ? { text: reason, changedAt: now } : null,
         },
         auditStatus,
       };
@@ -2691,7 +2653,12 @@ function adminSiteCommitLockChanged(before, after) {
 function adminExposureErrorResponse(error) {
   const code = error?.code || error?.message;
   if (code === 'SITE_POLICY_LOCKED' || code === 'SITE_POLICY_CONFLICT') {
-    return jsonError('SITE_POLICY_CONFLICT', 'Site policy changed while exposure was being updated.', 409, 'Refresh the site and retry.');
+    return jsonError(
+      'SITE_POLICY_CONFLICT',
+      'Site policy changed while exposure was being updated.',
+      409,
+      'Refresh the site and retry.'
+    );
   }
   if (code === 'SITE_PUBLIC_OFFICE_NET_REMOVE_FAILED' || code === 'SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED') {
     return jsonError(code, error.message, 503, error.action);
@@ -2705,9 +2672,19 @@ function adminExposureErrorResponse(error) {
     );
   }
   if (code === 'ROUTE_POLICY_REPAIR_REQUIRED' || code === 'ROUTE_SNAPSHOT_WRITE_FAILED') {
-    return jsonError('ROUTE_POLICY_REPAIR_REQUIRED', 'Route policy could not be confirmed effective.', 503, 'Repair the route snapshot before retrying.');
+    return jsonError(
+      'ROUTE_POLICY_REPAIR_REQUIRED',
+      'Route policy could not be confirmed effective.',
+      503,
+      'Repair the route snapshot before retrying.'
+    );
   }
-  return jsonError('SITE_EXPOSURE_UPDATE_FAILED', 'Site exposure could not be updated.', 503, 'Retry after checking the site policy state.');
+  return jsonError(
+    'SITE_EXPOSURE_UPDATE_FAILED',
+    'Site exposure could not be updated.',
+    503,
+    'Retry after checking the site policy state.'
+  );
 }
 
 async function getAdminSite(config, store, siteId) {
@@ -3002,17 +2979,19 @@ function compareAdminAuditEvents(left, right) {
 }
 
 function adminExposureAuditStageOrder(stage) {
-  return {
-    attempted: 10,
-    office_net_removed_verified: 20,
-    office_net_not_applicable: 20,
-    policy_committed: 30,
-    effective_success: 40,
-    compensated_failure: 80,
-    partial_failed: 85,
-    compensation_failed: 90,
-    failed: 100,
-  }[stage] || 0;
+  return (
+    {
+      attempted: 10,
+      office_net_removed_verified: 20,
+      office_net_not_applicable: 20,
+      policy_committed: 30,
+      effective_success: 40,
+      compensated_failure: 80,
+      partial_failed: 85,
+      compensation_failed: 90,
+      failed: 100,
+    }[stage] || 0
+  );
 }
 
 async function listPlatformAdmins(config, store) {
@@ -3225,9 +3204,12 @@ function formatAuditEvent(event) {
       displayName: event.actor?.displayName || null,
       email: event.actor?.email || null,
     },
+    siteId: event.siteId || null,
+    routeId: event.routeId || null,
+    versionId: event.versionId || null,
     decision: event.decision,
     statusCode: event.statusCode ?? null,
-    metadata: event.metadata || null,
+    metadata: event.metadata == null ? null : sanitizeAuditMetadata(event.metadata),
     createdAt: event.createdAt,
   };
 }

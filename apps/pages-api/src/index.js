@@ -96,11 +96,11 @@ export default {
       }
 
       const response =
-        (await handleConsoleAdminApi(request, env, config, store)) ||
+        (await handleConsoleAdminApi(request, env, config, store, ctx)) ||
         (await handleConsoleAccessKeysApi(request, env, config, store)) ||
         (await handleConsoleTeamsApi(request, env, config, store)) ||
         (await handleConsoleUsersApi(request, env, config, store)) ||
-        (await handleConsoleApi(request, env, config, store));
+        (await handleConsoleApi(request, env, config, store, ctx));
       if (response) return response;
     }
 
@@ -124,7 +124,7 @@ export default {
         return jsonError('API_STORE_UNAVAILABLE', 'Pages API store is unavailable.', 500, 'Check the pages-api D1 binding.');
       }
 
-      const response = await handleSitesApi(request, env, config, store);
+      const response = await handleSitesApi(request, env, config, store, ctx);
       if (response) return response;
     }
 
@@ -162,7 +162,7 @@ export default {
 
       const response = url.pathname.startsWith('/.xd-pages/api/deployments')
         ? await handleDeploymentsApi(request, env, config, store, ctx)
-        : await handleVersionsApi(request, env, config, store);
+        : await handleVersionsApi(request, env, config, store, ctx);
       if (response) return response;
     }
 

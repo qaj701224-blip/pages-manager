@@ -8,9 +8,9 @@ import {
   renderRestrictedTemplate,
   validateRestrictedTemplate,
 } from './webhook-payload.js';
+import { getWebhookEventCatalog, SUPPORTED_WEBHOOK_EVENTS } from './webhook-events.js';
 
 const CONSOLE_PREFIX = '/.xd-pages/api/console';
-const SUPPORTED_WEBHOOK_EVENTS = new Set(['site.deployed']);
 const PAYLOAD_MODES = new Set(['standard', 'template']);
 
 export async function handleConsoleAdminWebhooksApi(request, env, config, store, session) {
@@ -145,7 +145,7 @@ export async function deliverWebhookEventToSubscriptions({ store, env, config, e
 
 async function listWebhookSubscriptions(config, store) {
   const webhooks = await store.listWebhookSubscriptions({ environment: config.environment });
-  return jsonOk({ webhooks: webhooks.map(formatWebhookSubscription) });
+  return jsonOk({ webhooks: webhooks.map(formatWebhookSubscription), supportedEvents: getWebhookEventCatalog() });
 }
 
 async function createWebhookSubscription(request, env, config, store, session) {
@@ -396,7 +396,7 @@ function normalizeEvents(value) {
         'WEBHOOK_EVENTS_INVALID',
         'Webhook events are invalid.',
         400,
-        'Use supported events: site.deployed.'
+        `Use supported events: ${[...SUPPORTED_WEBHOOK_EVENTS].join(', ')}.`
       );
     }
     if (!seen.has(event)) {

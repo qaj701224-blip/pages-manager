@@ -15,6 +15,7 @@ import { logRuntimeConfigFailure, readRuntimeConfigErrorDiagnostic } from './run
 import { buildRouteSnapshot, writeRouteSnapshot } from './route-snapshot.js';
 import { createDeploymentProvider as createWfpDeploymentProvider } from './wfp-provider.js';
 import { createSiteWithLegacyV1Takeover } from './legacy-v1/takeover.js';
+import { emitSiteDeletedWebhook, emitSiteDisabledWebhook } from './lifecycle-webhooks.js';
 
 const VISIBILITIES = new Set(['internal', 'org', 'acl', 'owner', 'disabled']);
 const ACL_SUBJECT_TYPES = new Set(['email', 'department']);
@@ -26,7 +27,7 @@ const RESERVED_SITE_SLUG_ACTION = '该站点名是 XD Cell 平台保留项，请
 const DEFAULT_REUSE_HOLD_SECONDS = 300;
 const RUNTIME_CONFIG_PROVIDER_TIMEOUT_MS = 15 * 1000;
 
-export async function handleSitesApi(request, env, config, store) {
+export async function handleSitesApi(request, env, config, store, ctx) {
   const auth = await authenticateApiRequest(request, env, store, config, readNow(env));
   if (!auth.ok) return authErrorResponse(auth.error);
 
@@ -73,8 +74,8 @@ export async function handleSitesApi(request, env, config, store) {
 
   const siteId = matchSiteId(url.pathname);
   if (siteId && request.method === 'GET') return getSite(store, auth.actor, siteId, config.environment);
-  if (siteId && request.method === 'PATCH') return updateSite(request, env, config, store, auth.actor, siteId);
-  if (siteId && request.method === 'DELETE') return deleteSite(env, config, store, auth.actor, siteId);
+  if (siteId && request.method === 'PATCH') return updateSite(request, env, config, store, auth.actor, siteId, ctx);
+  if (siteId && request.method === 'DELETE') return deleteSite(env, config, store, auth.actor, siteId, ctx);
   if (siteId) return methodNotAllowed();
 
   return null;
@@ -553,12 +554,7 @@ export async function syncActiveWfpPlainTextBindings(store, env, config, site, s
         generation,
       };
     }
-    return jsonError(
-      'RUNTIME_CONFIG_CHANGED',
-      'Runtime config changed while syncing.',
-      409,
-      'Retry the runtime config change.'
-    );
+    return jsonError('RUNTIME_CONFIG_CHANGED', 'Runtime config changed while syncing.', 409, 'Retry the runtime config change.');
   };
 
   try {
@@ -613,9 +609,7 @@ async function currentSiteSecretMutation(store, environment, siteId, input) {
   if (typeof store.listEnabledSiteSecrets !== 'function') return input;
   const secrets = await store.listEnabledSiteSecrets(environment, siteId);
   const current = secrets.find((secret) => secret.name === input.name);
-  return current
-    ? { operation: 'put', name: current.name, value: current.value }
-    : { operation: 'delete', name: input.name };
+  return current ? { operation: 'put', name: current.name, value: current.value } : { operation: 'delete', name: input.name };
 }
 
 function isRuntimeConfigLockError(error) {
@@ -673,12 +667,7 @@ function runtimeSecretSyncFailed(
   );
 }
 
-function runtimeVarSyncFailed(
-  env,
-  config,
-  site,
-  { stage = 'provider_sync', reason = 'provider_request_failed' } = {}
-) {
+function runtimeVarSyncFailed(env, config, site, { stage = 'provider_sync', reason = 'provider_request_failed' } = {}) {
   logRuntimeConfigFailure(env, {
     operation: 'plain_text_sync',
     environment: config.environment,
@@ -730,9 +719,10 @@ async function getSite(store, actor, siteId, environment) {
   return jsonOk({ site: formatSite(site) });
 }
 
-async function updateSite(request, env, config, store, actor, siteId) {
+async function updateSite(request, env, config, store, actor, siteId, ctx) {
   const site = await getOwnerSite(store, actor, siteId, config.environment);
   if (site instanceof Response) return site;
+  const previousRoute = site.route || (await store.getRouteBySiteId(site.id, config.environment));
 
   let body;
   try {
@@ -760,10 +750,21 @@ async function updateSite(request, env, config, store, actor, siteId) {
   });
   if (mutation instanceof Response) return mutation;
 
+  await emitSiteDisabledWebhook({
+    store,
+    env,
+    config,
+    ctx,
+    actor,
+    site: mutation.site,
+    previousRoute,
+    route: mutation.route,
+  });
+
   return jsonOk({ site: formatSite({ ...mutation.site, route: mutation.route }) });
 }
 
-async function deleteSite(env, config, store, actor, siteId) {
+async function deleteSite(env, config, store, actor, siteId, ctx) {
   const site = await getOwnerSite(store, actor, siteId, config.environment);
   if (site instanceof Response) return site;
   const deletedAt = readNow(env);
@@ -798,6 +799,7 @@ async function deleteSite(env, config, store, actor, siteId) {
     }
   }
   await enqueueDeletedSiteWfpCleanup(store, env, config, site, previousRoute, reuseHoldUntil);
+  await emitSiteDeletedWebhook({ store, env, config, ctx, actor, site: deleted, previousRoute, route });
   return jsonOk({ site: formatSite({ ...deleted, route }) });
 }
 
@@ -1023,15 +1025,7 @@ export function rejectUserExposureMutation(body) {
   );
 }
 
-export async function mutateUserSiteAccessPolicy({
-  env,
-  config,
-  store,
-  siteId,
-  actorUserId,
-  visibility,
-  resolveAclEntries,
-}) {
+export async function mutateUserSiteAccessPolicy({ env, config, store, siteId, actorUserId, visibility, resolveAclEntries }) {
   try {
     return await store.withSiteCommitLock(
       config.environment,
@@ -1108,7 +1102,12 @@ export async function mutateUserSiteAccessPolicy({
         'Refresh the site and retry.'
       );
     }
-    return jsonError('SITE_POLICY_UPDATE_FAILED', 'Site access policy could not be updated.', 503, 'Retry after refreshing the site.');
+    return jsonError(
+      'SITE_POLICY_UPDATE_FAILED',
+      'Site access policy could not be updated.',
+      503,
+      'Retry after refreshing the site.'
+    );
   }
 }
 
@@ -1317,12 +1316,7 @@ async function resolveTeamPublishOwner(store, userId, teamIdValue, environment) 
   const member = await store.getTeamMember({ teamId, userId });
   if (!member) return jsonError('TEAM_NOT_FOUND', 'Team not found.', 404, 'Check the team id.');
   if (member.role !== 'admin' && member.role !== 'publisher') {
-    return jsonError(
-      'TEAM_PUBLISHER_REQUIRED',
-      'Team publisher role required.',
-      403,
-      'Ask a team publisher to create the site.'
-    );
+    return jsonError('TEAM_PUBLISHER_REQUIRED', 'Team publisher role required.', 403, 'Ask a team publisher to create the site.');
   }
   return { ownerId: team.id };
 }
@@ -1334,12 +1328,7 @@ export function siteCreateErrorResponse(error) {
     return jsonError('SITE_SLUG_CONFLICT', 'Site slug already exists.', 409, 'Choose a different site slug.');
   }
   if (code === 'V1_TAKEOVER_STATE_CHANGED') {
-    return jsonError(
-      'HOSTNAME_CLAIM_CONFLICT',
-      'Site hostname is already claimed.',
-      409,
-      '请检查站点状态后重试。'
-    );
+    return jsonError('HOSTNAME_CLAIM_CONFLICT', 'Site hostname is already claimed.', 409, '请检查站点状态后重试。');
   }
   if (/HOSTNAME_CLAIM_CONFLICT/.test(message)) {
     return jsonError(
