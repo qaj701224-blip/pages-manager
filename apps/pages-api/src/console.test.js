@@ -983,6 +983,56 @@ test('site deployments subresource limits deployment history for scan performanc
   assert.equal(deployments.at(-1).id, 'dep_5');
 });
 
+test('workspace deployment history omits trace and provider diagnostics', async () => {
+  const store = createTestPagesStore({ now: () => '2026-08-20T08:00:00.000Z' });
+  await seedConsoleUser(store, 'usr_me');
+  await seedSite(store, {
+    id: 'site_mine',
+    slug: 'mine',
+    ownerUserId: 'usr_me',
+    visibility: 'org',
+  });
+  await store.createDeploymentForIdempotency({
+    id: 'dep_trace_hidden',
+    environment: 'production',
+    actorId: 'usr_me',
+    actorUserId: 'usr_me',
+    actorType: 'user',
+    source: 'cli',
+    siteId: 'site_mine',
+    operation: 'deploy',
+    idempotencyKey: 'trace-hidden',
+    requestHash: 'hash-trace-hidden',
+    visibility: 'org',
+    status: 'failed',
+    traceId: 'dtr_hidden',
+    errorCode: 'DEPLOYMENT_UPLOAD_FAILED',
+    failureDiagnostics: {
+      providerRequestId: 'ray-hidden',
+      providerMessage: 'must not return',
+    },
+  });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/sites/site_mine/deployments', { userId: 'usr_me' }),
+    env(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.deepEqual(body.deployments, [
+    {
+      id: 'dep_trace_hidden',
+      status: 'failed',
+      source: 'cli',
+      operation: 'deploy',
+      createdAt: '2026-08-20T08:00:00.000Z',
+      completedAt: null,
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(body), /dtr_hidden|ray-hidden|must not return|failureDiagnostics/);
+});
+
 test('site config writes allow publisher access policy and runtime config', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   await seedConsoleUsers(store, ['usr_admin', 'usr_publisher']);

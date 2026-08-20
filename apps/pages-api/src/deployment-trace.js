@@ -146,6 +146,10 @@ export function providerDiagnosticsFromError(error) {
   });
 }
 
+export function sanitizeDeploymentTraceDiagnostics(input) {
+  return sanitizeDiagnostics(input);
+}
+
 function assertTraceContext(trace) {
   const internal = trace && traceInternals.get(trace);
   if (!internal) throw new Error('DEPLOYMENT_TRACE_CONTEXT_INVALID');

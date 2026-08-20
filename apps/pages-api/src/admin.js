@@ -25,6 +25,7 @@ import {
 } from './sites.js';
 import { buildRouteSnapshot, clearRoutePointerIfCurrent, readRouteSnapshotState } from './route-snapshot.js';
 import { createDeploymentProvider } from './execution-provider.js';
+import { sanitizeDeploymentTraceDiagnostics } from './deployment-trace.js';
 import { ensurePublicWorkerOfficeNetAbsent } from './deployments.js';
 import { ensureCanChangeTeamAdminRole, ensureCanRemoveTeamMember } from './teams.js';
 import { cleanupDeferredLegacyV1WorkerScript, resolveDeferredLegacyV1WorkerTarget } from './legacy-v1/deferred-worker-cleanup.js';
@@ -143,6 +144,12 @@ export async function handleConsoleAdminApi(request, env, config, store, ctx) {
   if (url.pathname === `${CONSOLE_PREFIX}/admin/sites`) {
     if (request.method !== 'GET') return methodNotAllowed();
     return listAdminSites(url, config, store);
+  }
+
+  const adminDeploymentTraceMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/admin\/deployments\/([^/]+)\/trace$/);
+  if (adminDeploymentTraceMatch) {
+    if (request.method !== 'GET') return methodNotAllowed();
+    return getAdminDeploymentTrace(config, store, decodeURIComponent(adminDeploymentTraceMatch[1]));
   }
 
   const adminSiteVarMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/admin\/sites\/([^/]+)\/config\/vars\/([^/]+)$/);
@@ -3101,11 +3108,56 @@ function formatAdminDeployment(deployment) {
     operation: deployment.operation || null,
     createdAt: deployment.createdAt,
   };
+  if (deployment.traceId) formatted.traceId = deployment.traceId;
   if (deployment.errorCode) formatted.errorCode = deployment.errorCode;
   if (deployment.errorMessage) formatted.errorMessage = deployment.errorMessage;
   if (deployment.failureStage) formatted.failureStage = deployment.failureStage;
   if (deployment.failureDiagnostics) formatted.failureDiagnostics = deployment.failureDiagnostics;
   return formatted;
+}
+
+async function getAdminDeploymentTrace(config, store, deploymentId) {
+  const deployment = await store.getDeployment(deploymentId, config.environment);
+  if (!deployment) {
+    return jsonError('DEPLOYMENT_NOT_FOUND', 'Deployment not found.', 404, 'Check the deployment id.');
+  }
+  const events =
+    typeof store.listDeploymentEvents === 'function'
+      ? await store.listDeploymentEvents({ environment: config.environment, deploymentId })
+      : [];
+  const inboundRayId = events.find((event) => event.inboundRayId)?.inboundRayId || null;
+  return jsonOk({
+    deployment: {
+      id: deployment.id,
+      traceId: deployment.traceId || null,
+      inboundRayId,
+      status: deployment.status,
+      failureStage: deployment.failureStage || null,
+      errorCode: deployment.errorCode || null,
+      errorMessage: deployment.errorMessage || null,
+    },
+    events: events.map(formatAdminDeploymentTraceEvent),
+  });
+}
+
+function formatAdminDeploymentTraceEvent(event) {
+  return {
+    id: event.id,
+    traceId: event.traceId,
+    inboundRayId: event.inboundRayId || null,
+    deploymentId: event.deploymentId || null,
+    siteId: event.siteId || null,
+    attempt: event.attempt,
+    stage: event.stage,
+    operation: event.operation || null,
+    status: event.status,
+    startedAt: event.startedAt,
+    completedAt: event.completedAt || null,
+    durationMs: Number.isInteger(event.durationMs) ? event.durationMs : null,
+    errorCode: event.errorCode || null,
+    errorMessage: event.errorMessage || null,
+    diagnostics: sanitizeDeploymentTraceDiagnostics(event.diagnostics),
+  };
 }
 
 function formatAdminUser(user) {
