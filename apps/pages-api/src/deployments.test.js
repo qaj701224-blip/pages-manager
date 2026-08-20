@@ -128,6 +128,12 @@ test('POST deploy authentication failures keep a queryable pre-deployment trace'
     })),
     [
       {
+        stage: 'intake',
+        status: 'succeeded',
+        deploymentId: null,
+        inboundRayId: 'auth-ray-SIN',
+      },
+      {
         stage: 'auth_and_site_resolution',
         status: 'failed',
         deploymentId: null,
@@ -201,7 +207,7 @@ test('POST deployment validation failures before record creation leave a payload
       deployPayload({ siteId: undefined, siteSlug: undefined }),
       { 'Idempotency-Key': 'trace_site_required' }
     ),
-    testEnv(store, createSnapshotStore())
+    timelineTestEnv(store, createSnapshotStore())
   );
 
   const traceId = response.headers.get('X-Deployment-Trace-Id');
@@ -308,6 +314,362 @@ test('POST rollback responses persist a main trace and capture pre-deployment fa
     ),
     true
   );
+});
+
+test('successful worker-with-assets deployments persist the complete ordered stage timeline', async () => {
+  const store = await createSeededStore();
+  const response = await worker.fetch(
+    publishPlanMultipartRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      workerWithAssetsDeploymentFields({ vars: { FEATURE_FLAG: 'enabled' } }),
+      { 'Idempotency-Key': 'trace_complete_timeline' }
+    ),
+    testEnv(store, createSnapshotStore())
+  );
+
+  assert.equal(response.status, 201, await response.clone().text());
+  const events = await store.listDeploymentEvents({
+    environment: 'production',
+    traceId: response.headers.get('X-Deployment-Trace-Id'),
+  });
+  assert.deepEqual(
+    events.map((event) => ({ stage: event.stage, operation: event.operation, status: event.status })),
+    [
+      { stage: 'intake', operation: 'accept_request', status: 'succeeded' },
+      { stage: 'auth_and_site_resolution', operation: 'authenticate_request', status: 'succeeded' },
+      { stage: 'intake', operation: 'parse_multipart', status: 'succeeded' },
+      { stage: 'payload_validation', operation: 'validate_deployment_payload', status: 'succeeded' },
+      { stage: 'deployment_record', operation: 'create_deployment', status: 'succeeded' },
+      { stage: 'runtime_config', operation: 'resolve_runtime_config', status: 'succeeded' },
+      { stage: 'provider_upload', operation: 'provider_upload', status: 'succeeded' },
+      { stage: 'provider_verify', operation: 'provider_verify', status: 'succeeded' },
+      { stage: 'runtime_config_commit', operation: 'commit_runtime_config', status: 'succeeded' },
+      { stage: 'version_create', operation: 'create_site_version', status: 'succeeded' },
+      { stage: 'route_policy_lock', operation: 'acquire_site_commit_lock', status: 'succeeded' },
+      { stage: 'office_net', operation: 'verify_public_office_net_absent', status: 'skipped' },
+      { stage: 'route_activate', operation: 'activate_route', status: 'succeeded' },
+      { stage: 'route_snapshot', operation: 'write_route_snapshot', status: 'succeeded' },
+      { stage: 'deployment_state_persist', operation: 'persist_succeeded_deployment', status: 'succeeded' },
+      { stage: 'webhook_delivery', operation: 'site_deployed', status: 'skipped' },
+    ]
+  );
+  for (const event of events) {
+    assert.match(event.startedAt, /^\d{4}-\d{2}-\d{2}T/);
+    assert.match(event.completedAt, /^\d{4}-\d{2}-\d{2}T/);
+    assert.equal(Number.isInteger(event.durationMs) && event.durationMs >= 0, true);
+  }
+});
+
+test('provider stage failures persist the failing provider operation and terminal deployment evidence', async () => {
+  const store = await createSeededStore();
+  const providerError = Object.assign(new Error('must not be persisted'), {
+    operation: 'assets_upload',
+  });
+  const response = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'trace_provider_upload_failure',
+    }),
+    timelineTestEnv(store, createSnapshotStore(), {
+      WFP_PROVIDER: {
+        upload: async () => {
+          throw providerError;
+        },
+        verify: async () => {
+          throw new Error('verify should not run');
+        },
+      },
+    })
+  );
+
+  assert.equal(response.status, 502, await response.clone().text());
+  const events = await store.listDeploymentEvents({ environment: 'production', deploymentId: 'dep_1' });
+  assert.deepEqual(
+    events
+      .filter((event) => ['provider_upload', 'deployment_state_persist', 'webhook_delivery'].includes(event.stage))
+      .map((event) => ({ stage: event.stage, operation: event.operation, status: event.status })),
+    [
+      { stage: 'provider_upload', operation: 'assets_upload', status: 'failed' },
+      { stage: 'deployment_state_persist', operation: 'persist_failed_deployment', status: 'succeeded' },
+      { stage: 'webhook_delivery', operation: 'site_failed', status: 'skipped' },
+    ]
+  );
+  assert.doesNotMatch(JSON.stringify(events), /must not be persisted/);
+});
+
+test('deployment state, version creation, and policy lock failures persist their exact failing stages', async () => {
+  const scenarios = [
+    {
+      name: 'uploading state',
+      mutate(store) {
+        const updateDeployment = store.updateDeployment.bind(store);
+        store.updateDeployment = async (id, patch) => {
+          if (patch.status === 'uploading') throw new Error('uploading state unavailable');
+          return updateDeployment(id, patch);
+        };
+      },
+      expectedStatus: 503,
+      expectedCode: 'DEPLOYMENT_STATE_WRITE_FAILED',
+      expectedStage: 'deployment_state_persist',
+      expectedOperation: 'persist_uploading_deployment',
+    },
+    {
+      name: 'uploaded state',
+      mutate(store) {
+        const updateDeployment = store.updateDeployment.bind(store);
+        store.updateDeployment = async (id, patch) => {
+          if (patch.status === 'uploaded') throw new Error('uploaded state unavailable');
+          return updateDeployment(id, patch);
+        };
+      },
+      expectedStatus: 503,
+      expectedCode: 'DEPLOYMENT_STATE_WRITE_FAILED',
+      expectedStage: 'deployment_state_persist',
+      expectedOperation: 'persist_uploaded_deployment',
+    },
+    {
+      name: 'version create',
+      mutate(store) {
+        store.createSiteVersion = async () => {
+          throw new Error('version store unavailable');
+        };
+      },
+      expectedStatus: 503,
+      expectedCode: 'DEPLOYMENT_STATE_WRITE_FAILED',
+      expectedStage: 'version_create',
+      expectedOperation: 'create_site_version',
+    },
+    {
+      name: 'policy lock',
+      mutate(store) {
+        store.withSiteCommitLock = undefined;
+      },
+      expectedStatus: 409,
+      expectedCode: 'SITE_POLICY_LOCKED',
+      expectedStage: 'route_policy_lock',
+      expectedOperation: 'acquire_site_commit_lock',
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const store = await createSeededStore();
+    scenario.mutate(store);
+    const response = await worker.fetch(
+      deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+        'Idempotency-Key': `trace_${scenario.name.replaceAll(' ', '_')}`,
+      }),
+      timelineTestEnv(store, createSnapshotStore())
+    );
+
+    assert.equal(response.status, scenario.expectedStatus, `${scenario.name}: ${await response.clone().text()}`);
+    assert.equal((await response.clone().json()).error.code, scenario.expectedCode);
+    const events = await store.listDeploymentEvents({ environment: 'production', deploymentId: 'dep_1' });
+    assert.equal(
+      events.some(
+        (event) =>
+          event.stage === scenario.expectedStage && event.operation === scenario.expectedOperation && event.status === 'failed'
+      ),
+      true,
+      `${scenario.name}: ${JSON.stringify(events)}`
+    );
+  }
+});
+
+test('rollback uses the shared timeline with rollback-specific route operations', async () => {
+  const store = await createSeededStore();
+  const env = timelineTestEnv(store, createSnapshotStore());
+  await assertDeployOk(
+    await worker.fetch(
+      deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+        'Idempotency-Key': 'timeline_rollback_deploy_1',
+      }),
+      env
+    )
+  );
+  await assertDeployOk(
+    await worker.fetch(
+      deploymentRequest(
+        'https://api.pages.xd.team/.xd-pages/api/deployments',
+        deployPayload({ moduleContent: 'export default { fetch() { return new Response("v2"); } };' }),
+        { 'Idempotency-Key': 'timeline_rollback_deploy_2' }
+      ),
+      env
+    )
+  );
+
+  const response = await worker.fetch(
+    jsonRequest(
+      'https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback',
+      {},
+      {
+        'Idempotency-Key': 'trace_complete_rollback',
+      }
+    ),
+    env
+  );
+
+  assert.equal(response.status, 201, await response.clone().text());
+  const events = await store.listDeploymentEvents({
+    environment: 'production',
+    traceId: response.headers.get('X-Deployment-Trace-Id'),
+  });
+  assert.deepEqual(
+    events.map((event) => ({ stage: event.stage, operation: event.operation, status: event.status })),
+    [
+      { stage: 'intake', operation: 'accept_request', status: 'succeeded' },
+      { stage: 'auth_and_site_resolution', operation: 'authenticate_request', status: 'succeeded' },
+      { stage: 'intake', operation: 'parse_json', status: 'succeeded' },
+      { stage: 'payload_validation', operation: 'rollback_validate', status: 'succeeded' },
+      { stage: 'deployment_record', operation: 'create_deployment', status: 'succeeded' },
+      { stage: 'runtime_config', operation: 'rollback_runtime_config_not_applicable', status: 'skipped' },
+      { stage: 'provider_upload', operation: 'rollback_provider_upload_not_applicable', status: 'skipped' },
+      { stage: 'provider_verify', operation: 'rollback_provider_verify_not_applicable', status: 'skipped' },
+      {
+        stage: 'runtime_config_commit',
+        operation: 'rollback_runtime_config_commit_not_applicable',
+        status: 'skipped',
+      },
+      { stage: 'version_create', operation: 'rollback_version_create_not_applicable', status: 'skipped' },
+      { stage: 'route_policy_lock', operation: 'rollback_policy_lock', status: 'succeeded' },
+      { stage: 'office_net', operation: 'rollback_verify_public_office_net_absent', status: 'skipped' },
+      { stage: 'route_activate', operation: 'rollback_route_activate', status: 'succeeded' },
+      { stage: 'route_snapshot', operation: 'rollback_route_snapshot', status: 'succeeded' },
+      { stage: 'deployment_state_persist', operation: 'persist_succeeded_deployment', status: 'succeeded' },
+      { stage: 'webhook_delivery', operation: 'rollback_no_webhook', status: 'skipped' },
+    ]
+  );
+});
+
+test('rollback failures preserve the failed stage, compensation, terminal persistence, and webhook outcome', async () => {
+  const scenarios = [
+    {
+      name: 'policy lock',
+      mutate(store) {
+        store.acquireSiteCommitLock = async () => {
+          throw new Error('lock unavailable');
+        };
+      },
+      expectedCode: 'SITE_POLICY_LOCKED',
+      expectedEvents: [
+        { stage: 'route_policy_lock', operation: 'rollback_policy_lock', status: 'failed' },
+        { stage: 'deployment_state_persist', operation: 'persist_failed_deployment', status: 'succeeded' },
+        { stage: 'webhook_delivery', operation: 'site_failed', status: 'skipped' },
+      ],
+    },
+    {
+      name: 'snapshot compensation',
+      mutate(_store, env, snapshots) {
+        env.ROUTE_SNAPSHOTS = failFirstSnapshotPutAfter(snapshots, async () => {});
+      },
+      expectedCode: 'ROUTE_SNAPSHOT_WRITE_FAILED',
+      expectedEvents: [
+        { stage: 'route_snapshot', operation: 'rollback_route_snapshot', status: 'failed' },
+        {
+          stage: 'cleanup_or_compensation',
+          operation: 'rollback_restore_route_after_snapshot_failure',
+          status: 'compensated',
+        },
+        { stage: 'deployment_state_persist', operation: 'persist_failed_deployment', status: 'succeeded' },
+        { stage: 'webhook_delivery', operation: 'site_failed', status: 'skipped' },
+      ],
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const store = await createSeededStore();
+    const snapshots = createSnapshotStore();
+    const env = timelineTestEnv(store, snapshots);
+    await assertDeployOk(
+      await worker.fetch(
+        deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+          'Idempotency-Key': `rollback_failure_${scenario.name}_deploy_1`,
+        }),
+        env
+      )
+    );
+    await assertDeployOk(
+      await worker.fetch(
+        deploymentRequest(
+          'https://api.pages.xd.team/.xd-pages/api/deployments',
+          deployPayload({ moduleContent: 'export default { fetch() { return new Response("v2"); } };' }),
+          { 'Idempotency-Key': `rollback_failure_${scenario.name}_deploy_2` }
+        ),
+        env
+      )
+    );
+    scenario.mutate(store, env, snapshots);
+
+    const response = await worker.fetch(
+      jsonRequest(
+        'https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback',
+        {},
+        {
+          'Idempotency-Key': `rollback_failure_${scenario.name}`,
+        }
+      ),
+      env
+    );
+
+    assert.notEqual(response.status, 201);
+    assert.equal((await response.clone().json()).error.code, scenario.expectedCode);
+    const events = await store.listDeploymentEvents({ environment: 'production', deploymentId: 'dep_3' });
+    const relevant = events
+      .filter((event) =>
+        scenario.expectedEvents.some((expected) => expected.stage === event.stage && expected.operation === event.operation)
+      )
+      .map((event) => ({ stage: event.stage, operation: event.operation, status: event.status }));
+    assert.deepEqual(relevant, scenario.expectedEvents, `${scenario.name}: ${JSON.stringify(events)}`);
+  }
+});
+
+test('webhook delivery events distinguish success, failure, and no matching subscription without leaking targets', async () => {
+  const scenarios = [
+    { name: 'success', responseStatus: 200, expectedStatus: 'succeeded' },
+    { name: 'failure', responseStatus: 500, expectedStatus: 'failed' },
+    { name: 'skipped', responseStatus: null, expectedStatus: 'skipped' },
+  ];
+
+  for (const scenario of scenarios) {
+    const store = await createSeededStore();
+    await seedPlatformAdmin(store);
+    const targetUrl = 'https://hooks.slack.com/services/T000/B000/trace-secret';
+    const env = timelineTestEnv(store, createSnapshotStore(), {
+      WEBHOOK_URL_ENCRYPTION_KEY: 'test-webhook-url-key',
+      resolveWebhookHost: async () => ['8.8.8.8'],
+      WEBHOOK_FETCH: async () => new Response('result', { status: scenario.responseStatus || 200 }),
+    });
+    if (scenario.responseStatus !== null) {
+      const created = await worker.fetch(
+        internalConsoleRequest('/.xd-pages/api/console/admin/webhooks', {
+          method: 'POST',
+          body: {
+            name: `Trace ${scenario.name}`,
+            url: targetUrl,
+            events: ['site.deployed'],
+            payloadMode: 'standard',
+          },
+        }),
+        env
+      );
+      assert.equal(created.status, 201, await created.clone().text());
+    }
+
+    const response = await worker.fetch(
+      deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+        'Idempotency-Key': `trace_webhook_${scenario.name}`,
+      }),
+      env
+    );
+    assert.equal(response.status, 201, await response.clone().text());
+
+    const events = await store.listDeploymentEvents({ environment: 'production', deploymentId: 'dep_1' });
+    const webhook = events.find((event) => event.stage === 'webhook_delivery');
+    assert.equal(webhook.operation, 'site_deployed');
+    assert.equal(webhook.status, scenario.expectedStatus);
+    if (scenario.expectedStatus === 'failed') {
+      assert.equal(webhook.diagnostics.causeClass, 'webhook_delivery_error');
+    }
+    assert.doesNotMatch(JSON.stringify(webhook), /hooks\.slack\.com|trace-secret/);
+  }
 });
 
 test('creates a deployment with production ID generation when env.nextId is unavailable', async () => {
@@ -6740,6 +7102,19 @@ test('fails deployment when production WFP namespace points at staging', async (
   assert.equal(body.error.action, 'Check the Pages deployment platform configuration and retry with a new Idempotency-Key.');
   assert.equal((await store.getDeployment('dep_1')).status, 'failed');
   assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, null);
+  const events = await store.listDeploymentEvents({ environment: 'production', deploymentId: 'dep_1' });
+  assert.equal(
+    events.some(
+      (event) =>
+        event.stage === 'provider_upload' &&
+        event.operation === 'create_deployment_provider' &&
+        event.status === 'failed' &&
+        event.errorCode === 'DEPLOYMENT_PLATFORM_CONFIG_INVALID' &&
+        event.diagnostics?.causeClass === 'provider_config_error'
+    ),
+    true,
+    JSON.stringify(events)
+  );
 });
 
 test('keeps previous active route when rollback snapshot write fails', async () => {
@@ -7388,6 +7763,14 @@ function testEnv(store, snapshots, overrides = {}) {
   };
 }
 
+function timelineTestEnv(store, snapshots, overrides = {}) {
+  let nowMs = Date.parse('2026-06-15T00:00:00.000Z');
+  return testEnv(store, snapshots, {
+    now: () => new Date(nowMs++).toISOString(),
+    ...overrides,
+  });
+}
+
 function assertNoPublicExecutionDetails(body) {
   const serialized = JSON.stringify(body);
   assert.equal('workerName' in (body.version || {}), false);
@@ -7904,6 +8287,47 @@ function multipartWorkerScriptResponse() {
 
 function testSlackWebhookUrl() {
   return ['https://hooks.slack.com', 'services', 'T000', 'B000', 'PLACEHOLDER'].join('/');
+}
+
+function workerWithAssetsDeploymentFields(overrides = {}) {
+  return {
+    siteId: 'site_1',
+    requestedFallback: 'auto',
+    source: 'cli',
+    publishPlan: {
+      deploymentShape: 'worker-with-assets',
+      requestedFallback: 'auto',
+      resolvedFallback: 'not-found',
+      routingMode: 'worker-first',
+      workerEntry: '_worker.js',
+      workerMainModuleName: '_worker.js',
+      assetsConfig: { notFoundHandling: '404-page' },
+    },
+    assetManifest: [
+      {
+        path: '/index.html',
+        partName: 'asset-file-0',
+        size: 5,
+        contentType: 'text/html; charset=utf-8',
+      },
+    ],
+    workerModules: [
+      {
+        moduleName: '_worker.js',
+        partName: 'worker-main',
+        size: 18,
+        contentType: 'application/javascript+module',
+      },
+    ],
+    files: [{ field: 'asset-file-0', filename: 'index.html', content: 'hello', type: 'text/html; charset=utf-8' }],
+    worker: {
+      field: 'worker-main',
+      filename: '_worker.js',
+      content: 'export default {};',
+      type: 'application/javascript+module',
+    },
+    ...overrides,
+  };
 }
 
 function deployPayload(overrides = {}) {

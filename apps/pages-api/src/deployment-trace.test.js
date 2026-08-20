@@ -169,6 +169,33 @@ test('deployment stages write one normalized terminal event with non-negative du
   });
 });
 
+test('deployment stage start times stay monotonic when the clock has millisecond collisions', async () => {
+  const events = [];
+  const trace = createDeploymentTraceContext(
+    new Request('https://example.test'),
+    { nextId: (prefix) => `${prefix}_${events.length + 1}` },
+    {
+      environment: 'production',
+      operation: 'deploy',
+      store: { createDeploymentEvent: async (event) => events.push(event) },
+      now: () => Date.parse('2026-08-20T08:00:00.000Z'),
+    }
+  );
+
+  await recordDeploymentStage(trace, { stage: 'intake', operation: 'accept_request', status: 'succeeded' });
+  await recordDeploymentStage(trace, {
+    stage: 'auth_and_site_resolution',
+    operation: 'authenticate_request',
+    status: 'succeeded',
+  });
+
+  assert.equal(Date.parse(events[1].startedAt) > Date.parse(events[0].startedAt), true);
+  assert.equal(
+    events.every((event) => event.durationMs >= 0),
+    true
+  );
+});
+
 test('deployment stage validation rejects unknown stages and terminal statuses', async () => {
   const trace = createDeploymentTraceContext(
     new Request('https://example.test'),

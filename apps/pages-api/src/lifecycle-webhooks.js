@@ -1,10 +1,18 @@
 import { nextId } from './id.js';
+import { finishDeploymentStage, startDeploymentStage } from './deployment-trace.js';
 import { deliverWebhookEventToSubscriptions } from './webhooks.js';
 
-export async function emitSiteFailedWebhook({ store, env, config, ctx, actor, site, deployment }) {
-  await schedule(ctx, () =>
-    buildSiteFailedEvent({ store, env, config, actor, site, deployment }).then((event) =>
-      deliverWebhookEventToSubscriptions({
+export async function emitSiteFailedWebhook({ store, env, config, ctx, actor, site, deployment, trace }) {
+  const stage = trace
+    ? startDeploymentStage(trace, {
+        stage: 'webhook_delivery',
+        operation: 'site_failed',
+      })
+    : null;
+  await schedule(ctx, async () => {
+    try {
+      const event = await buildSiteFailedEvent({ store, env, config, actor, site, deployment });
+      const deliveries = await deliverWebhookEventToSubscriptions({
         store,
         env,
         config,
@@ -12,9 +20,12 @@ export async function emitSiteFailedWebhook({ store, env, config, ctx, actor, si
         fetchImpl: typeof env.WEBHOOK_FETCH === 'function' ? env.WEBHOOK_FETCH : undefined,
         resolveHost: typeof env.resolveWebhookHost === 'function' ? env.resolveWebhookHost : undefined,
         now: () => deployment.completedAt || readNow(env),
-      })
-    )
-  );
+      });
+      await finishWebhookStage(stage, deliveries);
+    } catch {
+      await finishWebhookStage(stage, null);
+    }
+  });
 }
 
 export async function emitSiteDisabledWebhook({ store, env, config, ctx, actor, site, previousRoute, route }) {
@@ -62,6 +73,34 @@ async function schedule(ctx, task) {
     return;
   }
   await promise;
+}
+
+async function finishWebhookStage(stage, deliveries) {
+  if (!stage) return;
+  if (!Array.isArray(deliveries)) {
+    await finishDeploymentStage(stage, {
+      status: 'failed',
+      errorCode: 'WEBHOOK_DELIVERY_FAILED',
+      errorMessage: 'Webhook delivery failed.',
+      diagnostics: { causeClass: 'webhook_delivery_error' },
+    });
+    return;
+  }
+  if (deliveries.length === 0) {
+    await finishDeploymentStage(stage, { status: 'skipped' });
+    return;
+  }
+  const failed = deliveries.some((delivery) => delivery?.deliveryStatus === 'failed');
+  await finishDeploymentStage(stage, {
+    status: failed ? 'failed' : 'succeeded',
+    ...(failed
+      ? {
+          errorCode: 'WEBHOOK_DELIVERY_FAILED',
+          errorMessage: 'Webhook delivery failed.',
+          diagnostics: { causeClass: 'webhook_delivery_error' },
+        }
+      : {}),
+  });
 }
 
 async function buildSiteFailedEvent({ store, env, config, actor, site, deployment }) {

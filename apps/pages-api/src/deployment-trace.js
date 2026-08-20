@@ -46,6 +46,7 @@ export function createDeploymentTraceContext(request, env, input = {}) {
     store: input.store || null,
     logger: typeof input.logger === 'function' ? input.logger : null,
     now: typeof input.now === 'function' ? input.now : null,
+    lastStartedMs: null,
   });
   return trace;
 }
@@ -76,7 +77,9 @@ export function startDeploymentStage(trace, input = {}) {
   const internal = assertTraceContext(trace);
   const stage = normalizeStage(input.stage);
   if (!stage) throw new Error('DEPLOYMENT_TRACE_STAGE_INVALID');
-  const startedMs = readNowMs(internal);
+  const observedMs = readNowMs(internal);
+  const startedMs = Number.isFinite(internal.lastStartedMs) ? Math.max(observedMs, internal.lastStartedMs + 1) : observedMs;
+  internal.lastStartedMs = startedMs;
   return {
     trace,
     stage,
