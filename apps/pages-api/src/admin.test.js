@@ -1637,6 +1637,52 @@ test('platform admin can query a pre-deployment timeline by trace id', async () 
   assert.equal((await missing.json()).error.code, 'DEPLOYMENT_TRACE_NOT_FOUND');
 });
 
+test('deployment trace detail falls back to the event trace id for legacy deployment rows', async () => {
+  const store = createTestPagesStore({ now: () => '2026-08-20T08:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await store.createDeploymentForIdempotency({
+    id: 'dep_event_trace',
+    environment: 'production',
+    siteId: 'site_trace',
+    actorId: 'usr_root',
+    actorUserId: 'usr_root',
+    actorType: 'user',
+    source: 'cli',
+    operation: 'deploy',
+    status: 'failed',
+    idempotencyKey: 'event-trace-fallback',
+    requestHash: 'hash-event-trace-fallback',
+    traceId: null,
+  });
+  await store.createDeploymentEvent({
+    id: 'dpe_event_trace',
+    environment: 'production',
+    traceId: 'dtr_event_trace',
+    deploymentId: 'dep_event_trace',
+    siteId: 'site_trace',
+    attempt: 1,
+    stage: 'provider_upload',
+    operation: 'worker_put',
+    status: 'failed',
+    startedAt: '2026-08-20T07:54:12.462Z',
+    completedAt: '2026-08-20T07:54:12.500Z',
+    durationMs: 38,
+  });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/deployments/dep_event_trace/trace', {
+      userId: 'usr_root',
+      admin: true,
+    }),
+    env(store)
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.trace.traceId, 'dtr_event_trace');
+  assert.equal(body.deployment.traceId, 'dtr_event_trace');
+});
+
 test('admin site deployment list exposes only the primary trace reference', async () => {
   const store = createTestPagesStore({ now: () => '2026-08-20T08:00:00.000Z' });
   await seedPlatformAdmin(store);

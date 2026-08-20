@@ -5,6 +5,7 @@ const DEPLOYMENT_STAGES = new Set([
   'auth_and_site_resolution',
   'payload_validation',
   'deployment_record',
+  'deployment_operation',
   'runtime_config',
   'provider_upload',
   'provider_verify',

@@ -44,6 +44,7 @@ const encoder = new globalThis.TextEncoder();
 const VISIBILITIES = new Set(['internal', 'org', 'acl', 'owner', 'disabled']);
 const PROVIDER_DIAGNOSTIC_CLIENT_CODES = new Set(['WFP_API_ERROR', 'WFP_API_INVALID_JSON', 'WFP_NETWORK_ERROR']);
 const PROVIDER_DIAGNOSTIC_OPERATIONS = new Set(['assets_upload_session', 'assets_upload', 'worker_put', 'worker_get']);
+const TERMINAL_DEPLOYMENT_STATUSES = new Set(['succeeded', 'failed']);
 const RESERVED_SITE_SLUG_ACTION = '该站点名是 XD Cell 平台保留项，请换一个业务站点名。';
 const deploymentRequestTraceStates = new WeakMap();
 
@@ -62,7 +63,19 @@ export async function handleDeploymentsApi(request, env, config, store, ctx) {
   const authStage = trace
     ? startDeploymentStage(trace, { stage: 'auth_and_site_resolution', operation: 'authenticate_request' })
     : null;
-  const auth = await authenticateApiRequest(request, env, store, config, readNow(env));
+  let auth;
+  try {
+    auth = await authenticateApiRequest(request, env, store, config, readNow(env));
+  } catch (error) {
+    if (!trace) throw error;
+    await finishRequestAuthStage(authStage, {
+      status: 'failed',
+      errorCode: 'DEPLOYMENT_REQUEST_FAILED',
+      errorMessage: 'Deployment request could not be processed.',
+      diagnostics: { causeClass: 'authentication_error' },
+    });
+    return withRequestTraceHeader(deploymentRequestFailed(), trace);
+  }
   if (!auth.ok) {
     await finishRequestAuthStage(authStage, {
       status: 'failed',
@@ -81,7 +94,19 @@ export async function handleDeploymentsApi(request, env, config, store, ctx) {
         response = await createDeployment(request, env, config, store, auth.actor, ctx, trace, authStage);
       } catch (error) {
         if (error?.code === 'DEPLOYMENT_STATE_WRITE_FAILED') response = deploymentStateWriteFailed();
-        else throw error;
+        else {
+          await finishRequestAuthStage(authStage, { status: 'succeeded' });
+          const recoveredDeployment = await recoverUnexpectedRequestFailure({
+            trace,
+            store,
+            env,
+            config,
+            ctx,
+            actor: auth.actor,
+            fallbackOperation: 'orchestrate_deployment_request',
+          });
+          response = await unexpectedRequestResponse(store, recoveredDeployment, config.environment);
+        }
       }
       await finishRequestAuthStage(authStage, { status: 'succeeded' });
       response = await ensureRequestFailureTraced(trace, response);
@@ -113,7 +138,19 @@ export async function handleVersionsApi(request, env, config, store, ctx) {
   const authStage = trace
     ? startDeploymentStage(trace, { stage: 'auth_and_site_resolution', operation: 'authenticate_request' })
     : null;
-  const auth = await authenticateApiRequest(request, env, store, config, readNow(env));
+  let auth;
+  try {
+    auth = await authenticateApiRequest(request, env, store, config, readNow(env));
+  } catch (error) {
+    if (!trace) throw error;
+    await finishRequestAuthStage(authStage, {
+      status: 'failed',
+      errorCode: 'DEPLOYMENT_REQUEST_FAILED',
+      errorMessage: 'Deployment request could not be processed.',
+      diagnostics: { causeClass: 'authentication_error' },
+    });
+    return withRequestTraceHeader(deploymentRequestFailed(), trace);
+  }
   if (!auth.ok) {
     await finishRequestAuthStage(authStage, {
       status: 'failed',
@@ -131,7 +168,19 @@ export async function handleVersionsApi(request, env, config, store, ctx) {
       response = await rollbackVersion(request, env, config, store, auth.actor, versionId, ctx, trace, authStage);
     } catch (error) {
       if (error?.code === 'DEPLOYMENT_STATE_WRITE_FAILED') response = deploymentStateWriteFailed();
-      else throw error;
+      else {
+        await finishRequestAuthStage(authStage, { status: 'succeeded' });
+        const recoveredDeployment = await recoverUnexpectedRequestFailure({
+          trace,
+          store,
+          env,
+          config,
+          ctx,
+          actor: auth.actor,
+          fallbackOperation: 'orchestrate_rollback_request',
+        });
+        response = await unexpectedRequestResponse(store, recoveredDeployment, config.environment);
+      }
     }
     await finishRequestAuthStage(authStage, { status: 'succeeded' });
     response = await ensureRequestFailureTraced(trace, response);
@@ -3546,7 +3595,7 @@ function runtimeConfigFailurePatch({
   };
 }
 
-function deploymentOperationFailurePatch({ errorCode, errorMessage }) {
+function deploymentOperationFailurePatch({ errorCode, errorMessage, operatorAction = 'retry_deploy' }) {
   return {
     errorCode,
     errorMessage,
@@ -3554,6 +3603,7 @@ function deploymentOperationFailurePatch({ errorCode, errorMessage }) {
     failureDiagnostics: buildDeploymentFailureDiagnostics({
       stage: 'deployment_operation',
       executionProvider: 'unknown',
+      operatorAction,
       cause: { code: errorCode, class: 'deployment_operation_error' },
     }),
   };
@@ -3600,7 +3650,7 @@ async function updateDeploymentToFailedAndNotify({
     throw error;
   }
   if (persistStage) await finishDeploymentStage(persistStage, { status: 'succeeded' });
-  if (!before || !updated || before.status === 'failed' || updated.status !== 'failed') {
+  if (!before || !updated || before.status === 'failed' || updated.status !== 'failed' || !site) {
     if (trace) {
       await recordDeploymentStage(trace, {
         stage: 'webhook_delivery',
@@ -4032,6 +4082,87 @@ async function ensureRequestFailureTraced(trace, response) {
   return response;
 }
 
+async function traceUnexpectedRequestFailure(trace, { fallbackStage, fallbackOperation }) {
+  if (!trace) return;
+  const state = deploymentRequestTraceStates.get(trace);
+  if (state?.failed) return;
+  await flushRequestTraceSuccesses(trace);
+  markRequestTraceFailed(trace);
+  await recordDeploymentStage(trace, {
+    stage: state?.stage || fallbackStage,
+    operation: state?.operation || fallbackOperation,
+    status: 'failed',
+    errorCode: 'DEPLOYMENT_REQUEST_FAILED',
+    errorMessage: 'Deployment request could not be processed.',
+    diagnostics: { causeClass: 'unexpected_orchestration_error' },
+  });
+}
+
+async function recoverUnexpectedRequestFailure({ trace, store, env, config, ctx, actor, fallbackOperation }) {
+  const deploymentId = trace?.deploymentId || null;
+  try {
+    await traceUnexpectedRequestFailure(trace, {
+      fallbackStage: deploymentId ? 'deployment_operation' : 'intake',
+      fallbackOperation,
+    });
+  } catch {
+    // Trace persistence must not prevent best-effort terminal state recovery.
+  }
+  if (!deploymentId) return null;
+
+  let deployment;
+  try {
+    deployment = await store.getDeployment(deploymentId, config.environment);
+  } catch {
+    logDeploymentStateWriteFailed(env, {
+      traceId: trace.traceId,
+      deploymentId,
+      operation: 'persist_unexpected_deployment_failure',
+    });
+    return null;
+  }
+  if (!deployment || TERMINAL_DEPLOYMENT_STATUSES.has(deployment.status)) return deployment || null;
+
+  try {
+    const reconciled = await reconcileCommittedDeployment(store, deployment, config.environment, env, trace);
+    if (TERMINAL_DEPLOYMENT_STATUSES.has(reconciled?.status)) return reconciled;
+    deployment = reconciled || deployment;
+  } catch {
+    logDeploymentRepairRequired(env, {
+      environment: config.environment,
+      siteId: trace.siteId,
+      deploymentId,
+      reason: 'deployment_commit_reconciliation_failed',
+    });
+    return deployment;
+  }
+
+  let site = null;
+  if (trace.siteId && typeof store.getSite === 'function') {
+    try {
+      site = await store.getSite(trace.siteId, config.environment);
+    } catch {
+      // Failure persistence is still useful when optional webhook context cannot be loaded.
+    }
+  }
+  return updateDeploymentToFailedAndNotify({
+    store,
+    env,
+    config,
+    ctx,
+    deploymentId,
+    patch: deploymentOperationFailurePatch({
+      errorCode: 'DEPLOYMENT_REQUEST_FAILED',
+      errorMessage: 'Deployment request could not be processed.',
+      operatorAction: trace.operation === 'rollback' ? 'retry_rollback' : 'retry_deploy',
+    }),
+    actor,
+    site,
+    trace,
+    bestEffort: true,
+  });
+}
+
 async function bindExistingDeploymentTrace(trace, store, deployment, environment) {
   let existing = deployment;
   let claimFailed = false;
@@ -4095,6 +4226,26 @@ function withRequestTraceHeader(response, trace) {
 
 function idempotencyKeyRequired() {
   return jsonError('IDEMPOTENCY_KEY_REQUIRED', 'Idempotency-Key is required.', 400, 'Send an Idempotency-Key header.');
+}
+
+async function unexpectedRequestResponse(store, deployment, environment) {
+  if (deployment?.status === 'succeeded') {
+    try {
+      return jsonOk(await deploymentEnvelope(store, deployment, {}, environment), 201);
+    } catch {
+      // Fall back to a status-first action when the committed envelope cannot be reconstructed.
+    }
+  }
+  return deploymentRequestFailed();
+}
+
+function deploymentRequestFailed() {
+  return jsonError(
+    'DEPLOYMENT_REQUEST_FAILED',
+    'Deployment request could not be processed.',
+    500,
+    'Check deployment status using the trace id. Retry with a new Idempotency-Key only when no terminal deployment exists.'
+  );
 }
 
 function idempotencyConflict() {

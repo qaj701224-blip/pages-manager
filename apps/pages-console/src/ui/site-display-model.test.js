@@ -167,6 +167,20 @@ test('deploymentTraceEventView maps trace diagnostics into safe readable timelin
   assert.equal(JSON.stringify(view).includes('\u0000'), false);
 });
 
+test('deploymentTraceEventView labels unexpected rollback orchestration failures', () => {
+  const view = siteDisplayModel.deploymentTraceEventView({
+    stage: 'deployment_operation',
+    status: 'failed',
+    operation: 'orchestrate_rollback_request',
+    diagnostics: {
+      operatorAction: 'retry_rollback',
+    },
+  });
+
+  assert.equal(view.stage, '部署编排');
+  assert.equal(view.operatorAction, '重新回滚');
+});
+
 test('deploymentTraceEventView preserves safe unknown values and empty fallbacks', () => {
   assert.equal(typeof siteDisplayModel.deploymentTraceEventView, 'function');
   assert.deepEqual(

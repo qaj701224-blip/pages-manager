@@ -3154,16 +3154,17 @@ async function getAdminDeploymentTraceByTraceId(config, store, traceId) {
 function formatAdminDeploymentTraceResponse(deployment, events, traceId) {
   const inboundRayId = events.find((event) => event.inboundRayId)?.inboundRayId || null;
   const deploymentId = deployment?.id || events.find((event) => event.deploymentId)?.deploymentId || null;
+  const resolvedTraceId = traceId || deployment?.traceId || events.find((event) => event.traceId)?.traceId || null;
   return {
     trace: {
-      traceId: traceId || deployment?.traceId || null,
+      traceId: resolvedTraceId,
       inboundRayId,
       deploymentId,
     },
     deployment: deployment
       ? {
           id: deployment.id,
-          traceId: deployment.traceId || traceId || null,
+          traceId: resolvedTraceId,
           inboundRayId,
           status: deployment.status,
           failureStage: deployment.failureStage || null,

@@ -155,6 +155,7 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
     '403',
     '404',
     '409',
+    '500',
     '503',
   ]);
   for (const response of Object.values(body.paths['/.xd-pages/api/deployments'].post.responses)) {
@@ -189,6 +190,7 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
     'DEPLOYMENT_UPLOAD_FAILED',
     'DEPLOYMENT_VERIFY_FAILED',
     'DEPLOYMENT_STATE_WRITE_FAILED',
+    'DEPLOYMENT_REQUEST_FAILED',
     'DEPLOYMENT_CAPACITY_EXHAUSTED',
     'SITE_POLICY_LOCKED',
     'SITE_POLICY_CONFLICT',
@@ -207,6 +209,7 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
   assert.ok(
     body.paths['/.xd-pages/api/versions/{id}/rollback'].post['x-error-codes'].includes('ROLLBACK_ACTIVATION_FAILED')
   );
+  assert.ok(body.paths['/.xd-pages/api/versions/{id}/rollback'].post['x-error-codes'].includes('DEPLOYMENT_REQUEST_FAILED'));
   assert.deepEqual(body.paths['/.xd-pages/api/sites'].post['x-error-codes'], [
     'SITE_SLUG_CONFLICT',
     'HOSTNAME_CLAIM_CONFLICT',

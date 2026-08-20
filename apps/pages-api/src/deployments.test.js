@@ -152,6 +152,208 @@ test('POST deploy authentication failures keep a log-correlatable trace without 
   assert.equal(traceLogs.every((event) => event.event === 'pages_deployment_trace_event'), true);
 });
 
+test('POST deploy authentication exceptions return a safe traced response without unauthenticated D1 writes', async () => {
+  const store = await createSeededStore();
+  store.getAccessKeyById = async () => {
+    throw new Error('SQL token=must-not-be-returned');
+  };
+  const traceLogs = [];
+  const env = testEnv(store, createSnapshotStore());
+  env.logDeploymentTraceEvent = (line) => traceLogs.push(JSON.parse(line));
+
+  const response = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'trace_auth_exception',
+    }),
+    env
+  );
+  const traceId = response.headers.get('X-Deployment-Trace-Id');
+  const body = await response.json();
+
+  assert.equal(response.status, 500);
+  assert.equal(traceId, 'dtr_1');
+  assert.equal(body.error.code, 'DEPLOYMENT_REQUEST_FAILED');
+  assert.deepEqual(await store.listDeploymentEvents({ environment: 'production', traceId }), []);
+  assert.equal(
+    traceLogs.some(
+      (event) =>
+        event.stage === 'auth_and_site_resolution' &&
+        event.operation === 'authenticate_request' &&
+        event.status === 'failed' &&
+        event.errorCode === 'DEPLOYMENT_REQUEST_FAILED'
+    ),
+    true
+  );
+  assert.doesNotMatch(JSON.stringify({ body, traceLogs }), /SQL|token=|must-not-be-returned/);
+});
+
+test('POST deploy orchestration exceptions persist the active safe stage and return the trace header', async () => {
+  const store = await createSeededStore();
+  store.getSiteForUser = async () => {
+    throw new Error('SQL secret=must-not-be-returned');
+  };
+
+  const response = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'trace_orchestration_exception',
+    }),
+    testEnv(store, createSnapshotStore())
+  );
+  const traceId = response.headers.get('X-Deployment-Trace-Id');
+  const body = await response.json();
+  const events = await store.listDeploymentEvents({ environment: 'production', traceId });
+
+  assert.equal(response.status, 500);
+  assert.equal(traceId, 'dtr_1');
+  assert.equal(body.error.code, 'DEPLOYMENT_REQUEST_FAILED');
+  assert.equal(
+    events.some(
+      (event) =>
+        event.stage === 'auth_and_site_resolution' &&
+        event.operation === 'resolve_site' &&
+        event.status === 'failed' &&
+        event.errorCode === 'DEPLOYMENT_REQUEST_FAILED'
+    ),
+    true
+  );
+  assert.doesNotMatch(JSON.stringify({ body, events }), /SQL|secret=|must-not-be-returned/);
+});
+
+test('POST deploy exceptions after record creation terminalize the deployment at the orchestration stage', async () => {
+  const store = await createSeededStore();
+  const env = testEnv(store, createSnapshotStore());
+  const originalNextId = env.nextId;
+  env.nextId = (prefix) => {
+    if (prefix === 'ver') throw new Error('secret=must-not-be-returned');
+    return originalNextId(prefix);
+  };
+
+  const response = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'trace_post_record_exception',
+    }),
+    env
+  );
+  const traceId = response.headers.get('X-Deployment-Trace-Id');
+  const body = await response.json();
+  const deployment = await store.getDeployment('dep_1', 'production');
+  const events = await store.listDeploymentEvents({ environment: 'production', traceId });
+
+  assert.equal(response.status, 500);
+  assert.equal(body.error.code, 'DEPLOYMENT_REQUEST_FAILED');
+  assert.equal(deployment.status, 'failed');
+  assert.equal(deployment.errorCode, 'DEPLOYMENT_REQUEST_FAILED');
+  assert.equal(deployment.failureStage, 'deployment_operation');
+  assert.equal(
+    events.some(
+      (event) =>
+        event.stage === 'deployment_operation' &&
+        event.operation === 'orchestrate_deployment_request' &&
+        event.status === 'failed' &&
+        event.errorCode === 'DEPLOYMENT_REQUEST_FAILED'
+    ),
+    true
+  );
+  assert.doesNotMatch(JSON.stringify({ body, deployment, events }), /secret=|must-not-be-returned/);
+});
+
+test('POST deploy returns the committed success when trailing trace work fails after terminal persistence', async () => {
+  const store = await createSeededStore();
+  let succeededPersisted = false;
+  const originalUpdateDeployment = store.updateDeployment.bind(store);
+  store.updateDeployment = async (deploymentId, patch) => {
+    const updated = await originalUpdateDeployment(deploymentId, patch);
+    if (patch.status === 'succeeded') succeededPersisted = true;
+    return updated;
+  };
+  const env = testEnv(store, createSnapshotStore());
+  const originalNextId = env.nextId;
+  let postSuccessTraceIds = 0;
+  env.nextId = (prefix) => {
+    if (prefix === 'dpe' && succeededPersisted) {
+      postSuccessTraceIds += 1;
+      if (postSuccessTraceIds === 2) throw new Error('secret=must-not-be-returned');
+    }
+    return originalNextId(prefix);
+  };
+
+  const response = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'trace_post_success_exception',
+    }),
+    env
+  );
+  const traceId = response.headers.get('X-Deployment-Trace-Id');
+  const body = await response.json();
+  const deployment = await store.getDeployment('dep_1', 'production');
+  const events = await store.listDeploymentEvents({ environment: 'production', traceId });
+
+  assert.equal(response.status, 201);
+  assert.equal(body.deployment.status, 'succeeded');
+  assert.equal(deployment.status, 'succeeded');
+  assert.equal(
+    events.some(
+      (event) =>
+        event.stage === 'deployment_operation' &&
+        event.operation === 'orchestrate_deployment_request' &&
+        event.status === 'failed' &&
+        event.errorCode === 'DEPLOYMENT_REQUEST_FAILED'
+    ),
+    true
+  );
+  assert.doesNotMatch(JSON.stringify({ body, deployment, events }), /secret=|must-not-be-returned/);
+});
+
+test('POST deploy reconciles committed traffic when success persistence and trailing trace work both fail', async () => {
+  const store = await createSeededStore();
+  let finalWriteFailed = false;
+  const originalUpdateDeployment = store.updateDeployment.bind(store);
+  store.updateDeployment = async (deploymentId, patch) => {
+    if (patch.status === 'succeeded' && !finalWriteFailed) {
+      finalWriteFailed = true;
+      throw new Error('first terminal write failed');
+    }
+    return originalUpdateDeployment(deploymentId, patch);
+  };
+  const env = testEnv(store, createSnapshotStore());
+  const originalNextId = env.nextId;
+  let postFailureTraceIds = 0;
+  env.nextId = (prefix) => {
+    if (prefix === 'dpe' && finalWriteFailed) {
+      postFailureTraceIds += 1;
+      if (postFailureTraceIds === 2) throw new Error('token=must-not-be-returned');
+    }
+    return originalNextId(prefix);
+  };
+
+  const response = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'trace_double_post_commit_exception',
+    }),
+    env
+  );
+  const traceId = response.headers.get('X-Deployment-Trace-Id');
+  const body = await response.json();
+  const deployment = await store.getDeployment('dep_1', 'production');
+  const route = await store.getRouteBySiteId('site_1', 'production');
+  const events = await store.listDeploymentEvents({ environment: 'production', traceId });
+
+  assert.equal(response.status, 201);
+  assert.equal(body.deployment.status, 'succeeded');
+  assert.equal(deployment.status, 'succeeded');
+  assert.equal(route.activeVersionId, 'ver_1');
+  assert.equal(
+    events.some(
+      (event) =>
+        event.stage === 'deployment_state_persist' &&
+        event.operation === 'reconcile_committed_deployment' &&
+        event.status === 'compensated'
+    ),
+    true
+  );
+  assert.doesNotMatch(JSON.stringify({ body, deployment, events }), /token=|must-not-be-returned/);
+});
+
 test('POST deployment intake and payload failures return trace headers and events without deployment ids', async () => {
   const store = await createSeededStore();
   const env = testEnv(store, createSnapshotStore());
@@ -323,6 +525,84 @@ test('POST rollback responses persist a main trace and capture pre-deployment fa
     ),
     true
   );
+});
+
+test('POST rollback exceptions after record creation terminalize the deployment at the orchestration stage', async () => {
+  const store = await createSeededStore();
+  const env = testEnv(store, createSnapshotStore());
+  await assertDeployOk(
+    await worker.fetch(
+      deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+        'Idempotency-Key': 'trace_rollback_exception_deploy_1',
+      }),
+      env
+    )
+  );
+  await assertDeployOk(
+    await worker.fetch(
+      deploymentRequest(
+        'https://api.pages.xd.team/.xd-pages/api/deployments',
+        deployPayload({ moduleContent: 'export default { fetch() { return new Response("v2"); } };' }),
+        { 'Idempotency-Key': 'trace_rollback_exception_deploy_2' }
+      ),
+      env
+    )
+  );
+
+  let deploymentRecordFinished = false;
+  let injected = false;
+  const originalCreateDeploymentEvent = store.createDeploymentEvent.bind(store);
+  store.createDeploymentEvent = async (event) => {
+    const created = await originalCreateDeploymentEvent(event);
+    if (
+      event.stage === 'deployment_record' &&
+      event.operation === 'create_deployment' &&
+      event.status === 'succeeded' &&
+      event.deploymentId === 'dep_3'
+    ) {
+      deploymentRecordFinished = true;
+    }
+    return created;
+  };
+  const originalNextId = env.nextId;
+  env.nextId = (prefix) => {
+    if (prefix === 'dpe' && deploymentRecordFinished && !injected) {
+      injected = true;
+      throw new Error('token=must-not-be-returned');
+    }
+    return originalNextId(prefix);
+  };
+
+  const response = await worker.fetch(
+    jsonRequest(
+      'https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback',
+      {},
+      { 'Idempotency-Key': 'trace_rollback_post_record_exception' }
+    ),
+    env
+  );
+  const traceId = response.headers.get('X-Deployment-Trace-Id');
+  const body = await response.json();
+  const deployment = await store.getDeployment('dep_3', 'production');
+  const events = await store.listDeploymentEvents({ environment: 'production', traceId });
+
+  assert.equal(response.status, 500);
+  assert.equal(body.error.code, 'DEPLOYMENT_REQUEST_FAILED');
+  assert.equal(deployment.status, 'failed');
+  assert.equal(deployment.errorCode, 'DEPLOYMENT_REQUEST_FAILED');
+  assert.equal(deployment.failureStage, 'deployment_operation');
+  assert.equal((await store.getRouteBySiteId('site_1', 'production')).activeVersionId, 'ver_2');
+  assert.equal(
+    events.some(
+      (event) =>
+        event.stage === 'deployment_operation' &&
+        event.operation === 'orchestrate_rollback_request' &&
+        event.status === 'failed' &&
+        event.errorCode === 'DEPLOYMENT_REQUEST_FAILED'
+    ),
+    true
+  );
+  assert.doesNotMatch(JSON.stringify({ body, deployment, events }), /token=|must-not-be-returned/);
 });
 
 test('successful worker-with-assets deployments persist the complete ordered stage timeline', async () => {

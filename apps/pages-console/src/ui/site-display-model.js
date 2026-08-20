@@ -50,6 +50,7 @@ const DEPLOYMENT_TRACE_STAGE_LABELS = {
   auth_and_site_resolution: '认证与站点解析',
   payload_validation: '内容校验',
   deployment_record: '部署记录',
+  deployment_operation: '部署编排',
   runtime_config: '运行配置',
   provider_upload: 'Provider 上传',
   provider_verify: 'Provider 校验',
@@ -79,6 +80,7 @@ const DEPLOYMENT_TRACE_IMPACT_LABELS = {
 
 const DEPLOYMENT_TRACE_ACTION_LABELS = {
   retry_deploy: '重新部署',
+  retry_rollback: '重新回滚',
   manual_cleanup: '人工清理',
   wait_drain: '等待 drain',
 };
