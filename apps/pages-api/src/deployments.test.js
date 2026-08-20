@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import test from 'node:test';
 
+import { WfpApiError } from '@xd/wfp-client';
 import worker from './index.js';
 import { createAccessKeyPlaintext, hashAccessKey } from './crypto.js';
 import { ensurePublicWorkerOfficeNetAbsent } from './deployments.js';
@@ -350,6 +351,8 @@ test('successful worker-with-assets deployments persist the complete ordered sta
       { stage: 'route_activate', operation: 'activate_route', status: 'succeeded' },
       { stage: 'route_snapshot', operation: 'write_route_snapshot', status: 'succeeded' },
       { stage: 'deployment_state_persist', operation: 'persist_succeeded_deployment', status: 'succeeded' },
+      { stage: 'cleanup_or_compensation', operation: 'worker_placeholder_put', status: 'skipped' },
+      { stage: 'cleanup_or_compensation', operation: 'worker_delete', status: 'skipped' },
       { stage: 'webhook_delivery', operation: 'site_deployed', status: 'skipped' },
     ]
   );
@@ -1208,7 +1211,65 @@ test('successful WFP redeploy queues previous worker cleanup after route cutover
       updatedAt: '2026-06-15T00:00:00.000Z',
     },
   ]);
+  const cleanupEvent = (await store.listDeploymentEvents({ environment: 'production', deploymentId: 'dep_2' })).find(
+    (event) => event.stage === 'cleanup_or_compensation' && event.operation === 'worker_delete'
+  );
+  assert.equal(cleanupEvent.status, 'succeeded');
+  assert.deepEqual(cleanupEvent.diagnostics, {
+    causeClass: 'cleanup_scheduled',
+    trafficImpact: 'new_version_active',
+    cleanupStatus: 'scheduled',
+    cleanupTaskId: 'cln_1',
+    compensation: {
+      status: 'scheduled',
+      operation: 'worker_delete',
+    },
+  });
   assert.equal((await store.getSiteVersion('ver_1')).artifactAvailability, 'active');
+});
+
+test('keeps a committed WFP redeploy successful when cleanup task enqueueing fails', async () => {
+  const store = await createSeededStore();
+  const env = testEnv(store, createSnapshotStore());
+
+  await assertDeployOk(
+    await worker.fetch(
+      deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+        'Idempotency-Key': 'cleanup_enqueue_failure_seed',
+      }),
+      env
+    )
+  );
+  store.createDeploymentResourceCleanupTask = async () => {
+    throw new Error('SQL token=must-not-be-persisted');
+  };
+
+  const replacement = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ moduleContent: 'export default { fetch() { return new Response("green"); } };' }),
+      { 'Idempotency-Key': 'cleanup_enqueue_failure_replacement' }
+    ),
+    env
+  );
+
+  assert.equal(replacement.status, 201, await replacement.clone().text());
+  assert.equal((await store.getDeployment('dep_2')).status, 'succeeded');
+  const cleanupEvent = (await store.listDeploymentEvents({ environment: 'production', deploymentId: 'dep_2' })).find(
+    (event) => event.stage === 'cleanup_or_compensation' && event.operation === 'worker_delete'
+  );
+  assert.equal(cleanupEvent.status, 'failed');
+  assert.deepEqual(cleanupEvent.diagnostics, {
+    causeClass: 'cleanup_task_store_error',
+    trafficImpact: 'new_version_active',
+    cleanupStatus: 'failed',
+    cleanupTaskId: 'cln_1',
+    compensation: {
+      status: 'failed',
+      operation: 'worker_delete',
+    },
+  });
+  assert.doesNotMatch(JSON.stringify(cleanupEvent), /SQL|token|must-not-be-persisted/);
 });
 
 test('successful production redeploy does not queue cleanup for staging-prefixed previous worker', async () => {
@@ -5152,6 +5213,12 @@ test('releases previous normal worker slot after replacement deploy succeeds', a
   assert.equal((await rollback.json()).error.code, 'ROLLBACK_VERSION_UNAVAILABLE');
   assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, 'ver_2');
   assert.deepEqual(events, [['cleanup', 'slot_007', 'ver_1']]);
+  const cleanupEvent = (await store.listDeploymentEvents({ environment: 'production', deploymentId: 'dep_2' })).find(
+    (event) => event.stage === 'cleanup_or_compensation' && event.operation === 'worker_placeholder_put'
+  );
+  assert.equal(cleanupEvent.status, 'compensated');
+  assert.equal(cleanupEvent.diagnostics.cleanupStatus, 'succeeded');
+  assert.equal(cleanupEvent.diagnostics.trafficImpact, 'new_version_active');
 });
 
 test('keeps replacement deployment succeeded when previous slot cleanup fails closed', async () => {
@@ -5178,7 +5245,15 @@ test('keeps replacement deployment succeeded when previous slot cleanup fails cl
       upload: async () => null,
       verify: async () => ({ ok: true }),
       cleanupRetainedSlot: async () => {
-        throw new Error('cleanup failed');
+        throw new WfpApiError({
+          status: 502,
+          code: 'WFP_API_ERROR',
+          message: 'placeholder cleanup failed',
+          operation: 'worker_placeholder_put',
+          providerCode: 10090,
+          providerMessage: 'Placeholder rejected',
+          providerRequestId: 'ray-slot-cleanup',
+        });
       },
     },
   });
@@ -5203,6 +5278,19 @@ test('keeps replacement deployment succeeded when previous slot cleanup fails cl
   assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, 'ver_2');
   assert.equal((await store.getWorkerSlot('slot_007')).status, 'cleanup_pending');
   assert.equal((await store.getWorkerSlot('slot_007')).assignedVersionId, 'ver_1');
+  const cleanupEvent = (await store.listDeploymentEvents({ environment: 'production', deploymentId: 'dep_2' })).find(
+    (event) => event.stage === 'cleanup_or_compensation' && event.operation === 'worker_placeholder_put'
+  );
+  assert.equal(cleanupEvent.status, 'failed');
+  assert.deepEqual(cleanupEvent.diagnostics.compensation, {
+    status: 'failed',
+    operation: 'worker_placeholder_put',
+    httpStatus: 502,
+    clientCode: 'WFP_API_ERROR',
+    providerCode: '10090',
+    providerMessage: 'Placeholder rejected',
+    providerRequestId: 'ray-slot-cleanup',
+  });
 });
 
 test('normal worker slot upload failure cleans slot before reuse', async () => {
@@ -5849,12 +5937,19 @@ test('deployment idempotency replay keeps a trace when legacy trace claiming fai
     env
   );
 
-  assert.equal(replay.status, 503, await replay.clone().text());
+  assert.equal(replay.status, 200, await replay.clone().text());
   assert.equal(replay.headers.get('X-Deployment-Trace-Id'), 'dtr_2');
-  assert.equal((await replay.json()).error.code, 'DEPLOYMENT_STATE_WRITE_FAILED');
+  assert.equal((await replay.json()).deployment.status, 'succeeded');
+  const replayEvents = await store.listDeploymentEvents({ environment: 'production', traceId: 'dtr_2' });
   assert.equal(
-    (await store.listDeploymentEvents({ environment: 'production', traceId: 'dtr_2' })).some(
+    replayEvents.some(
       (event) => event.stage === 'deployment_record' && event.operation === 'claim_deployment_trace' && event.status === 'failed'
+    ),
+    true
+  );
+  assert.equal(
+    replayEvents.some(
+      (event) => event.stage === 'deployment_record' && event.operation === 'idempotency_replay' && event.status === 'succeeded'
     ),
     true
   );
@@ -5908,12 +6003,19 @@ test('rollback idempotency replay keeps a trace when legacy trace claiming fails
     env
   );
 
-  assert.equal(replay.status, 503, await replay.clone().text());
+  assert.equal(replay.status, 200, await replay.clone().text());
   assert.equal(replay.headers.get('X-Deployment-Trace-Id'), 'dtr_4');
-  assert.equal((await replay.json()).error.code, 'DEPLOYMENT_STATE_WRITE_FAILED');
+  assert.equal((await replay.json()).deployment.status, 'succeeded');
+  const replayEvents = await store.listDeploymentEvents({ environment: 'production', traceId: 'dtr_4' });
   assert.equal(
-    (await store.listDeploymentEvents({ environment: 'production', traceId: 'dtr_4' })).some(
+    replayEvents.some(
       (event) => event.stage === 'deployment_record' && event.operation === 'claim_deployment_trace' && event.status === 'failed'
+    ),
+    true
+  );
+  assert.equal(
+    replayEvents.some(
+      (event) => event.stage === 'deployment_record' && event.operation === 'idempotency_replay' && event.status === 'succeeded'
     ),
     true
   );
@@ -6856,12 +6958,14 @@ test('returns deployment state failure when upload failure cannot persist the fa
   const store = await createSeededStore();
   const originalUpdateDeployment = store.updateDeployment.bind(store);
   store.updateDeployment = async (id, patch) => {
-    if (patch.status === 'failed') throw new Error('failed terminal write unavailable');
+    if (patch.status === 'failed') throw new Error('SQL token=failed-terminal-secret');
     return originalUpdateDeployment(id, patch);
   };
   const requests = [];
+  const stateWriteLogs = [];
   await seedLifecycleWebhook(store, 'site.failed');
   const env = testEnv(store, createSnapshotStore(), {
+    logDeploymentStateWriteFailed: (line) => stateWriteLogs.push(JSON.parse(line)),
     WEBHOOK_URL_ENCRYPTION_KEY: TEST_WEBHOOK_URL_ENCRYPTION_KEY,
     resolveWebhookHost: async () => ['8.8.8.8'],
     WEBHOOK_FETCH: async (request) => {
@@ -6889,6 +6993,17 @@ test('returns deployment state failure when upload failure cannot persist the fa
   assert.equal((await response.json()).error.code, 'DEPLOYMENT_STATE_WRITE_FAILED');
   assert.equal((await store.getDeployment('dep_1')).status, 'uploading');
   assert.equal(requests.length, 0);
+  assert.deepEqual(stateWriteLogs, [
+    {
+      event: 'pages_deployment_state_write_failed',
+      traceId: 'dtr_1',
+      deploymentId: 'dep_1',
+      stage: 'deployment_state_persist',
+      operation: 'persist_failed_deployment',
+      causeClass: 'deployment_store_error',
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(stateWriteLogs), /SQL|token|failed-terminal-secret/);
 });
 
 test('marks deployment failed when WFP verify fails without creating active version', async () => {
@@ -6923,11 +7038,79 @@ test('marks deployment failed when WFP verify fails without creating active vers
   assert.deepEqual(deletedWorkers, ['pages-v2-guide-ver-1']);
 });
 
+test('preserves the verify failure when uploaded worker cleanup also fails', async () => {
+  const store = await createSeededStore();
+  const env = testEnv(store, createSnapshotStore(), {
+    WFP_PROVIDER: {
+      upload: async ({ workerName }) => ({ artifactRef: `wfp://test/${workerName}` }),
+      verify: async () => {
+        throw new WfpApiError({
+          status: 404,
+          code: 'WFP_API_ERROR',
+          message: 'worker lookup failed',
+          operation: 'worker_get',
+          providerCode: 10007,
+          providerMessage: 'Worker not found',
+          providerRequestId: 'ray-verify-original',
+        });
+      },
+      delete: async () => {
+        throw new WfpApiError({
+          status: 502,
+          code: 'WFP_API_ERROR',
+          message: 'worker delete failed',
+          operation: 'worker_delete',
+          providerCode: 10090,
+          providerMessage: 'Delete rejected',
+          providerRequestId: 'ray-cleanup-safe',
+        });
+      },
+    },
+  });
+
+  const response = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'verify_and_cleanup_fail',
+    }),
+    env
+  );
+
+  assert.equal(response.status, 502, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'DEPLOYMENT_VERIFY_FAILED');
+  const failedDeployment = await store.getDeployment('dep_1');
+  assert.equal(failedDeployment.status, 'failed');
+  assert.equal(failedDeployment.errorCode, 'DEPLOYMENT_VERIFY_FAILED');
+  assert.equal(failedDeployment.failureStage, 'verify_worker');
+  const cleanupEvent = (await store.listDeploymentEvents({ environment: 'production', deploymentId: 'dep_1' })).find(
+    (event) => event.stage === 'cleanup_or_compensation' && event.operation === 'worker_delete'
+  );
+  assert.equal(cleanupEvent.status, 'failed');
+  assert.deepEqual(cleanupEvent.diagnostics, {
+    causeClass: 'provider_error',
+    trafficImpact: 'old_version_retained',
+    cleanupStatus: 'failed',
+    originalFailure: {
+      stage: 'provider_verify',
+      code: 'DEPLOYMENT_VERIFY_FAILED',
+    },
+    compensation: {
+      status: 'failed',
+      operation: 'worker_delete',
+      httpStatus: 502,
+      clientCode: 'WFP_API_ERROR',
+      providerCode: '10090',
+      providerMessage: 'Delete rejected',
+      providerRequestId: 'ray-cleanup-safe',
+    },
+  });
+});
+
 test('cleans uploaded workers and marks deployments failed when post-upload persistence fails', async () => {
   const store = await createSeededStore();
   store.createSiteVersion = async () => {
-    const error = new Error('D1 unavailable');
+    const error = new Error('SQL SELECT secret=password FROM deployments');
     error.code = 'D1_ERROR';
+    error.stack = 'Bearer must-not-be-logged';
     throw error;
   };
   const deletedWorkers = [];
@@ -6955,13 +7138,20 @@ test('cleans uploaded workers and marks deployments failed when post-upload pers
   const failedDeployment = await store.getDeployment('dep_1');
   assert.equal(failedDeployment.status, 'failed');
   assert.equal(failedDeployment.errorCode, 'DEPLOYMENT_STATE_WRITE_FAILED');
-  assert.equal(failedDeployment.failureDiagnostics.cause.sourceCode, 'D1_ERROR');
-  assert.equal(failedDeployment.failureDiagnostics.cause.sourceMessage, 'D1 unavailable');
+  assert.deepEqual(failedDeployment.failureDiagnostics.cause, {
+    code: 'DEPLOYMENT_STATE_WRITE_FAILED',
+    class: 'deployment_store_error',
+  });
   assert.equal(stateWriteLogs.length, 1);
-  assert.equal(stateWriteLogs[0].event, 'pages_deployment_state_write_failed');
-  assert.equal(stateWriteLogs[0].deploymentId, 'dep_1');
-  assert.equal(stateWriteLogs[0].causeCode, 'D1_ERROR');
-  assert.equal(stateWriteLogs[0].causeMessage, 'D1 unavailable');
+  assert.deepEqual(stateWriteLogs[0], {
+    event: 'pages_deployment_state_write_failed',
+    traceId: 'dtr_1',
+    deploymentId: 'dep_1',
+    stage: 'deployment_state_persist',
+    operation: 'persist_activation_state',
+    causeClass: 'deployment_store_error',
+  });
+  assert.doesNotMatch(JSON.stringify(stateWriteLogs), /SQL|password|Bearer|must-not-be-logged/);
   assert.equal(await store.getSiteVersion('ver_1'), null);
   assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, null);
   assert.deepEqual(deletedWorkers, ['pages-v2-guide-ver-1']);
@@ -6974,12 +7164,14 @@ test('marks deployment failed when pre-upload status write fails without uploadi
   store.updateDeployment = async (id, patch) => {
     if (patch.status === 'uploading' && failNextUploadingWrite) {
       failNextUploadingWrite = false;
-      throw new Error('D1 unavailable');
+      throw new Error('SQL token=must-not-be-logged');
     }
     return originalUpdateDeployment(id, patch);
   };
   const uploadedWorkers = [];
+  const stateWriteLogs = [];
   const env = testEnv(store, createSnapshotStore(), {
+    logDeploymentStateWriteFailed: (line) => stateWriteLogs.push(JSON.parse(line)),
     WFP_PROVIDER: {
       upload: async ({ workerName }) => {
         uploadedWorkers.push(workerName);
@@ -7001,9 +7193,59 @@ test('marks deployment failed when pre-upload status write fails without uploadi
   assert.deepEqual(uploadedWorkers, []);
   assert.equal((await store.getDeployment('dep_1')).status, 'failed');
   assert.equal((await store.getDeployment('dep_1')).errorCode, 'DEPLOYMENT_STATE_WRITE_FAILED');
-  assert.equal((await store.getDeployment('dep_1')).failureDiagnostics.cause.sourceMessage, 'D1 unavailable');
+  assert.deepEqual((await store.getDeployment('dep_1')).failureDiagnostics.cause, {
+    code: 'DEPLOYMENT_STATE_WRITE_FAILED',
+    class: 'deployment_store_error',
+  });
+  assert.deepEqual(stateWriteLogs, [
+    {
+      event: 'pages_deployment_state_write_failed',
+      traceId: 'dtr_1',
+      deploymentId: 'dep_1',
+      stage: 'deployment_state_persist',
+      operation: 'persist_uploading_deployment',
+      causeClass: 'deployment_store_error',
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(stateWriteLogs), /SQL|token|must-not-be-logged/);
   assert.equal(await store.getSiteVersion('ver_1'), null);
   assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, null);
+});
+
+test('records the exact intermediate deployment state write that failed', async (t) => {
+  for (const [status, operation] of [
+    ['verified', 'persist_verified_deployment'],
+    ['activating', 'persist_activating_deployment'],
+  ]) {
+    await t.test(status, async () => {
+      const store = await createSeededStore();
+      const originalUpdateDeployment = store.updateDeployment.bind(store);
+      let failNextWrite = true;
+      store.updateDeployment = async (id, patch) => {
+        if (patch.status === status && failNextWrite) {
+          failNextWrite = false;
+          throw new Error('sensitive SQL should not escape');
+        }
+        return originalUpdateDeployment(id, patch);
+      };
+
+      const response = await worker.fetch(
+        deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+          'Idempotency-Key': `state_${status}_fail`,
+        }),
+        testEnv(store, createSnapshotStore())
+      );
+
+      assert.equal(response.status, 503, await response.clone().text());
+      assert.equal((await response.json()).error.code, 'DEPLOYMENT_STATE_WRITE_FAILED');
+      const event = (await store.listDeploymentEvents({ environment: 'production', deploymentId: 'dep_1' })).find(
+        (candidate) =>
+          candidate.stage === 'deployment_state_persist' && candidate.operation === operation && candidate.status === 'failed'
+      );
+      assert.equal(event.diagnostics.causeClass, 'deployment_store_error');
+      assert.doesNotMatch(JSON.stringify(event), /sensitive SQL should not escape/);
+    });
+  }
 });
 
 test('reconciles deployment success when final status write fails after route commit', async () => {
@@ -7013,11 +7255,14 @@ test('reconciles deployment success when final status write fails after route co
   store.updateDeployment = async (id, patch) => {
     if (patch.status === 'succeeded' && failNextSucceededWrite) {
       failNextSucceededWrite = false;
-      throw new Error('D1 unavailable');
+      throw new Error('SQL password=must-not-be-logged');
     }
     return originalUpdateDeployment(id, patch);
   };
-  const env = testEnv(store, createSnapshotStore());
+  const stateWriteLogs = [];
+  const env = testEnv(store, createSnapshotStore(), {
+    logDeploymentStateWriteFailed: (line) => stateWriteLogs.push(JSON.parse(line)),
+  });
   const request = deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
     'Idempotency-Key': 'final_state_fail',
   });
@@ -7032,10 +7277,40 @@ test('reconciles deployment success when final status write fails after route co
   assert.equal(body.deployment.status, 'succeeded');
   assert.equal(body.deployment.versionId, 'ver_1');
   assert.equal(statusBeforePoll.status, 'activating');
+  assert.deepEqual(stateWriteLogs, [
+    {
+      event: 'pages_deployment_state_write_failed',
+      traceId: 'dtr_1',
+      deploymentId: 'dep_1',
+      stage: 'deployment_state_persist',
+      operation: 'persist_succeeded_deployment',
+      causeClass: 'deployment_store_error',
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(stateWriteLogs), /SQL|password|must-not-be-logged/);
   assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, 'ver_1');
   assert.equal(polled.status, 200);
   assert.equal(pollBody.deployment.status, 'succeeded');
   assert.equal((await store.getDeployment('dep_1')).status, 'succeeded');
+  const events = await store.listDeploymentEvents({ environment: 'production', deploymentId: 'dep_1' });
+  assert.equal(
+    events.some(
+      (event) =>
+        event.stage === 'deployment_state_persist' &&
+        event.operation === 'persist_succeeded_deployment' &&
+        event.status === 'failed'
+    ),
+    true
+  );
+  assert.equal(
+    events.some(
+      (event) =>
+        event.stage === 'deployment_state_persist' &&
+        event.operation === 'reconcile_committed_deployment' &&
+        event.status === 'compensated'
+    ),
+    true
+  );
 });
 
 test('reconciles rollback success when final status write fails after route commit', async () => {
@@ -7058,10 +7333,12 @@ test('reconciles rollback success when final status write fails after route comm
   store.updateDeployment = async (id, patch) => {
     if (id === 'dep_3' && patch.status === 'succeeded' && failNextRollbackSucceededWrite) {
       failNextRollbackSucceededWrite = false;
-      throw new Error('D1 unavailable');
+      throw new Error('SQL secret=must-not-be-logged');
     }
     return originalUpdateDeployment(id, patch);
   };
+  const stateWriteLogs = [];
+  env.logDeploymentStateWriteFailed = (line) => stateWriteLogs.push(JSON.parse(line));
 
   const rollback = await worker.fetch(
     jsonRequest('https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback', {}, { 'Idempotency-Key': 'rb_final_fail' }),
@@ -7075,9 +7352,29 @@ test('reconciles rollback success when final status write fails after route comm
   assert.equal(body.deployment.status, 'succeeded');
   assert.equal(body.deployment.versionId, 'ver_1');
   assert.equal(statusBeforePoll.status, 'pending');
+  assert.deepEqual(stateWriteLogs, [
+    {
+      event: 'pages_deployment_state_write_failed',
+      traceId: 'dtr_3',
+      deploymentId: 'dep_3',
+      stage: 'deployment_state_persist',
+      operation: 'persist_succeeded_deployment',
+      causeClass: 'deployment_store_error',
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(stateWriteLogs), /SQL|secret|must-not-be-logged/);
   assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, 'ver_1');
   assert.equal((await polled.json()).deployment.status, 'succeeded');
   assert.equal((await store.getDeployment('dep_3')).status, 'succeeded');
+  assert.equal(
+    (await store.listDeploymentEvents({ environment: 'production', deploymentId: 'dep_3' })).some(
+      (event) =>
+        event.stage === 'deployment_state_persist' &&
+        event.operation === 'reconcile_committed_deployment' &&
+        event.status === 'compensated'
+    ),
+    true
+  );
 });
 
 test('fails deployment activation without clobbering a concurrently changed route', async () => {
