@@ -941,6 +941,25 @@ for (const backend of storeBackends) {
       assert.equal(replay.deployment.id, 'dep_1');
       assert.equal(conflict.kind, 'conflict');
 
+      const legacy = await fixture.store.createDeploymentForIdempotency({
+        ...input,
+        id: 'dep_legacy',
+        idempotencyKey: 'legacy-trace',
+        traceId: null,
+      });
+      const claimedLegacy = await fixture.store.claimDeploymentTrace({
+        id: legacy.deployment.id,
+        environment: 'production',
+        traceId: 'dtr_legacy',
+      });
+      const retainedLegacy = await fixture.store.claimDeploymentTrace({
+        id: legacy.deployment.id,
+        environment: 'production',
+        traceId: 'dtr_other',
+      });
+      assert.equal(claimedLegacy.traceId, 'dtr_legacy');
+      assert.equal(retainedLegacy.traceId, 'dtr_legacy');
+
       const failed = await fixture.store.updateDeployment('dep_1', {
         status: 'failed',
         errorCode: 'DEPLOYMENT_UPLOAD_FAILED',

@@ -72,7 +72,7 @@ test('deployment trace context owns the trace id and accepts only a safe inbound
   assert.equal(jwtRay.inboundRayId, null);
 });
 
-test('deployment trace binding adds deployment identity without replacing existing values with invalid input', () => {
+test('deployment trace binding can adopt an existing deployment trace without accepting invalid input', () => {
   const trace = createDeploymentTraceContext(
     new Request('https://example.test'),
     { nextId: () => 'dtr_test' },
@@ -82,9 +82,13 @@ test('deployment trace binding adds deployment identity without replacing existi
     }
   );
 
-  assert.equal(bindDeploymentTrace(trace, { deploymentId: 'dep_1', siteId: 'site_1', attempt: 2 }), trace);
-  bindDeploymentTrace(trace, { deploymentId: 'bad id', siteId: '', attempt: 0 });
+  assert.equal(
+    bindDeploymentTrace(trace, { traceId: 'dtr_existing', deploymentId: 'dep_1', siteId: 'site_1', attempt: 2 }),
+    trace
+  );
+  bindDeploymentTrace(trace, { traceId: 'bad trace id', deploymentId: 'bad id', siteId: '', attempt: 0 });
 
+  assert.equal(trace.traceId, 'dtr_existing');
   assert.equal(trace.deploymentId, 'dep_1');
   assert.equal(trace.siteId, 'site_1');
   assert.equal(trace.attempt, 2);

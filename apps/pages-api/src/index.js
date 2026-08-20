@@ -3,6 +3,7 @@ import { handleConsoleAdminApi, runDueDeploymentCleanups } from './admin.js';
 import { handleConsoleApi } from './console.js';
 import { readApiConfig } from './config.js';
 import { handleDeploymentsApi, handleVersionsApi } from './deployments.js';
+import { createDeploymentTraceContext, recordDeploymentStage, withDeploymentTraceHeader } from './deployment-trace.js';
 import { jsonError, jsonOk } from './http.js';
 import { handleInternalApi } from './internal.js';
 import { handleConsoleUsersApi } from './console-users.js';
@@ -53,14 +54,20 @@ export default {
 
     const url = new URL(request.url);
     const transportError = requireHttps(url, config);
-    if (transportError) return transportError;
+    if (transportError) return withDeploymentPreflightTrace(transportError, request, env, config, url);
 
     if (request.headers.has('X-Pages-Token')) {
-      return jsonError(
-        'LEGACY_TOKEN_UNSUPPORTED',
-        'Legacy Pages tokens are not supported by XD Cell.',
-        400,
-        'Run `xd-cell login` or use an XD Cell access key.'
+      return withDeploymentPreflightTrace(
+        jsonError(
+          'LEGACY_TOKEN_UNSUPPORTED',
+          'Legacy Pages tokens are not supported by XD Cell.',
+          400,
+          'Run `xd-cell login` or use an XD Cell access key.'
+        ),
+        request,
+        env,
+        config,
+        url
       );
     }
 
@@ -157,7 +164,7 @@ export default {
       try {
         store = createPagesStore(env);
       } catch {
-        return jsonError('API_STORE_UNAVAILABLE', 'Pages API store is unavailable.', 500, 'Check the pages-api D1 binding.');
+        return deploymentStoreUnavailableResponse(request, env, config, url);
       }
 
       const response = url.pathname.startsWith('/.xd-pages/api/deployments')
@@ -169,6 +176,45 @@ export default {
     return jsonError('NOT_FOUND', 'Endpoint not found.', 404, 'Check the endpoint path and API version.');
   },
 };
+
+async function deploymentStoreUnavailableResponse(request, env, config, url) {
+  const response = jsonError('API_STORE_UNAVAILABLE', 'Pages API store is unavailable.', 500, 'Check the pages-api D1 binding.');
+  const operation = deploymentTraceOperation(request, url.pathname);
+  if (!operation) return response;
+
+  const trace = createDeploymentTraceContext(request, env, {
+    environment: config.environment,
+    operation,
+    now: env?.now,
+  });
+  await recordDeploymentStage(trace, {
+    stage: 'deployment_record',
+    operation: 'create_store',
+    status: 'failed',
+    errorCode: 'API_STORE_UNAVAILABLE',
+    errorMessage: 'Pages API store is unavailable.',
+    diagnostics: { causeClass: 'event_store_error' },
+  });
+  return withDeploymentTraceHeader(response, trace.traceId);
+}
+
+function deploymentTraceOperation(request, pathname) {
+  if (request.method !== 'POST') return null;
+  if (pathname === '/.xd-pages/api/deployments') return 'deploy';
+  if (/^\/\.xd-pages\/api\/versions\/[^/]+\/rollback$/.test(pathname)) return 'rollback';
+  return null;
+}
+
+function withDeploymentPreflightTrace(response, request, env, config, url) {
+  const operation = deploymentTraceOperation(request, url.pathname);
+  if (!operation) return response;
+  const trace = createDeploymentTraceContext(request, env, {
+    environment: config.environment,
+    operation,
+    now: env?.now,
+  });
+  return withDeploymentTraceHeader(response, trace.traceId);
+}
 
 function requireHttps(url, config) {
   if (config.environment === 'local' || url.protocol === 'https:') return null;

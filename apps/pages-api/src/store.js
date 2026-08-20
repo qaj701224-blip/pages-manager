@@ -5304,6 +5304,18 @@ export class D1PagesStore {
     return this.getDeployment(id);
   }
 
+  async claimDeploymentTrace({ id, environment, traceId }) {
+    await this.db
+      .prepare(
+        `UPDATE deployments
+        SET trace_id = ?
+        WHERE id = ? AND environment = ? AND trace_id IS NULL`,
+      )
+      .bind(traceId, id, environment)
+      .run();
+    return this.getDeployment(id, environment);
+  }
+
   async createDeploymentForIdempotency(input) {
     const idempotencyScope = deploymentIdempotencyScope(input);
     const existing = await this.db

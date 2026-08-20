@@ -2649,6 +2649,13 @@ class TestPagesStore {
     return cloneRecord(record);
   }
 
+  async claimDeploymentTrace({ id, environment, traceId }) {
+    const record = this.deployments.get(id);
+    if (!record || record.environment !== environment) return null;
+    if (!record.traceId) record.traceId = traceId;
+    return cloneRecord(record);
+  }
+
   async createDeploymentEvent(input) {
     const record = {
       id: input.id,

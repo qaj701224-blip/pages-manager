@@ -52,8 +52,10 @@ export function createDeploymentTraceContext(request, env, input = {}) {
 
 export function bindDeploymentTrace(trace, input = {}) {
   assertTraceContext(trace);
+  const traceId = tryNormalizeTraceId(input.traceId);
   const deploymentId = normalizeInternalId(input.deploymentId);
   const siteId = normalizeInternalId(input.siteId);
+  if (traceId) trace.traceId = traceId;
   if (deploymentId) trace.deploymentId = deploymentId;
   if (siteId) trace.siteId = siteId;
   if (Number.isInteger(input.attempt) && input.attempt > 0) trace.attempt = input.attempt;
@@ -173,6 +175,14 @@ function normalizeTraceId(value) {
   const normalized = value.trim();
   if (!/^dtr_[A-Za-z0-9_-]{1,128}$/.test(normalized)) throw new Error('DEPLOYMENT_TRACE_ID_INVALID');
   return normalized;
+}
+
+function tryNormalizeTraceId(value) {
+  try {
+    return normalizeTraceId(value);
+  } catch {
+    return null;
+  }
 }
 
 function normalizeInternalId(value) {

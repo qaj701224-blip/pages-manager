@@ -82,6 +82,234 @@ test('creates deployment, immutable version, active route, and route snapshot', 
   ]);
 });
 
+test('POST deploy responses expose a server trace header and persist the trace on the deployment', async () => {
+  const store = await createSeededStore();
+  const request = deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+    'Idempotency-Key': 'trace_success',
+    'cf-ray': 'a2dfd41a7a7796d2-SIN',
+  });
+
+  const response = await worker.fetch(request, testEnv(store, createSnapshotStore()));
+
+  assert.equal(response.status, 201, await response.clone().text());
+  assert.equal(response.headers.get('X-Deployment-Trace-Id'), 'dtr_1');
+  assert.equal((await store.getDeployment('dep_1', 'production')).traceId, 'dtr_1');
+  const events = await store.listDeploymentEvents({ environment: 'production', traceId: 'dtr_1' });
+  assert.equal(
+    events.some((event) => event.inboundRayId === 'a2dfd41a7a7796d2-SIN'),
+    true
+  );
+  assert.equal(
+    events.some((event) => event.deploymentId === 'dep_1'),
+    true
+  );
+});
+
+test('POST deploy authentication failures keep a queryable pre-deployment trace', async () => {
+  const store = await createSeededStore();
+  const request = deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+    'Idempotency-Key': 'trace_auth_failure',
+    'cf-ray': 'auth-ray-SIN',
+  });
+  request.headers.delete('Authorization');
+
+  const response = await worker.fetch(request, testEnv(store, createSnapshotStore()));
+  const traceId = response.headers.get('X-Deployment-Trace-Id');
+
+  assert.equal(response.status, 401);
+  assert.equal(traceId, 'dtr_1');
+  assert.equal((await response.json()).error.code, 'PAGES_AUTH_REQUIRED');
+  assert.deepEqual(
+    (await store.listDeploymentEvents({ environment: 'production', traceId })).map((event) => ({
+      stage: event.stage,
+      status: event.status,
+      deploymentId: event.deploymentId,
+      inboundRayId: event.inboundRayId,
+    })),
+    [
+      {
+        stage: 'auth_and_site_resolution',
+        status: 'failed',
+        deploymentId: null,
+        inboundRayId: 'auth-ray-SIN',
+      },
+    ]
+  );
+});
+
+test('POST deployment intake and payload failures return trace headers and events without deployment ids', async () => {
+  const store = await createSeededStore();
+  const env = testEnv(store, createSnapshotStore());
+
+  const missingKey = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload()),
+    env
+  );
+  const invalidProtocol = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'trace_invalid_protocol',
+    }),
+    env
+  );
+  const hashMismatch = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ expectedContentHash: `sha256:${'0'.repeat(64)}` }),
+      { 'Idempotency-Key': 'trace_hash_mismatch' }
+    ),
+    env
+  );
+  const malformedMultipart = await worker.fetch(
+    new Request('https://api.pages.xd.team/.xd-pages/api/deployments', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${BEARER_USR_1}`,
+        'CF-Connecting-IP': '10.1.2.3',
+        'Idempotency-Key': 'trace_malformed_multipart',
+        'Content-Type': 'multipart/form-data; boundary=broken-boundary',
+      },
+      body: 'not-a-valid-multipart-body',
+    }),
+    env
+  );
+
+  for (const [response, stage, operation, code] of [
+    [missingKey, 'intake', 'read_idempotency_key', 'IDEMPOTENCY_KEY_REQUIRED'],
+    [invalidProtocol, 'intake', 'parse_multipart', 'CLI_UPLOAD_PROTOCOL_REQUIRED'],
+    [hashMismatch, 'payload_validation', 'validate_content_hash', 'CONTENT_HASH_MISMATCH'],
+    [malformedMultipart, 'intake', 'parse_multipart', 'INVALID_MULTIPART'],
+  ]) {
+    const traceId = response.headers.get('X-Deployment-Trace-Id');
+    assert.match(traceId, /^dtr_\d+$/);
+    assert.equal((await response.clone().json()).error.code, code);
+    const events = await store.listDeploymentEvents({ environment: 'production', traceId });
+    assert.equal(
+      events.some(
+        (event) =>
+          event.stage === stage && event.operation === operation && event.status === 'failed' && event.deploymentId === null
+      ),
+      true
+    );
+  }
+});
+
+test('POST deployment validation failures before record creation leave a payload trace event', async () => {
+  const store = await createSeededStore();
+  const response = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ siteId: undefined, siteSlug: undefined }),
+      { 'Idempotency-Key': 'trace_site_required' }
+    ),
+    testEnv(store, createSnapshotStore())
+  );
+
+  const traceId = response.headers.get('X-Deployment-Trace-Id');
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error.code, 'SITE_REQUIRED');
+  assert.equal(
+    (await store.listDeploymentEvents({ environment: 'production', traceId })).some(
+      (event) =>
+        event.stage === 'payload_validation' &&
+        event.status === 'failed' &&
+        event.errorCode === 'SITE_REQUIRED' &&
+        event.deploymentId === null
+    ),
+    true
+  );
+});
+
+test('POST deployment record creation failures keep a queryable trace', async () => {
+  const store = await createSeededStore();
+  store.createDeploymentForIdempotency = async () => {
+    throw new Error('must-not-be-exposed');
+  };
+  const response = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'trace_record_failure',
+    }),
+    testEnv(store, createSnapshotStore())
+  );
+
+  const traceId = response.headers.get('X-Deployment-Trace-Id');
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error.code, 'DEPLOYMENT_STATE_WRITE_FAILED');
+  assert.equal(
+    (await store.listDeploymentEvents({ environment: 'production', traceId })).some(
+      (event) =>
+        event.stage === 'deployment_record' &&
+        event.operation === 'create_deployment' &&
+        event.status === 'failed' &&
+        event.deploymentId === null
+    ),
+    true
+  );
+});
+
+test('GET deployment reads do not create a request trace header', async () => {
+  const store = await createSeededStore();
+  const response = await worker.fetch(
+    authRequest('https://api.pages.xd.team/.xd-pages/api/deployments/dep_missing'),
+    testEnv(store, createSnapshotStore())
+  );
+
+  assert.equal(response.headers.has('X-Deployment-Trace-Id'), false);
+});
+
+test('POST rollback responses persist a main trace and capture pre-deployment failures', async () => {
+  const store = await createSeededStore();
+  const env = testEnv(store, createSnapshotStore());
+  await assertDeployOk(
+    await worker.fetch(
+      deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+        'Idempotency-Key': 'trace_rollback_deploy_1',
+      }),
+      env
+    )
+  );
+  await assertDeployOk(
+    await worker.fetch(
+      deploymentRequest(
+        'https://api.pages.xd.team/.xd-pages/api/deployments',
+        deployPayload({ moduleContent: 'export default { fetch() { return new Response("v2"); } };' }),
+        { 'Idempotency-Key': 'trace_rollback_deploy_2' }
+      ),
+      env
+    )
+  );
+
+  const rollback = await worker.fetch(
+    jsonRequest(
+      'https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback',
+      {},
+      {
+        'Idempotency-Key': 'trace_rollback_success',
+        'cf-ray': 'rollback-ray-SIN',
+      }
+    ),
+    env
+  );
+  const missingKey = await worker.fetch(jsonRequest('https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback', {}), env);
+
+  assert.equal(rollback.status, 201, await rollback.clone().text());
+  const rollbackTraceId = rollback.headers.get('X-Deployment-Trace-Id');
+  assert.equal((await store.getDeployment('dep_3', 'production')).traceId, rollbackTraceId);
+  assert.equal(
+    (await store.listDeploymentEvents({ environment: 'production', traceId: rollbackTraceId })).some(
+      (event) => event.operation === 'create_deployment' && event.deploymentId === 'dep_3'
+    ),
+    true
+  );
+  const failureTraceId = missingKey.headers.get('X-Deployment-Trace-Id');
+  assert.equal(missingKey.status, 400);
+  assert.equal(
+    (await store.listDeploymentEvents({ environment: 'production', traceId: failureTraceId })).some(
+      (event) => event.stage === 'intake' && event.status === 'failed' && event.deploymentId === null
+    ),
+    true
+  );
+});
+
 test('creates a deployment with production ID generation when env.nextId is unavailable', async () => {
   const store = await createSeededStore();
   const snapshots = createSnapshotStore();
@@ -3085,7 +3313,18 @@ test('user owner-scoped access keys cannot deploy another user personal site', a
   );
 
   assert.equal(response.status, 403, await response.clone().text());
+  const traceId = response.headers.get('X-Deployment-Trace-Id');
   assert.equal((await response.json()).error.code, 'DEPLOY_FORBIDDEN');
+  assert.equal(
+    (await store.listDeploymentEvents({ environment: 'production', traceId })).some(
+      (event) =>
+        event.stage === 'auth_and_site_resolution' &&
+        event.status === 'failed' &&
+        event.errorCode === 'DEPLOY_FORBIDDEN' &&
+        event.deploymentId === null
+    ),
+    true
+  );
 });
 
 test('viewer members cannot deploy rollback or manage site secrets', async () => {
@@ -5081,6 +5320,10 @@ test('deployment idempotency replays same request and rejects changed request', 
     deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'idem_1' }),
     env
   );
+  const secondReplay = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'idem_1' }),
+    env
+  );
   const conflict = await worker.fetch(
     deploymentRequest(
       'https://api.pages.xd.team/.xd-pages/api/deployments',
@@ -5100,8 +5343,33 @@ test('deployment idempotency replays same request and rejects changed request', 
 
   assert.equal(first.status, 201);
   assert.equal(replay.status, 200);
+  assert.equal(secondReplay.status, 200);
+  assert.equal(first.headers.get('X-Deployment-Trace-Id'), replay.headers.get('X-Deployment-Trace-Id'));
+  assert.equal(first.headers.get('X-Deployment-Trace-Id'), secondReplay.headers.get('X-Deployment-Trace-Id'));
+  assert.notEqual(conflict.headers.get('X-Deployment-Trace-Id'), first.headers.get('X-Deployment-Trace-Id'));
   const replayBody = await replay.json();
   assert.equal(replayBody.deployment.id, 'dep_1');
+  assert.equal((await store.getDeployment('dep_1', 'production')).traceId, first.headers.get('X-Deployment-Trace-Id'));
+  assert.deepEqual(
+    (await store.listDeploymentEvents({ environment: 'production', traceId: first.headers.get('X-Deployment-Trace-Id') }))
+      .filter((event) => event.operation === 'idempotency_replay')
+      .map((event) => event.attempt)
+      .sort((left, right) => left - right),
+    [2, 3]
+  );
+  assert.deepEqual(await store.listDeploymentEvents({ environment: 'production', traceId: 'dtr_2' }), []);
+  assert.deepEqual(await store.listDeploymentEvents({ environment: 'production', traceId: 'dtr_3' }), []);
+  assert.equal(
+    (
+      await store.listDeploymentEvents({
+        environment: 'production',
+        traceId: first.headers.get('X-Deployment-Trace-Id'),
+      })
+    )
+      .filter((event) => event.attempt > 1)
+      .every((event) => event.operation === 'idempotency_replay'),
+    true
+  );
   assert.deepEqual(replayBody.decision, replayBody.version.decision);
   assert.deepEqual(replayBody.decision, {
     deploymentShape: 'worker-only',
@@ -5114,6 +5382,124 @@ test('deployment idempotency replays same request and rejects changed request', 
   assert.equal(bundleConflict.status, 409);
   assert.equal((await bundleConflict.json()).error.code, 'IDEMPOTENCY_CONFLICT');
   assert.equal(await store.getSiteVersion('ver_2'), null);
+});
+
+test('deployment idempotency replay claims a trace for legacy deployments without one', async () => {
+  const store = await createSeededStore();
+  const env = testEnv(store, createSnapshotStore());
+
+  const first = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'legacy_trace_replay',
+    }),
+    env
+  );
+  await store.updateDeployment('dep_1', { traceId: null });
+
+  const replay = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'legacy_trace_replay',
+    }),
+    env
+  );
+
+  assert.equal(first.status, 201);
+  assert.equal(replay.status, 200, await replay.clone().text());
+  assert.equal(replay.headers.get('X-Deployment-Trace-Id'), 'dtr_2');
+  assert.equal((await store.getDeployment('dep_1', 'production')).traceId, 'dtr_2');
+});
+
+test('deployment idempotency replay keeps a trace when legacy trace claiming fails', async () => {
+  const store = await createSeededStore();
+  const env = testEnv(store, createSnapshotStore());
+  await assertDeployOk(
+    await worker.fetch(
+      deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+        'Idempotency-Key': 'legacy_trace_claim_failure',
+      }),
+      env
+    )
+  );
+  await store.updateDeployment('dep_1', { traceId: null });
+  store.claimDeploymentTrace = async () => {
+    throw new Error('claim failed');
+  };
+
+  const replay = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'legacy_trace_claim_failure',
+    }),
+    env
+  );
+
+  assert.equal(replay.status, 503, await replay.clone().text());
+  assert.equal(replay.headers.get('X-Deployment-Trace-Id'), 'dtr_2');
+  assert.equal((await replay.json()).error.code, 'DEPLOYMENT_STATE_WRITE_FAILED');
+  assert.equal(
+    (await store.listDeploymentEvents({ environment: 'production', traceId: 'dtr_2' })).some(
+      (event) => event.stage === 'deployment_record' && event.operation === 'claim_deployment_trace' && event.status === 'failed'
+    ),
+    true
+  );
+});
+
+test('rollback idempotency replay keeps a trace when legacy trace claiming fails', async () => {
+  const store = await createSeededStore();
+  const env = testEnv(store, createSnapshotStore());
+  await assertDeployOk(
+    await worker.fetch(
+      deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+        'Idempotency-Key': 'rollback_claim_deploy_1',
+      }),
+      env
+    )
+  );
+  await assertDeployOk(
+    await worker.fetch(
+      deploymentRequest(
+        'https://api.pages.xd.team/.xd-pages/api/deployments',
+        deployPayload({ moduleContent: 'export default { fetch() { return new Response("v2"); } };' }),
+        { 'Idempotency-Key': 'rollback_claim_deploy_2' }
+      ),
+      env
+    )
+  );
+  const firstRollback = await worker.fetch(
+    jsonRequest(
+      'https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback',
+      {},
+      {
+        'Idempotency-Key': 'legacy_rollback_trace_claim_failure',
+      }
+    ),
+    env
+  );
+  assert.equal(firstRollback.status, 201, await firstRollback.clone().text());
+  await store.updateDeployment('dep_3', { traceId: null });
+  store.claimDeploymentTrace = async () => {
+    throw new Error('claim failed');
+  };
+
+  const replay = await worker.fetch(
+    jsonRequest(
+      'https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback',
+      {},
+      {
+        'Idempotency-Key': 'legacy_rollback_trace_claim_failure',
+      }
+    ),
+    env
+  );
+
+  assert.equal(replay.status, 503, await replay.clone().text());
+  assert.equal(replay.headers.get('X-Deployment-Trace-Id'), 'dtr_4');
+  assert.equal((await replay.json()).error.code, 'DEPLOYMENT_STATE_WRITE_FAILED');
+  assert.equal(
+    (await store.listDeploymentEvents({ environment: 'production', traceId: 'dtr_4' })).some(
+      (event) => event.stage === 'deployment_record' && event.operation === 'claim_deployment_trace' && event.status === 'failed'
+    ),
+    true
+  );
 });
 
 test('deployment idempotency replay ignores later site-level runtime config changes', async () => {
