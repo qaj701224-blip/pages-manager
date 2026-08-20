@@ -398,6 +398,19 @@ test('invalid environment fails closed', async () => {
   assert.equal(body.error.action, 'Check the pages-api Worker environment configuration.');
 });
 
+test('POST deployment routes keep a trace header when the API environment is invalid', async () => {
+  for (const pathname of ['/.xd-pages/api/deployments', '/.xd-pages/api/versions/ver_1/rollback']) {
+    const response = await worker.fetch(new Request(`https://api.pages.xd.team${pathname}`, { method: 'POST' }), {
+      PAGES_ENV: 'preview',
+      nextId: (prefix) => `${prefix}_invalid_environment`,
+    });
+
+    assert.equal(response.status, 500);
+    assert.equal((await response.clone().json()).error.code, 'API_ENV_INVALID');
+    assert.equal(response.headers.get('X-Deployment-Trace-Id'), 'dtr_invalid_environment');
+  }
+});
+
 test('unknown endpoints return safe JSON errors', async () => {
   const response = await worker.fetch(
     new Request('https://api.pages.xd.team/.xd-pages/api/missing', {

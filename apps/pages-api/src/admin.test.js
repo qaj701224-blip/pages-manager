@@ -38,6 +38,17 @@ test('admin dashboard requires platform admin and returns governance counts', as
     status: 'failed',
     idempotencyKey: 'dashboard-1',
     requestHash: 'hash-dashboard-1',
+    errorCode: 'DEPLOYMENT_UPLOAD_FAILED',
+    errorMessage: 'Deployment upload failed.',
+    failureStage: 'upload_worker',
+    failureDiagnostics: {
+      schemaVersion: 1,
+      provider: {
+        name: 'cloudflare_wfp',
+        operation: 'worker_put',
+        providerMessage: 'detail only',
+      },
+    },
   });
 
   const forbidden = await worker.fetch(
@@ -95,6 +106,9 @@ test('admin dashboard requires platform admin and returns governance counts', as
           source: 'cli',
           operation: 'publish',
           createdAt: '2026-07-02T00:00:00.000Z',
+          errorCode: 'DEPLOYMENT_UPLOAD_FAILED',
+          errorMessage: 'Deployment upload failed.',
+          failureStage: 'upload_worker',
         },
       ],
     },
@@ -1560,6 +1574,67 @@ test('platform admin can read an environment-scoped deployment trace timeline', 
     env(store)
   );
   assert.equal(crossEnvironment.status, 404);
+});
+
+test('platform admin can query a pre-deployment timeline by trace id', async () => {
+  const store = createTestPagesStore({ now: () => '2026-08-20T08:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await store.createDeploymentEvent({
+    id: 'dpe_predeployment',
+    environment: 'production',
+    traceId: 'dtr_predeployment',
+    inboundRayId: 'ray-predeployment-SIN',
+    deploymentId: null,
+    siteId: null,
+    attempt: 1,
+    stage: 'payload_validation',
+    operation: 'validate_content_hash',
+    status: 'failed',
+    startedAt: '2026-08-20T07:54:12.462Z',
+    completedAt: '2026-08-20T07:54:12.500Z',
+    durationMs: 38,
+    errorCode: 'CONTENT_HASH_MISMATCH',
+    errorMessage: 'Deployment content hash does not match the uploaded payload.',
+    diagnostics: { causeClass: 'payload_validation_error' },
+    createdAt: '2026-08-20T07:54:12.500Z',
+  });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/deployment-traces/dtr_predeployment', {
+      userId: 'usr_root',
+      admin: true,
+    }),
+    env(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.deployment, null);
+  assert.deepEqual(body.trace, {
+    traceId: 'dtr_predeployment',
+    inboundRayId: 'ray-predeployment-SIN',
+    deploymentId: null,
+  });
+  assert.deepEqual(
+    body.events.map((event) => ({ stage: event.stage, operation: event.operation, errorCode: event.errorCode })),
+    [
+      {
+        stage: 'payload_validation',
+        operation: 'validate_content_hash',
+        errorCode: 'CONTENT_HASH_MISMATCH',
+      },
+    ]
+  );
+
+  const missing = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/deployment-traces/dtr_missing', {
+      userId: 'usr_root',
+      admin: true,
+    }),
+    env(store)
+  );
+  assert.equal(missing.status, 404);
+  assert.equal((await missing.json()).error.code, 'DEPLOYMENT_TRACE_NOT_FOUND');
 });
 
 test('admin site deployment list exposes only the primary trace reference', async () => {

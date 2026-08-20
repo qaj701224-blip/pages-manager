@@ -46,8 +46,16 @@ export function createDeploymentTraceContext(request, env, input = {}) {
     store: input.store || null,
     logger: typeof input.logger === 'function' ? input.logger : null,
     now: typeof input.now === 'function' ? input.now : null,
+    deferPersistence: input.deferPersistence === true,
     lastStartedMs: null,
   });
+  return trace;
+}
+
+export function attachDeploymentTraceStore(trace, store) {
+  const internal = assertTraceContext(trace);
+  internal.store = store || null;
+  internal.deferPersistence = false;
   return trace;
 }
 
@@ -95,6 +103,7 @@ export async function finishDeploymentStage(handle, input = {}) {
   if (!status) throw new Error('DEPLOYMENT_TRACE_STATUS_INVALID');
 
   const completedMs = Math.max(handle.startedMs, readNowMs(internal));
+  const structuredProviderError = findStructuredProviderError(input.error);
   const automaticDiagnostics = providerDiagnosticsFromError(input.error);
   const diagnostics = sanitizeDiagnostics({
     ...automaticDiagnostics,
@@ -109,7 +118,11 @@ export async function finishDeploymentStage(handle, input = {}) {
     siteId: handle.trace.siteId,
     attempt: handle.trace.attempt,
     stage: handle.stage,
-    operation: normalizeOperation(input.error?.operation) || normalizeOperation(input.operation) || handle.operation,
+    operation:
+      normalizeOperation(structuredProviderError?.operation) ||
+      normalizeOperation(input.error?.operation) ||
+      normalizeOperation(input.operation) ||
+      handle.operation,
     status,
     startedAt: handle.startedAt,
     completedAt: new Date(completedMs).toISOString(),
@@ -119,6 +132,11 @@ export async function finishDeploymentStage(handle, input = {}) {
     diagnostics,
     createdAt: new Date(completedMs).toISOString(),
   };
+
+  if (internal.deferPersistence && !internal.store) {
+    logTraceEvent(internal, event);
+    return event;
+  }
 
   try {
     if (typeof internal.store?.createDeploymentEvent !== 'function') throw new Error('DEPLOYMENT_EVENT_STORE_UNAVAILABLE');
@@ -136,13 +154,14 @@ export async function recordDeploymentStage(trace, input = {}) {
 
 export function providerDiagnosticsFromError(error) {
   if (!error || (typeof error !== 'object' && typeof error !== 'function')) return {};
+  const source = findStructuredProviderError(error) || error;
   return omitUndefined({
     causeClass: 'provider_error',
-    httpStatus: normalizeHttpStatus(error.status),
-    clientCode: normalizeClientCode(error.code),
-    providerCode: normalizeProviderCode(error.providerCode),
-    providerMessage: normalizeMessage(error.providerMessage) || undefined,
-    providerRequestId: normalizeProviderRequestId(error.providerRequestId),
+    httpStatus: normalizeHttpStatus(source.status),
+    clientCode: normalizeClientCode(source.code),
+    providerCode: normalizeProviderCode(source.providerCode),
+    providerMessage: normalizeMessage(source.providerMessage) || undefined,
+    providerRequestId: normalizeProviderRequestId(source.providerRequestId),
   });
 }
 
@@ -217,6 +236,25 @@ function normalizeHttpStatus(value) {
 
 function normalizeClientCode(value) {
   return typeof value === 'string' && SAFE_CLIENT_CODE_RE.test(value) ? value : undefined;
+}
+
+function findStructuredProviderError(error) {
+  const seen = new Set();
+  let current = error;
+  for (let depth = 0; depth < 5 && current && (typeof current === 'object' || typeof current === 'function'); depth += 1) {
+    if (seen.has(current)) break;
+    seen.add(current);
+    if (
+      normalizeClientCode(current.code) ||
+      Object.hasOwn(current, 'providerCode') ||
+      Object.hasOwn(current, 'providerMessage') ||
+      Object.hasOwn(current, 'providerRequestId')
+    ) {
+      return current;
+    }
+    current = current.cause;
+  }
+  return null;
 }
 
 function normalizeErrorCode(value) {
@@ -368,6 +406,37 @@ function logTraceWriteFailure(internal, event) {
       (typeof internal.env?.logDeploymentTraceWriteFailed === 'function'
         ? internal.env.logDeploymentTraceWriteFailed
         : globalThis.console?.error);
+    if (typeof logger === 'function') logger(JSON.stringify(payload));
+  } catch {
+    // Diagnostics must never replace the deployment result.
+  }
+}
+
+function logTraceEvent(internal, traceEvent) {
+  const payload = {
+    event: 'pages_deployment_trace_event',
+    persistence: 'log_only',
+    environment: traceEvent.environment,
+    traceId: traceEvent.traceId,
+    inboundRayId: traceEvent.inboundRayId,
+    deploymentId: traceEvent.deploymentId,
+    siteId: traceEvent.siteId,
+    attempt: traceEvent.attempt,
+    stage: traceEvent.stage,
+    operation: traceEvent.operation,
+    status: traceEvent.status,
+    startedAt: traceEvent.startedAt,
+    completedAt: traceEvent.completedAt,
+    durationMs: traceEvent.durationMs,
+    errorCode: traceEvent.errorCode,
+    errorMessage: traceEvent.errorMessage,
+    diagnostics: traceEvent.diagnostics,
+  };
+  try {
+    const logger =
+      typeof internal.env?.logDeploymentTraceEvent === 'function'
+        ? internal.env.logDeploymentTraceEvent
+        : globalThis.console?.error;
     if (typeof logger === 'function') logger(JSON.stringify(payload));
   } catch {
     // Diagnostics must never replace the deployment result.

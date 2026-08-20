@@ -106,26 +106,31 @@ test('POST deploy responses expose a server trace header and persist the trace o
   );
 });
 
-test('POST deploy authentication failures keep a queryable pre-deployment trace', async () => {
+test('POST deploy authentication failures keep a log-correlatable trace without persisting unauthenticated events', async () => {
   const store = await createSeededStore();
+  const traceLogs = [];
+  const env = testEnv(store, createSnapshotStore());
+  env.logDeploymentTraceEvent = (line) => traceLogs.push(JSON.parse(line));
   const request = deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
     'Idempotency-Key': 'trace_auth_failure',
     'cf-ray': 'auth-ray-SIN',
   });
   request.headers.delete('Authorization');
 
-  const response = await worker.fetch(request, testEnv(store, createSnapshotStore()));
+  const response = await worker.fetch(request, env);
   const traceId = response.headers.get('X-Deployment-Trace-Id');
 
   assert.equal(response.status, 401);
   assert.equal(traceId, 'dtr_1');
   assert.equal((await response.json()).error.code, 'PAGES_AUTH_REQUIRED');
+  assert.deepEqual(await store.listDeploymentEvents({ environment: 'production', traceId }), []);
   assert.deepEqual(
-    (await store.listDeploymentEvents({ environment: 'production', traceId })).map((event) => ({
+    traceLogs.map((event) => ({
       stage: event.stage,
       status: event.status,
       deploymentId: event.deploymentId,
       inboundRayId: event.inboundRayId,
+      errorCode: event.errorCode,
     })),
     [
       {
@@ -133,15 +138,18 @@ test('POST deploy authentication failures keep a queryable pre-deployment trace'
         status: 'succeeded',
         deploymentId: null,
         inboundRayId: 'auth-ray-SIN',
+        errorCode: null,
       },
       {
         stage: 'auth_and_site_resolution',
         status: 'failed',
         deploymentId: null,
         inboundRayId: 'auth-ray-SIN',
+        errorCode: 'PAGES_AUTH_REQUIRED',
       },
     ]
   );
+  assert.equal(traceLogs.every((event) => event.event === 'pages_deployment_trace_event'), true);
 });
 
 test('POST deployment intake and payload failures return trace headers and events without deployment ids', async () => {
@@ -529,6 +537,18 @@ test('deployment state, version creation, and policy lock failures persist their
       true,
       `${scenario.name}: ${JSON.stringify(events)}`
     );
+    if (scenario.name === 'policy lock') {
+      const failedDeployment = await store.getDeployment('dep_1', 'production');
+      const cleanupEvent = events.find(
+        (event) => event.stage === 'cleanup_or_compensation' && event.operation === 'worker_delete'
+      );
+      assert.equal(failedDeployment.failureStage, 'route_policy_lock');
+      assert.equal(failedDeployment.failureDiagnostics.stage, 'route_policy_lock');
+      assert.deepEqual(cleanupEvent.diagnostics.originalFailure, {
+        stage: 'route_policy_lock',
+        code: 'SITE_POLICY_LOCKED',
+      });
+    }
   }
 });
 
@@ -4242,6 +4262,69 @@ test('WFP public activation fails closed when OfficeNet cannot be verified absen
   );
   assert.equal((await store.getRouteBySiteId('site_1', 'production')).activeVersionId, null);
   assert.equal(snapshots.read('production:route_pointer:guide.pages.xd.team') ?? null, null);
+});
+
+test('WFP public activation preserves nested Provider diagnostics when OfficeNet removal fails', async () => {
+  const store = await createSeededStore();
+  const lease = await store.acquireSiteCommitLock('production', 'site_1', { lockId: 'public_provider_trace_lock' });
+  const currentRoute = await store.getRouteBySiteId('site_1', 'production');
+  await store.updateSiteAccessPolicy({
+    environment: 'production',
+    siteId: 'site_1',
+    exposure: 'public',
+    expected: {
+      policyVersion: currentRoute.policyVersion,
+      routeGeneration: currentRoute.routeGeneration,
+      activeVersionId: currentRoute.activeVersionId,
+      runtimeConfigGeneration: currentRoute.runtimeConfigGeneration,
+    },
+    lease,
+  });
+  await store.releaseSiteCommitLock('production', 'site_1', lease.lockId);
+
+  const response = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'wfp_public_provider_diagnostics',
+    }),
+    testEnv(store, createSnapshotStore(), {
+      WFP_PROVIDER: {
+        upload: async ({ workerName }) => ({ artifactRef: `wfp://test/${workerName}` }),
+        verify: async () => ({ ok: true }),
+        removeOfficeNetBinding: async () => {
+          throw new WfpApiError({
+            status: 502,
+            code: 'WFP_API_ERROR',
+            message: 'settings update failed',
+            operation: 'worker_settings_patch',
+            providerCode: 10090,
+            providerMessage: 'Settings update rejected',
+            providerRequestId: 'ray-office-net-patch',
+          });
+        },
+        verifyOfficeNetAbsent: async () => {
+          throw new Error('verify should not run');
+        },
+      },
+    })
+  );
+
+  assert.equal(response.status, 503, await response.clone().text());
+  assert.equal((await response.clone().json()).error.code, 'SITE_PUBLIC_OFFICE_NET_REMOVE_FAILED');
+  const events = await store.listDeploymentEvents({
+    environment: 'production',
+    traceId: response.headers.get('X-Deployment-Trace-Id'),
+  });
+  const officeNetFailure = events.find((event) => event.stage === 'office_net' && event.status === 'failed');
+  assert.equal(officeNetFailure.operation, 'worker_settings_patch');
+  assert.equal(officeNetFailure.errorCode, 'SITE_PUBLIC_OFFICE_NET_REMOVE_FAILED');
+  assert.deepEqual(officeNetFailure.diagnostics, {
+    causeClass: 'public_office_net_error',
+    httpStatus: 502,
+    clientCode: 'WFP_API_ERROR',
+    providerCode: '10090',
+    providerMessage: 'Settings update rejected',
+    providerRequestId: 'ray-office-net-patch',
+  });
 });
 
 test('public OfficeNet guard reports non-WFP deployment shapes as not applicable', async () => {

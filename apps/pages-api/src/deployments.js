@@ -13,6 +13,7 @@ import {
 } from './deployment-runtime-config.js';
 import { canonicalDeploymentContentHash, decisionRequiresAssets, decisionRequiresWorker } from './deployment-plan.js';
 import {
+  attachDeploymentTraceStore,
   bindDeploymentTrace,
   createDeploymentTraceContext,
   finishDeploymentStage,
@@ -53,7 +54,7 @@ export async function handleDeploymentsApi(request, env, config, store, ctx) {
       ? createDeploymentTraceContext(request, env, {
           environment: config.environment,
           operation: 'deploy',
-          store,
+          deferPersistence: true,
           now: env?.now,
         })
       : null;
@@ -71,6 +72,7 @@ export async function handleDeploymentsApi(request, env, config, store, ctx) {
     });
     return withRequestTraceHeader(authErrorResponse(auth.error), trace);
   }
+  if (trace) attachDeploymentTraceStore(trace, store);
 
   if (url.pathname === '/.xd-pages/api/deployments') {
     if (request.method === 'POST') {
@@ -103,7 +105,7 @@ export async function handleVersionsApi(request, env, config, store, ctx) {
       ? createDeploymentTraceContext(request, env, {
           environment: config.environment,
           operation: 'rollback',
-          store,
+          deferPersistence: true,
           now: env?.now,
         })
       : null;
@@ -121,6 +123,7 @@ export async function handleVersionsApi(request, env, config, store, ctx) {
     });
     return withRequestTraceHeader(authErrorResponse(auth.error), trace);
   }
+  if (trace) attachDeploymentTraceStore(trace, store);
 
   if (versionId && request.method === 'POST') {
     let response;
@@ -1480,6 +1483,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
       { lockId: nextId(env, 'deploylock'), bestEffortRelease: true }
     );
   } catch (error) {
+    const routePolicyLockFailed = Boolean(routePolicyLockStage);
     if (versionCreateStage) {
       await finishDeploymentStage(versionCreateStage, {
         status: 'failed',
@@ -1503,6 +1507,8 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
         ? { stage: 'deployment_state_persist', code: 'DEPLOYMENT_STATE_WRITE_FAILED' }
         : isPublicOfficeNetFailure(error)
           ? { stage: 'office_net', code: error.code }
+          : routePolicyLockFailed
+            ? { stage: 'route_policy_lock', code: error?.code || 'SITE_POLICY_LOCKED' }
           : error?.code === 'SITE_POLICY_LOCKED' || error?.code === 'ROUTE_ACTIVATION_CONFLICT'
             ? { stage: 'route_activate', code: error.code }
             : { stage: 'version_create', code: 'DEPLOYMENT_STATE_WRITE_FAILED' },
@@ -1554,13 +1560,14 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
       );
     }
     if (error?.code === 'SITE_POLICY_LOCKED' || error?.code === 'ROUTE_ACTIVATION_CONFLICT') {
+      const failureStage = routePolicyLockFailed ? 'route_policy_lock' : 'activate_route';
       await finalizeFailedDeployment({
         versionId: version?.id || null,
         errorCode: error.code,
         errorMessage: error.message,
-        failureStage: 'activate_route',
+        failureStage,
         failureDiagnostics: buildDeploymentFailureDiagnostics({
-          stage: 'activate_route',
+          stage: failureStage,
           executionProvider: version?.executionProvider || uploaded?.executionProvider || provider.executionProvider || 'wfp',
           deploymentShape: decision.deploymentShape,
           plannedVersionId: version?.id || versionId,
@@ -1570,7 +1577,10 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
           routeActivatedInD1: false,
           routePointerCommitted: false,
           uploadedWorkerCleanup: 'attempted',
-          cause: { code: error.code, class: 'route_activation_conflict' },
+          cause: {
+            code: error.code,
+            class: routePolicyLockFailed ? 'site_policy_lock_error' : 'route_activation_conflict',
+          },
         }),
         completedAt: readNow(env),
       });

@@ -40,19 +40,25 @@ export default {
   },
 
   async fetch(request, env, ctx) {
+    const url = new URL(request.url);
     let config;
     try {
       config = readApiConfig(env);
     } catch {
-      return jsonError(
-        'API_ENV_INVALID',
-        'Pages API environment is invalid.',
-        500,
-        'Check the pages-api Worker environment configuration.'
+      return withDeploymentPreflightTrace(
+        jsonError(
+          'API_ENV_INVALID',
+          'Pages API environment is invalid.',
+          500,
+          'Check the pages-api Worker environment configuration.'
+        ),
+        request,
+        env,
+        null,
+        url
       );
     }
 
-    const url = new URL(request.url);
     const transportError = requireHttps(url, config);
     if (transportError) return withDeploymentPreflightTrace(transportError, request, env, config, url);
 
@@ -209,7 +215,7 @@ function withDeploymentPreflightTrace(response, request, env, config, url) {
   const operation = deploymentTraceOperation(request, url.pathname);
   if (!operation) return response;
   const trace = createDeploymentTraceContext(request, env, {
-    environment: config.environment,
+    environment: config?.environment,
     operation,
     now: env?.now,
   });

@@ -136,6 +136,33 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
     body.paths['/.xd-pages/api/deployments'].post.requestBody.content['multipart/form-data'].schema.$ref,
     '#/components/schemas/CliManagedDeploymentRequest'
   );
+  assert.deepEqual(Object.keys(body.paths['/.xd-pages/api/deployments'].post.responses).sort(), [
+    '201',
+    '400',
+    '401',
+    '403',
+    '404',
+    '409',
+    '413',
+    '500',
+    '502',
+    '503',
+  ]);
+  assert.deepEqual(Object.keys(body.paths['/.xd-pages/api/versions/{id}/rollback'].post.responses).sort(), [
+    '201',
+    '400',
+    '401',
+    '403',
+    '404',
+    '409',
+    '503',
+  ]);
+  for (const response of Object.values(body.paths['/.xd-pages/api/deployments'].post.responses)) {
+    assert.equal(response.headers['X-Deployment-Trace-Id'].$ref, '#/components/headers/DeploymentTraceId');
+  }
+  for (const response of Object.values(body.paths['/.xd-pages/api/versions/{id}/rollback'].post.responses)) {
+    assert.equal(response.headers['X-Deployment-Trace-Id'].$ref, '#/components/headers/DeploymentTraceId');
+  }
   assert.deepEqual(body.paths['/.xd-pages/api/deployments'].post['x-error-codes'], [
     'ASSET_MANIFEST_INVALID',
     'ASSET_FILES_REQUIRED',

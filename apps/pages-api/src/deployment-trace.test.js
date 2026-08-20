@@ -294,6 +294,52 @@ test('provider diagnostics keep only safe bounded fields and redact credentials'
   assert.deepEqual(providerDiagnosticsFromError(jwtIdError), { causeClass: 'provider_error' });
 });
 
+test('deployment stage unwraps structured Provider diagnostics from a safe operation error cause', async () => {
+  const events = [];
+  const trace = createDeploymentTraceContext(
+    new Request('https://example.test'),
+    { nextId: (prefix) => `${prefix}_office_net` },
+    {
+      environment: 'production',
+      operation: 'deploy',
+      store: { createDeploymentEvent: async (event) => events.push(event) },
+      now: () => Date.parse('2026-08-20T08:00:00.000Z'),
+    }
+  );
+  const providerError = Object.assign(new Error('settings read failed'), {
+    status: 502,
+    code: 'WFP_API_ERROR',
+    operation: 'worker_settings_get',
+    providerCode: 10090,
+    providerMessage: 'settings rejected',
+    providerRequestId: 'provider-ray-office-net',
+  });
+  const operationError = Object.assign(new Error('OfficeNet verification failed.', { cause: providerError }), {
+    status: 503,
+    code: 'SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED',
+  });
+
+  const handle = startDeploymentStage(trace, {
+    stage: 'office_net',
+    operation: 'verify_public_office_net_absent',
+  });
+  const event = await finishDeploymentStage(handle, {
+    status: 'failed',
+    error: operationError,
+    diagnostics: { causeClass: 'public_office_net_error' },
+  });
+
+  assert.equal(event.operation, 'worker_settings_get');
+  assert.deepEqual(event.diagnostics, {
+    causeClass: 'public_office_net_error',
+    httpStatus: 502,
+    clientCode: 'WFP_API_ERROR',
+    providerCode: '10090',
+    providerMessage: 'settings rejected',
+    providerRequestId: 'provider-ray-office-net',
+  });
+});
+
 test('deployment stage diagnostics sanitize nested failure and compensation details', async () => {
   const events = [];
   const trace = createDeploymentTraceContext(
