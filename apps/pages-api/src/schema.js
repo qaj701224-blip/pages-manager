@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 19;
+export const SCHEMA_VERSION = 20;
 
 export function createSchemaSql() {
   return [
@@ -189,6 +189,7 @@ export function createSchemaSql() {
       idempotency_key TEXT NOT NULL,
       idempotency_scope TEXT NOT NULL,
       request_hash TEXT NOT NULL,
+      trace_id TEXT,
       terminal_response_json TEXT,
       previous_version_id TEXT,
       error_code TEXT,
@@ -197,6 +198,25 @@ export function createSchemaSql() {
       failure_diagnostics_json TEXT,
       created_at TEXT NOT NULL,
       completed_at TEXT
+    )`,
+    `CREATE TABLE IF NOT EXISTS deployment_events (
+      id TEXT PRIMARY KEY,
+      environment TEXT NOT NULL,
+      trace_id TEXT NOT NULL,
+      inbound_ray_id TEXT,
+      deployment_id TEXT,
+      site_id TEXT,
+      attempt INTEGER NOT NULL DEFAULT 1,
+      stage TEXT NOT NULL,
+      operation TEXT,
+      status TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      completed_at TEXT,
+      duration_ms INTEGER,
+      error_code TEXT,
+      error_message TEXT,
+      diagnostics_json TEXT,
+      created_at TEXT NOT NULL
     )`,
     `CREATE TABLE IF NOT EXISTS deployment_resource_cleanup_tasks (
       id TEXT PRIMARY KEY,
@@ -410,6 +430,12 @@ export function createSchemaSql() {
       ON worker_slots(environment, status, slot_number)`,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_deployments_idempotency
       ON deployments(idempotency_scope, idempotency_key)`,
+    `CREATE INDEX IF NOT EXISTS idx_deployment_events_deployment
+      ON deployment_events(environment, deployment_id, started_at)`,
+    `CREATE INDEX IF NOT EXISTS idx_deployment_events_trace
+      ON deployment_events(environment, trace_id, started_at)`,
+    `CREATE INDEX IF NOT EXISTS idx_deployment_events_site
+      ON deployment_events(environment, site_id, created_at)`,
     `CREATE INDEX IF NOT EXISTS idx_cleanup_tasks_environment_status
       ON deployment_resource_cleanup_tasks(environment, status, cleanup_after)`,
     `CREATE INDEX IF NOT EXISTS idx_cleanup_tasks_resource

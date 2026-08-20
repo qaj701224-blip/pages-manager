@@ -3576,6 +3576,7 @@ test('deployment idempotency returns existing records and rejects hash conflicts
     operation: 'deploy',
     idempotencyKey: 'idem_1',
     requestHash: 'hash_a',
+    traceId: 'dtr_1',
     visibility: 'org',
     status: 'pending',
   });
@@ -3592,11 +3593,13 @@ test('deployment idempotency returns existing records and rejects hash conflicts
     operation: 'deploy',
     idempotencyKey: 'idem_1',
     requestHash: 'hash_a',
+    traceId: 'dtr_replay',
     visibility: 'org',
     status: 'pending',
   });
   assert.equal(replay.kind, 'existing');
   assert.equal(replay.deployment.id, 'dep_1');
+  assert.equal(replay.deployment.traceId, 'dtr_1');
 
   const conflict = await store.createDeploymentForIdempotency({
     id: 'dep_3',
@@ -3616,6 +3619,44 @@ test('deployment idempotency returns existing records and rejects hash conflicts
   assert.equal(await store.getDeployment('dep_3'), null);
 });
 
+test('D1 store maps legacy deployment rows without trace_id to a null traceId', async () => {
+  const legacyRow = {
+    id: 'dep_legacy',
+    environment: 'production',
+    site_id: 'site_1',
+    version_id: null,
+    actor_id: 'usr_1',
+    actor_user_id: 'usr_1',
+    actor_type: 'user',
+    source: 'cli',
+    operation: 'deploy',
+    visibility: 'org',
+    status: 'failed',
+    idempotency_key: 'idem_legacy',
+    idempotency_scope: 'production:usr_1:site_1:deploy',
+    request_hash: 'hash_legacy',
+    terminal_response_json: null,
+    previous_version_id: null,
+    error_code: 'DEPLOYMENT_UPLOAD_FAILED',
+    error_message: 'Deployment upload failed.',
+    failure_stage: 'upload_worker',
+    failure_diagnostics_json: null,
+    created_at: '2026-06-15T00:00:00.000Z',
+    completed_at: '2026-06-15T00:00:01.000Z',
+  };
+  const store = new D1PagesStore({
+    prepare() {
+      return {
+        bind() {
+          return { first: async () => legacyRow };
+        },
+      };
+    },
+  });
+
+  assert.equal((await store.getDeployment('dep_legacy', 'production')).traceId, null);
+});
+
 test('deployment records persist failure stage and diagnostics', async () => {
   const store = createSeededStore();
   await createSite(store);
@@ -3631,6 +3672,7 @@ test('deployment records persist failure stage and diagnostics', async () => {
     operation: 'deploy',
     idempotencyKey: 'idem_1',
     requestHash: 'hash_a',
+    traceId: 'dtr_1',
     visibility: 'org',
     status: 'pending',
   });
@@ -3665,6 +3707,7 @@ test('deployment records persist failure stage and diagnostics', async () => {
     idempotencyKey: 'idem_1',
     idempotencyScope: 'production:usr_1:site_1:deploy',
     requestHash: 'hash_a',
+    traceId: 'dtr_1',
     terminalResponseJson: null,
     previousVersionId: null,
     errorCode: 'DEPLOYMENT_UPLOAD_FAILED',
