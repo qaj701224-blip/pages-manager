@@ -19,9 +19,13 @@ test('deploy requires positional dir and site, then creates and deploys with a C
     fetch: fakeFetch(calls, [
       { site: { id: 'site_1', slug: 'docs', environment: 'production', url: 'https://docs.pages.xd.team' } },
       {
-        deployment: { id: 'dep_1', status: 'succeeded' },
-        version: { id: 'ver_1' },
-        route: { hostname: 'docs.pages.xd.team' },
+        status: 200,
+        headers: { 'X-Deployment-Trace-Id': 'dtr_cli_success' },
+        body: {
+          deployment: { id: 'dep_1', status: 'succeeded' },
+          version: { id: 'ver_1' },
+          route: { hostname: 'docs.pages.xd.team' },
+        },
       },
     ]),
     idempotencyKey: () => 'idem_1',
@@ -61,6 +65,7 @@ test('deploy requires positional dir and site, then creates and deploys with a C
     '识别结果：静态资源目录',
     '找不到文件时：平台默认未命中处理',
     '部署：dep_1 succeeded',
+    '追踪：dtr_cli_success',
     '发布完成：https://docs.pages.xd.team',
   ]);
   assert.equal(Object.prototype.hasOwnProperty.call(metadata, 'vars'), false);
@@ -2003,7 +2008,7 @@ function fakeFetch(calls, payloads) {
     calls.push(request.clone());
     const payload = payloads.shift() || {};
     if (payload && typeof payload === 'object' && 'status' in payload && 'body' in payload) {
-      return Response.json(payload.body, { status: payload.status });
+      return Response.json(payload.body, { status: payload.status, headers: payload.headers });
     }
     return Response.json(payload);
   };

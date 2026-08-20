@@ -136,8 +136,9 @@ function formatError(error) {
   const message = localized.message && localized.message !== code ? ` ${localized.message}` : '';
   const reason = localized.reason ? ` reason=${localized.reason}` : '';
   const requestId = localized.requestId ? ` requestId=${localized.requestId}` : '';
+  const deploymentTraceId = localized.deploymentTraceId ? ` traceId=${localized.deploymentTraceId}` : '';
   const action = localized.action ? ` ${localized.action}` : '';
-  return `${code}${message}${reason}${requestId}${action}`;
+  return `${code}${message}${reason}${requestId}${deploymentTraceId}${action}`;
 }
 
 function formatErrorJson(error) {
@@ -157,6 +158,7 @@ function formatErrorJson(error) {
   if (localized.reason) payload.error.reason = localized.reason;
   if (localized.step) payload.error.step = localized.step;
   if (localized.requestId) payload.error.requestId = localized.requestId;
+  if (localized.deploymentTraceId) payload.error.deploymentTraceId = localized.deploymentTraceId;
   if (typeof localized.retryable === 'boolean') payload.error.retryable = localized.retryable;
   if (localized.details) payload.error.details = localized.details;
   return JSON.stringify(payload, null, 2);
