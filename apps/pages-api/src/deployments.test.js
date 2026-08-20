@@ -396,6 +396,61 @@ test('provider stage failures persist the failing provider operation and termina
   assert.doesNotMatch(JSON.stringify(events), /must not be persisted/);
 });
 
+test('normal worker slot failures persist safe Cloudflare diagnostics on the provider stage event', async () => {
+  const store = await createSeededStore();
+  await store.createWorkerSlot({
+    id: 'slot_007',
+    environment: 'production',
+    slotNumber: 7,
+    workerName: 'pages-v2-production-slot-007',
+    bindingName: 'SITE_SLOT_007',
+    status: 'available',
+  });
+  let requestCount = 0;
+  const response = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'trace_normal_slot_provider_failure',
+    }),
+    timelineTestEnv(store, createSnapshotStore(), {
+      PAGES_EXECUTION_MODE: 'normal-worker-slot',
+      CF_ACCOUNT_ID: 'account_1',
+      CF_API_TOKEN: 'cf_secret_token',
+      fetch: async () => {
+        requestCount += 1;
+        if (requestCount === 2) {
+          return Response.json(
+            {
+              success: false,
+              errors: [
+                {
+                  code: 1000,
+                  message: 'upload rejected cf_secret_token https://api.cloudflare.com/client/v4/accounts/account_1',
+                },
+              ],
+            },
+            { status: 502, headers: { 'cf-ray': 'normal-slot-ray-1' } }
+          );
+        }
+        return Response.json({ success: true, result: { id: 'ok' } });
+      },
+    })
+  );
+
+  assert.equal(response.status, 502, await response.clone().text());
+  const events = await store.listDeploymentEvents({ environment: 'production', deploymentId: 'dep_1' });
+  const failedUpload = events.find((event) => event.stage === 'provider_upload' && event.status === 'failed');
+  assert.equal(failedUpload.operation, 'worker_put');
+  assert.deepEqual(failedUpload.diagnostics, {
+    causeClass: 'provider_upload_error',
+    httpStatus: 502,
+    clientCode: 'WFP_API_ERROR',
+    providerCode: '1000',
+    providerMessage: 'upload rejected [redacted] [redacted-url]',
+    providerRequestId: 'normal-slot-ray-1',
+  });
+  assert.doesNotMatch(JSON.stringify(failedUpload), /cf_secret_token|https:\/\//);
+});
+
 test('deployment state, version creation, and policy lock failures persist their exact failing stages', async () => {
   const scenarios = [
     {
