@@ -41,6 +41,8 @@ import { createSiteWithLegacyV1Takeover } from './legacy-v1/takeover.js';
 
 const encoder = new globalThis.TextEncoder();
 const VISIBILITIES = new Set(['internal', 'org', 'acl', 'owner', 'disabled']);
+const PROVIDER_DIAGNOSTIC_CLIENT_CODES = new Set(['WFP_API_ERROR', 'WFP_API_INVALID_JSON', 'WFP_NETWORK_ERROR']);
+const PROVIDER_DIAGNOSTIC_OPERATIONS = new Set(['assets_upload_session', 'assets_upload', 'worker_put', 'worker_get']);
 const RESERVED_SITE_SLUG_ACTION = '该站点名是 XD Cell 平台保留项，请换一个业务站点名。';
 const deploymentRequestTraceStates = new WeakMap();
 
@@ -809,6 +811,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
         verifyCompleted: false,
         routePointerCommitted: false,
         cause: { code, class: 'provider_upload_error' },
+        provider: buildProviderFailureDiagnostics(error, executionProvider),
       }),
       completedAt: readNow(env),
     });
@@ -949,6 +952,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
         routePointerCommitted: false,
         uploadedWorkerCleanup: 'attempted',
         cause: { code, class: 'provider_verify_error' },
+        provider: buildProviderFailureDiagnostics(error, executionProvider),
       }),
       completedAt: readNow(env),
     });
@@ -3285,6 +3289,7 @@ function buildDeploymentFailureDiagnostics({
   retryable = true,
   operatorAction = 'retry_deploy',
   cause,
+  provider,
 }) {
   return omitUndefined({
     schemaVersion: 1,
@@ -3304,6 +3309,27 @@ function buildDeploymentFailureDiagnostics({
     retryable,
     operatorAction,
     cause,
+    provider,
+  });
+}
+
+function buildProviderFailureDiagnostics(error, executionProvider) {
+  if (executionProvider !== 'wfp') return undefined;
+  const operation = error?.operation;
+  const clientCode = error?.code;
+  if (!PROVIDER_DIAGNOSTIC_OPERATIONS.has(operation) || !PROVIDER_DIAGNOSTIC_CLIENT_CODES.has(clientCode)) {
+    return undefined;
+  }
+  const diagnostics = providerDiagnosticsFromError(error);
+
+  return omitUndefined({
+    name: 'cloudflare_wfp',
+    operation,
+    httpStatus: diagnostics.httpStatus,
+    clientCode,
+    providerCode: diagnostics.providerCode,
+    providerMessage: diagnostics.providerMessage,
+    providerRequestId: diagnostics.providerRequestId,
   });
 }
 

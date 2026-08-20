@@ -1306,6 +1306,15 @@ test('admin site deployment list exposes redacted failure diagnostics for review
         code: 'ROUTE_SNAPSHOT_WRITE_FAILED',
         class: 'route_snapshot_store_error',
       },
+      provider: {
+        name: 'cloudflare_wfp',
+        operation: 'worker_put',
+        httpStatus: 502,
+        clientCode: 'WFP_API_ERROR',
+        providerCode: '10090',
+        providerMessage: 'provider message',
+        providerRequestId: 'ray-admin-1',
+      },
     },
   });
 
@@ -1358,6 +1367,15 @@ test('admin site deployment list exposes redacted failure diagnostics for review
           cause: {
             code: 'ROUTE_SNAPSHOT_WRITE_FAILED',
             class: 'route_snapshot_store_error',
+          },
+          provider: {
+            name: 'cloudflare_wfp',
+            operation: 'worker_put',
+            httpStatus: 502,
+            clientCode: 'WFP_API_ERROR',
+            providerCode: '10090',
+            providerMessage: 'provider message',
+            providerRequestId: 'ray-admin-1',
           },
         },
         createdAt: '2026-07-02T00:00:00.000Z',

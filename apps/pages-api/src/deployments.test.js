@@ -6954,6 +6954,151 @@ test('marks deployment failed when WFP upload fails without creating active vers
   assert.equal('failureDiagnostics' in polledBody.deployment, false);
 });
 
+test('persists structured WFP provider diagnostics for upload failures', async () => {
+  const store = await createSeededStore();
+  const env = testEnv(store, createSnapshotStore(), {
+    WFP_PROVIDER: {
+      upload: async () => {
+        throw new WfpApiError({
+          status: 400,
+          code: 'WFP_API_ERROR',
+          message: '10090 manifest rejected',
+          operation: 'assets_upload_session',
+          providerCode: 10090,
+          providerMessage: 'manifest rejected',
+          providerRequestId: 'ray-upload-1',
+        });
+      },
+      verify: async () => {
+        throw new Error('verify should not run');
+      },
+    },
+  });
+
+  const response = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'wfp_structured_upload_fail',
+    }),
+    env
+  );
+
+  assert.equal(response.status, 502);
+  const failedDeployment = await store.getDeployment('dep_1');
+  assert.deepEqual(failedDeployment.failureDiagnostics.provider, {
+    name: 'cloudflare_wfp',
+    operation: 'assets_upload_session',
+    httpStatus: 400,
+    clientCode: 'WFP_API_ERROR',
+    providerCode: '10090',
+    providerMessage: 'manifest rejected',
+    providerRequestId: 'ray-upload-1',
+  });
+
+  const polled = await worker.fetch(authRequest('https://api.pages.xd.team/.xd-pages/api/deployments/dep_1'), env);
+  const polledBody = await polled.json();
+  assert.equal('failureDiagnostics' in polledBody.deployment, false);
+});
+
+test('omits untrusted WFP provider diagnostic fields from upload failures', async () => {
+  const store = await createSeededStore();
+  const env = testEnv(store, createSnapshotStore(), {
+    WFP_PROVIDER: {
+      upload: async () => {
+        throw Object.assign(new Error('do not persist this message'), {
+          code: 'UNTRUSTED_CODE',
+          status: 700,
+          operation: 'arbitrary_operation',
+          providerCode: { secret: 'value' },
+          providerMessage: 'Bearer should-not-persist',
+          providerRequestId: 'not a valid request id',
+        });
+      },
+      verify: async () => {
+        throw new Error('verify should not run');
+      },
+    },
+  });
+
+  await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'wfp_untrusted_upload_fail',
+    }),
+    env
+  );
+
+  const failedDeployment = await store.getDeployment('dep_1');
+  assert.equal('provider' in failedDeployment.failureDiagnostics, false);
+});
+
+test('omits JWT-like WFP provider identifiers from persisted upload diagnostics', async () => {
+  const store = await createSeededStore();
+  const env = testEnv(store, createSnapshotStore(), {
+    WFP_PROVIDER: {
+      upload: async () => {
+        throw new WfpApiError({
+          status: 400,
+          code: 'WFP_API_ERROR',
+          message: 'provider rejected upload',
+          operation: 'worker_put',
+          providerCode: 'abcd.efgh.ijkl',
+          providerMessage: 'provider rejected upload',
+          providerRequestId: 'mnop.qrst.uvwx',
+        });
+      },
+      verify: async () => {
+        throw new Error('verify should not run');
+      },
+    },
+  });
+
+  await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'wfp_jwt_identifiers_upload_fail',
+    }),
+    env
+  );
+
+  const failedDeployment = await store.getDeployment('dep_1');
+  assert.deepEqual(failedDeployment.failureDiagnostics.provider, {
+    name: 'cloudflare_wfp',
+    operation: 'worker_put',
+    httpStatus: 400,
+    clientCode: 'WFP_API_ERROR',
+    providerMessage: 'provider rejected upload',
+  });
+});
+
+test('omits unsupported WFP provider operations from persisted upload diagnostics', async () => {
+  const store = await createSeededStore();
+  const env = testEnv(store, createSnapshotStore(), {
+    WFP_PROVIDER: {
+      upload: async () => {
+        throw Object.assign(new Error('provider rejected upload'), {
+          status: 400,
+          code: 'WFP_API_ERROR',
+          operation: 'worker_verify',
+          providerCode: 10090,
+          providerMessage: 'provider rejected upload',
+          providerRequestId: 'ray-upload-unsupported-operation',
+        });
+      },
+      verify: async () => {
+        throw new Error('verify should not run');
+      },
+    },
+  });
+
+  await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'wfp_unsupported_operation_upload_fail',
+    }),
+    env
+  );
+
+  const failedDeployment = await store.getDeployment('dep_1');
+  assert.equal('provider' in failedDeployment.failureDiagnostics, false);
+});
+
 test('returns deployment state failure when upload failure cannot persist the failed terminal state', async () => {
   const store = await createSeededStore();
   const originalUpdateDeployment = store.updateDeployment.bind(store);
@@ -7103,6 +7248,53 @@ test('preserves the verify failure when uploaded worker cleanup also fails', asy
       providerRequestId: 'ray-cleanup-safe',
     },
   });
+});
+
+test('persists structured WFP provider diagnostics for verify failures', async () => {
+  const store = await createSeededStore();
+  const deletedWorkers = [];
+  const env = testEnv(store, createSnapshotStore(), {
+    WFP_PROVIDER: {
+      upload: async ({ workerName }) => ({ artifactRef: `wfp://test/${workerName}` }),
+      verify: async () => {
+        throw new WfpApiError({
+          status: 404,
+          code: 'WFP_API_ERROR',
+          message: '10007 Worker lookup rejected',
+          operation: 'worker_get',
+          providerCode: 10007,
+          providerMessage: 'Worker lookup rejected',
+          providerRequestId: 'ray-verify-1',
+        });
+      },
+      delete: async ({ workerName }) => deletedWorkers.push(workerName),
+    },
+  });
+
+  const response = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'wfp_structured_verify_fail',
+    }),
+    env
+  );
+
+  assert.equal(response.status, 502);
+  const failedDeployment = await store.getDeployment('dep_1');
+  assert.equal(failedDeployment.failureStage, 'verify_worker');
+  assert.deepEqual(failedDeployment.failureDiagnostics.provider, {
+    name: 'cloudflare_wfp',
+    operation: 'worker_get',
+    httpStatus: 404,
+    clientCode: 'WFP_API_ERROR',
+    providerCode: '10007',
+    providerMessage: 'Worker lookup rejected',
+    providerRequestId: 'ray-verify-1',
+  });
+  assert.deepEqual(deletedWorkers, ['pages-v2-guide-ver-1']);
+
+  const polled = await worker.fetch(authRequest('https://api.pages.xd.team/.xd-pages/api/deployments/dep_1'), env);
+  const polledBody = await polled.json();
+  assert.equal('failureDiagnostics' in polledBody.deployment, false);
 });
 
 test('cleans uploaded workers and marks deployments failed when post-upload persistence fails', async () => {
