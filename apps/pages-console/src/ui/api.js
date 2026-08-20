@@ -46,6 +46,10 @@ export function getAdminDashboard(options = {}) {
   return fetchJson('/api/console/admin/dashboard', options);
 }
 
+export function getAdminDeploymentTrace(deploymentId, options = {}) {
+  return fetchJson(`/api/console/admin/deployments/${encodeURIComponent(deploymentId)}/trace`, options);
+}
+
 export function getAdminOps(options = {}) {
   return fetchJson('/api/console/admin/ops', options);
 }

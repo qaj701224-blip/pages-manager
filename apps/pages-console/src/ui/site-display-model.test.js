@@ -122,6 +122,82 @@ test('admin site deployment shapes use readable labels with safe fallbacks', () 
   assert.equal(siteDisplayModel.siteDeploymentShapeLabel('future-shape'), '未知类型');
 });
 
+test('deploymentTraceEventView maps trace diagnostics into safe readable timeline fields', () => {
+  assert.equal(typeof siteDisplayModel.deploymentTraceEventView, 'function');
+  const longMessage = `Provider failed ${'x'.repeat(120)}\u0000hidden`;
+  const view = siteDisplayModel.deploymentTraceEventView({
+    stage: 'provider_verify',
+    status: 'failed',
+    startedAt: '2026-08-20T07:54:17.000Z',
+    durationMs: 125,
+    operation: 'worker_get',
+    errorCode: 'DEPLOYMENT_VERIFY_FAILED',
+    errorMessage: longMessage,
+    diagnostics: {
+      httpStatus: 404,
+      clientCode: 'WFP_API_ERROR',
+      providerCode: '10007',
+      providerMessage: 'Worker lookup rejected',
+      providerRequestId: 'ray-verify-safe',
+      trafficImpact: 'old_version_retained',
+      operatorAction: 'retry_deploy',
+      cleanupStatus: 'scheduled',
+      cleanupTaskId: 'cln_cleanup_safe',
+      compensation: {
+        status: 'failed',
+        operation: 'worker_delete',
+        providerRequestId: 'ray-cleanup-safe',
+      },
+    },
+  });
+
+  assert.equal(view.stage, 'Provider 校验');
+  assert.equal(view.status, '失败');
+  assert.equal(view.duration, '125 ms');
+  assert.equal(view.operation, 'worker_get');
+  assert.equal(view.provider, 'HTTP 404 · WFP_API_ERROR · 10007 · Worker lookup rejected');
+  assert.equal(view.providerTitle, 'HTTP 404 · WFP_API_ERROR · 10007 · Worker lookup rejected');
+  assert.equal(view.providerRequestId, 'ray-verify-safe');
+  assert.equal(view.impact, '旧版本继续服务');
+  assert.equal(view.operatorAction, '重新部署');
+  assert.equal(view.cleanup, '已调度 · cln_cleanup_safe');
+  assert.equal(view.compensation, '失败 · worker_delete · ray-cleanup-safe');
+  assert.match(view.error, /…$/);
+  assert.match(view.errorTitle, /^DEPLOYMENT_VERIFY_FAILED · Provider failed/);
+  assert.equal(JSON.stringify(view).includes('\u0000'), false);
+});
+
+test('deploymentTraceEventView preserves safe unknown values and empty fallbacks', () => {
+  assert.equal(typeof siteDisplayModel.deploymentTraceEventView, 'function');
+  assert.deepEqual(
+    siteDisplayModel.deploymentTraceEventView({
+      stage: 'future_stage',
+      status: 'future_status',
+      operation: 'future_operation',
+      errorMessage: 'line one\u0007line two',
+    }),
+    {
+      time: '-',
+      timeTitle: '',
+      stage: 'future_stage',
+      status: 'future_status',
+      statusCode: 'future_status',
+      duration: '-',
+      operation: 'future_operation',
+      error: 'line one line two',
+      errorTitle: 'line one line two',
+      provider: '-',
+      providerTitle: '',
+      providerRequestId: '-',
+      providerRequestIdTitle: '',
+      impact: '-',
+      operatorAction: '-',
+      cleanup: '-',
+      compensation: '-',
+    }
+  );
+});
+
 test('admin site filters combine deployment shape with existing filters', () => {
   assert.equal(typeof siteDisplayModel.filterAdminSites, 'function');
   const sites = [

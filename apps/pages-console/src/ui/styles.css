@@ -2050,12 +2050,178 @@ button {
   background: rgba(255, 250, 244, 0.72);
   font-size: 12px;
   line-height: 1.4;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .deployment-diagnostic-item strong {
   color: var(--xd-text-2);
   font-size: 12px;
   font-weight: 700;
+}
+
+.deployment-trace-actions {
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+  padding: 0 18px 14px;
+}
+
+.deployment-trace-row > td {
+  padding: 0;
+  background: rgba(255, 250, 244, 0.42);
+}
+
+.deployment-trace-panel {
+  display: grid;
+  width: 100%;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--xd-border);
+  border-radius: 8px;
+  color: var(--xd-text-2);
+  background: var(--xd-panel);
+}
+
+.deployment-trace-row .deployment-trace-panel {
+  border: 0;
+  border-radius: 0;
+}
+
+.deployment-trace-error,
+.deployment-trace-empty {
+  align-items: start;
+  color: var(--xd-muted);
+  overflow-wrap: anywhere;
+}
+
+.deployment-trace-error {
+  justify-items: start;
+}
+
+.deployment-trace-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.deployment-trace-summary > span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  max-width: 100%;
+  min-height: 28px;
+  padding: 5px 9px;
+  border: 1px solid var(--xd-border);
+  border-radius: 7px;
+  color: var(--xd-muted);
+  background: rgba(255, 250, 244, 0.72);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.deployment-trace-summary strong,
+.deployment-trace-impact strong {
+  color: var(--xd-text-2);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.deployment-trace-table-shell {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--xd-border);
+  border-radius: 8px;
+}
+
+.deployment-trace-table {
+  width: 100%;
+  min-width: 980px;
+  border-collapse: collapse;
+}
+
+.deployment-trace-table th,
+.deployment-trace-table td {
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--xd-border);
+  text-align: left;
+  vertical-align: top;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.deployment-trace-table th {
+  color: var(--xd-subtle);
+  background: rgba(255, 250, 244, 0.72);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.deployment-trace-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.deployment-trace-table td:nth-child(1) {
+  min-width: 118px;
+  white-space: nowrap;
+}
+
+.deployment-trace-table td:nth-child(6) {
+  min-width: 230px;
+}
+
+.deployment-trace-table td:nth-child(7) {
+  min-width: 160px;
+}
+
+.deployment-trace-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  color: var(--xd-muted);
+  background: rgba(120, 113, 108, 0.1);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.deployment-trace-status.succeeded {
+  color: #236a3c;
+  background: rgba(35, 106, 60, 0.12);
+}
+
+.deployment-trace-status.failed {
+  color: #a33b1b;
+  background: rgba(163, 59, 27, 0.12);
+}
+
+.deployment-trace-status.compensated {
+  color: #8a5a13;
+  background: rgba(138, 90, 19, 0.12);
+}
+
+.deployment-trace-impact {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.deployment-trace-impact > span {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.deployment-trace-value,
+.deployment-trace-error,
+.deployment-trace-summary,
+.deployment-trace-impact {
+  overflow-wrap: anywhere;
 }
 
 .access-control-card__head {
@@ -2874,6 +3040,46 @@ button {
   margin-top: 3px;
   color: var(--xd-muted);
   overflow-wrap: anywhere;
+}
+
+.admin-table .deployment-trace-table th,
+.admin-table .deployment-trace-table td {
+  padding: 9px 10px;
+  font-size: 12px;
+}
+
+.admin-table .deployment-trace-table td > span:not(.tag) {
+  display: inline;
+  margin-top: 0;
+  color: inherit;
+}
+
+.admin-table .deployment-trace-table .deployment-trace-status {
+  display: inline-flex;
+  color: var(--xd-muted);
+}
+
+.admin-table .deployment-trace-table .deployment-trace-status.succeeded {
+  color: #236a3c;
+}
+
+.admin-table .deployment-trace-table .deployment-trace-status.failed {
+  color: #a33b1b;
+}
+
+.admin-table .deployment-trace-table .deployment-trace-status.compensated {
+  color: #8a5a13;
+}
+
+.admin-table .deployment-trace-table .deployment-trace-impact > span {
+  display: grid;
+  margin-top: 0;
+  color: inherit;
+}
+
+.admin-table .deployment-trace-table .deployment-trace-impact strong {
+  display: inline;
+  font-size: 11px;
 }
 
 .metadata-summary {
@@ -4100,6 +4306,67 @@ button {
     min-width: 0;
   }
 
+  .deployment-trace-row {
+    padding: 0;
+  }
+
+  .deployment-trace-row td {
+    display: block;
+    padding: 0;
+  }
+
+  .deployment-trace-row td::before {
+    display: none;
+  }
+
+  .deployment-trace-table {
+    display: block;
+    min-width: 0;
+  }
+
+  .deployment-trace-table thead {
+    display: none;
+  }
+
+  .deployment-trace-table tbody {
+    display: grid;
+    width: 100%;
+    gap: 8px;
+    padding: 8px;
+  }
+
+  .deployment-trace-table tr,
+  .deployment-trace-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .deployment-trace-table tr {
+    padding: 10px 12px;
+    border: 1px solid var(--xd-border);
+    border-radius: 7px;
+    background: var(--xd-panel);
+  }
+
+  .deployment-trace-table td,
+  .deployment-trace-table td:nth-child(1),
+  .deployment-trace-table td:nth-child(6),
+  .deployment-trace-table td:nth-child(7) {
+    display: grid;
+    grid-template-columns: 112px minmax(0, 1fr);
+    gap: 8px;
+    min-width: 0;
+    padding: 5px 0;
+    border: 0;
+    white-space: normal;
+  }
+
+  .deployment-trace-table td::before {
+    content: attr(data-label);
+    color: var(--xd-subtle);
+    font-weight: 700;
+  }
+
   .metadata-summary {
     max-width: 100%;
   }
@@ -4278,6 +4545,20 @@ button {
 
   .admin-table td > * {
     min-width: 0;
+  }
+
+  .admin-table .deployment-trace-row {
+    padding: 0;
+  }
+
+  .admin-table .deployment-trace-row > td {
+    display: block;
+    width: 100%;
+    padding: 0;
+  }
+
+  .admin-table .deployment-trace-row > td::before {
+    display: none;
   }
 
   .metadata-summary {

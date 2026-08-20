@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 
 import { getAdminDashboard } from '../api.js';
 import { formatCleanupBacklogAge } from '../admin-resource-governance-model.js';
+import { DeploymentTracePanel } from '../components/DeploymentTracePanel.jsx';
 import { adminDeploymentActorView, adminDeploymentOwnerView } from '../site-display-model.js';
 
 const METRICS = [
@@ -103,6 +104,7 @@ export function AdminDashboard() {
                   <th>阶段</th>
                   <th>错误</th>
                   <th>时间</th>
+                  <th>追踪</th>
                 </tr>
               </thead>
               <tbody>
@@ -131,49 +133,71 @@ function DashboardResourceStat({ icon: Icon, label, value, title = '' }) {
 function FailedDeploymentRow({ deployment }) {
   const owner = adminDeploymentOwnerView(deployment.owner);
   const actor = adminDeploymentActorView(deployment.actor);
+  const [traceOpen, setTraceOpen] = useState(false);
 
   return (
-    <tr>
-      <td data-label="部署">
-        <strong>{deployment.id}</strong>
-        <span>{deployment.status}</span>
-      </td>
-      <td data-label="站点" title={deployment.siteId}>
-        {deployment.siteSlug || deployment.siteId}
-      </td>
-      <td data-label="客户端来源">{deployment.source || '无'}</td>
-      <td data-label="站点归属">
-        <div className="owner-cell">
-          <span
-            className={
-              owner.type === 'team' ? 'tag owner-tag team' : owner.type === 'not_created' ? 'tag owner-tag not-created' : 'tag owner-tag user'
-            }
+    <>
+      <tr>
+        <td data-label="部署">
+          <strong>{deployment.id}</strong>
+          <span>{deployment.status}</span>
+        </td>
+        <td data-label="站点" title={deployment.siteId}>
+          {deployment.siteSlug || deployment.siteId}
+        </td>
+        <td data-label="客户端来源">{deployment.source || '无'}</td>
+        <td data-label="站点归属">
+          <div className="owner-cell">
+            <span
+              className={
+                owner.type === 'team'
+                  ? 'tag owner-tag team'
+                  : owner.type === 'not_created'
+                    ? 'tag owner-tag not-created'
+                    : 'tag owner-tag user'
+              }
+            >
+              {owner.tag}
+            </span>
+            <div>
+              <strong>{owner.primary}</strong>
+              {owner.secondary ? <span>{owner.secondary}</span> : null}
+            </div>
+          </div>
+        </td>
+        <td data-label="操作人">
+          <div className="owner-cell">
+            <span className="tag owner-tag actor">{actor.tag}</span>
+            <div>
+              <strong>{actor.primary}</strong>
+              {actor.secondary ? <span>{actor.secondary}</span> : null}
+            </div>
+          </div>
+        </td>
+        <td data-label="阶段">
+          <span className="tag tag-disabled">{deployment.failureStage || deployment.operation || 'unknown'}</span>
+        </td>
+        <td data-label="错误" title={deployment.errorMessage || deployment.errorCode || ''}>
+          {deployment.errorCode || deployment.errorMessage || '无'}
+        </td>
+        <td data-label="时间">{formatDate(deployment.createdAt)}</td>
+        <td data-label="追踪">
+          <button
+            aria-expanded={traceOpen}
+            className="table-action"
+            type="button"
+            onClick={() => setTraceOpen((current) => !current)}
           >
-            {owner.tag}
-          </span>
-          <div>
-            <strong>{owner.primary}</strong>
-            {owner.secondary ? <span>{owner.secondary}</span> : null}
-          </div>
-        </div>
-      </td>
-      <td data-label="操作人">
-        <div className="owner-cell">
-          <span className="tag owner-tag actor">{actor.tag}</span>
-          <div>
-            <strong>{actor.primary}</strong>
-            {actor.secondary ? <span>{actor.secondary}</span> : null}
-          </div>
-        </div>
-      </td>
-      <td data-label="阶段">
-        <span className="tag tag-disabled">{deployment.failureStage || deployment.operation || 'unknown'}</span>
-      </td>
-      <td data-label="错误" title={deployment.errorMessage || deployment.errorCode || ''}>
-        {deployment.errorCode || deployment.errorMessage || '无'}
-      </td>
-      <td data-label="时间">{formatDate(deployment.createdAt)}</td>
-    </tr>
+            {traceOpen ? <span>收起时间线</span> : <span>查看时间线</span>}
+          </button>
+        </td>
+      </tr>
+      <tr className="deployment-trace-row" hidden={!traceOpen}>
+        <td colSpan={9}>
+          <DeploymentTracePanel deploymentId={deployment.id} open={traceOpen} />
+        </td>
+      </tr>
+    </>
   );
 }
 
