@@ -19,6 +19,7 @@ import { createPublicWorkerOfficeNetGuard } from './application/deployments/ensu
 import { createRollbackOfficeNetVerification } from './application/deployments/ensure-rollback-office-net.js';
 import { createDeploymentProviderOperations } from './application/deployments/provider-operations.js';
 import { createRollbackRouteStateRead } from './application/deployments/read-rollback-route-state.js';
+import { createCommittedDeploymentReconciliation } from './application/deployments/reconcile-committed-deployment.js';
 import { createFailedDeploymentsRecovery } from './application/deployments/recover-failed-deployments.js';
 import { createDeploymentRouteSnapshotRecovery } from './application/deployments/recover-route-snapshot.js';
 import { createRollbackRouteSnapshotRecovery } from './application/deployments/recover-rollback-route-snapshot.js';
@@ -29,6 +30,7 @@ import { createDeploymentRuntimeConfigRestoration } from './application/deployme
 import { createDeploymentRuntimeConfigSnapshotValidation } from './application/deployments/validate-runtime-config-snapshot.js';
 import { createDeploySiteResolutionPort } from './application/ports/deploy-site-resolution.js';
 import { createDeploymentCleanupTasksPort } from './application/ports/deployment-cleanup.js';
+import { createDeploymentCommitReconciliationPort } from './application/ports/deployment-commit-reconciliation.js';
 import { createDeploymentCompletionPort } from './application/ports/deployment-completion.js';
 import { createDeploymentFailurePort } from './application/ports/deployment-failure.js';
 import { createDeploymentFailureRecoveryPort } from './application/ports/deployment-failure-recovery.js';
@@ -2405,48 +2407,11 @@ async function cleanupUploadedWorkerIfInactiveAndRecord(
 }
 
 async function reconcileCommittedDeployment(store, deployment, environment, env, trace = null) {
-  if (!deployment || deployment.status === 'succeeded' || deployment.status === 'failed') return deployment;
-  if (!deployment.siteId || !deployment.versionId) return deployment;
-
-  const version = await store.getSiteVersion(deployment.versionId, environment);
-  const route = await store.getRouteBySiteId(deployment.siteId, environment);
-  const routeCommitted = route?.activeVersionId === deployment.versionId;
-  const deploymentOwnsVersion = version?.deploymentId === deployment.id;
-  const rollbackCommitted = deployment.operation === 'rollback' && Boolean(version) && routeCommitted;
-  if (!routeCommitted || (!deploymentOwnsVersion && !rollbackCommitted)) {
-    return deployment;
-  }
-
-  const patch = {
-    status: 'succeeded',
-    versionId: deployment.versionId,
-    completedAt: deployment.completedAt || readNow(env),
-  };
-  const reconciliationTrace = trace || (await traceForStoredDeployment(store, deployment, environment, env));
-  try {
-    const reconciled = (await store.updateDeployment(deployment.id, patch)) || synthesizeSucceededDeployment(deployment, patch);
-    if (reconciliationTrace) {
-      await recordDeploymentStage(reconciliationTrace, {
-        stage: 'deployment_state_persist',
-        operation: 'reconcile_committed_deployment',
-        status: 'compensated',
-        diagnostics: {
-          causeClass: 'deployment_state_reconciled',
-          trafficImpact: 'new_version_active',
-        },
-      });
-    }
-    return reconciled;
-  } catch (cause) {
-    await recordDeploymentStatePersistFailure({
-      trace: reconciliationTrace,
-      env,
-      deploymentId: deployment.id,
-      operation: 'reconcile_committed_deployment',
-      cause,
-    });
-    return synthesizeSucceededDeployment(deployment, patch);
-  }
+  return createCommittedDeploymentReconciliationApplication({ store, env }).reconcile({
+    deployment,
+    environment,
+    trace,
+  });
 }
 
 async function traceForStoredDeployment(store, deployment, environment, env) {
@@ -2967,6 +2932,29 @@ function createDeploymentRecordApplication(store, env) {
   return createDeploymentRecord({
     deploymentRecords: createDeploymentRecordsPort(store),
     ids: { next: (prefix) => nextId(env, prefix) },
+  });
+}
+
+function createCommittedDeploymentReconciliationApplication({ store, env }) {
+  return createCommittedDeploymentReconciliation({
+    state: createDeploymentCommitReconciliationPort(store),
+    traces: {
+      forDeployment: (deployment, environment) => traceForStoredDeployment(store, deployment, environment, env),
+    },
+    telemetry: {
+      reconciled: (trace) =>
+        recordDeploymentStage(trace, {
+          stage: 'deployment_state_persist',
+          operation: 'reconcile_committed_deployment',
+          status: 'compensated',
+          diagnostics: {
+            causeClass: 'deployment_state_reconciled',
+            trafficImpact: 'new_version_active',
+          },
+        }),
+      persistFailed: (input) => recordDeploymentStatePersistFailure({ ...input, env }),
+    },
+    clock: { now: () => readNow(env) },
   });
 }
 
