@@ -1,0 +1,13 @@
+{
+  "name": "@xd/org-directory",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "dependencies": {
+    "@xd/pages-metadata": "workspace:*"
+  }
+}

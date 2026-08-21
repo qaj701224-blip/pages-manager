@@ -16,6 +16,24 @@ const appAliasImports = {
   message: 'app 的包别名仅供跨 app 集成测试使用；生产代码不得 import 其它 app。',
 };
 
+function relativeLayerImports(...layers) {
+  return {
+    group: layers.flatMap((layer) => Array.from({ length: 6 }, (_, index) => `${'../'.repeat(index + 1)}${layer}/**`)),
+    message: 'pages-api 分层依赖必须保持 transport -> application -> domain；infrastructure 只能通过 composition root 注入。',
+  };
+}
+
+const pagesApiDomainImports = relativeLayerImports('application', 'transport', 'infrastructure');
+const pagesApiApplicationImports = relativeLayerImports('transport', 'infrastructure');
+const pagesApiInfrastructureImports = relativeLayerImports('transport');
+
+function otherTransportLaneImports(...lanes) {
+  return {
+    group: lanes.flatMap((lane) => Array.from({ length: 4 }, (_, index) => `${'../'.repeat(index + 1)}${lane}/**`)),
+    message: 'pages-api transport lanes 不得互相 import；共享业务下沉 application，共享 HTTP helper 放 transport/shared。',
+  };
+}
+
 export default [
   {
     ignores: [
@@ -109,6 +127,93 @@ export default [
     },
     rules: {
       'pages-api/no-direct-next-id': 'error',
+    },
+  },
+
+  {
+    files: ['apps/pages-api/src/domain/**/*.js'],
+    ignores: ['apps/pages-api/src/**/*.test.js'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        { patterns: [crossAppSrcImports, relativePackagesImports, appAliasImports, pagesApiDomainImports] },
+      ],
+    },
+  },
+
+  {
+    files: ['apps/pages-api/src/application/**/*.js'],
+    ignores: ['apps/pages-api/src/**/*.test.js'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        { patterns: [crossAppSrcImports, relativePackagesImports, appAliasImports, pagesApiApplicationImports] },
+      ],
+    },
+  },
+
+  {
+    files: ['apps/pages-api/src/infrastructure/**/*.js'],
+    ignores: ['apps/pages-api/src/**/*.test.js'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        { patterns: [crossAppSrcImports, relativePackagesImports, appAliasImports, pagesApiInfrastructureImports] },
+      ],
+    },
+  },
+
+  {
+    files: ['apps/pages-api/src/transport/public/**/*.js'],
+    ignores: ['apps/pages-api/src/**/*.test.js'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            crossAppSrcImports,
+            relativePackagesImports,
+            appAliasImports,
+            otherTransportLaneImports('console', 'internal'),
+          ],
+        },
+      ],
+    },
+  },
+
+  {
+    files: ['apps/pages-api/src/transport/console/**/*.js'],
+    ignores: ['apps/pages-api/src/**/*.test.js'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            crossAppSrcImports,
+            relativePackagesImports,
+            appAliasImports,
+            otherTransportLaneImports('public', 'internal'),
+          ],
+        },
+      ],
+    },
+  },
+
+  {
+    files: ['apps/pages-api/src/transport/internal/**/*.js'],
+    ignores: ['apps/pages-api/src/**/*.test.js'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            crossAppSrcImports,
+            relativePackagesImports,
+            appAliasImports,
+            otherTransportLaneImports('public', 'console'),
+          ],
+        },
+      ],
     },
   },
 

@@ -9,12 +9,13 @@
   },
   "dependencies": {
     "@xd/browser-pages": "workspace:*",
+    "@xd/org-directory": "workspace:*",
+    "@xd/pages-metadata": "workspace:*",
     "@xd/pages-runtime-protocol": "workspace:*",
     "@xd/session-kit": "workspace:*",
     "@xd/worker-kit": "workspace:*"
   },
   "devDependencies": {
-    "@xd/pages-api": "workspace:*",
     "wrangler": "catalog:"
   }
 }

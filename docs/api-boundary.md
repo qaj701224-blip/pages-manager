@@ -29,7 +29,7 @@
 - 认证、上传协议、幂等 key、multipart payload 和轮询细节都是 CLI 内部协议，不作为用户或 AI 的手写 API。
 - 改 API 行为时，同步 handler、`apps/pages-api/src/openapi.js`、focused `node:test` 和受影响的 CLI/skill 文档。
 - 新增或修改用户可见能力时，先确认 CLI help、`apps/pages-skill/skill/SKILL.md`、`README.md`、`docs/README.md` 和本文没有互相漂移。
-- 不在公开文档中暴露发布 token、CLI access key、CLI token（仅作 legacy 兼容说明）、cookie、SSO code、session、provider、WFP、slot、dispatch namespace、Cloudflare resource id 或 runtime capability。
+- 不在公开文档中暴露发布 token、CLI access key、历史 CLI JWT（仅作拒绝行为说明）、cookie、SSO code、session、provider、WFP、slot、dispatch namespace、Cloudflare resource id 或 runtime capability。
 - 不为了方便调试把 v2 `/openapi.json` 重新作为 public route 暴露。
 
 ## Cindy Connections 断言鉴权

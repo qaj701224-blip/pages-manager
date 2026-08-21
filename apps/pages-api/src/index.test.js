@@ -5,7 +5,7 @@ import test from 'node:test';
 import worker from './index.js';
 import { createAccessKeyPlaintext, hashAccessKey } from './crypto.js';
 import { buildOpenApi } from './openapi.js';
-import { createTestPagesStore } from './test-store.js';
+import { createTestPagesStore } from '../test-support/pages-store-fixture.js';
 
 const BEARER_USR_1 = createAccessKeyPlaintext({
   environment: 'production',
@@ -833,7 +833,13 @@ test('internal hostname claim confirm and release stay on internal service host'
   assert.equal(internalConfirm.status, 200, await internalConfirm.clone().text());
   assert.equal((await store.getHostnameClaim(claim.hostname)).status, 'active');
 
-  const pendingClaim = { ...claim, hostname: 'retry.workers.xd.team', normalizedSlug: 'retry', ownerId: 'v1:production:retry' };
+  const pendingClaim = {
+    ...claim,
+    hostname: 'retry.workers.xd.team',
+    normalizedSlug: 'retry',
+    ownerId: 'v1:production:retry',
+    ownerRef: 'pages-retry',
+  };
   await store.acquireHostnameClaim(pendingClaim);
   const internalRelease = await worker.fetch(
     jsonRequest('https://pages-api.internal/.xd-pages/internal/hostname-claims/release', {

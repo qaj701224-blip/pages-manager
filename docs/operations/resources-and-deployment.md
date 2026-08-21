@@ -344,19 +344,25 @@ vars:
   IP_ALLOWLIST
   ACCESS_KEY_ACTIVE_PEPPER_ID
   ACCESS_KEY_PEPPERS
+  CLI_ACCESS_KEY_TTL_SECONDS
+  CINDY_CONNECTION_ISSUERS
+  CINDY_CONNECTION_AUDIENCE
 
 bindings:
   D1: PAGES_METADATA
-  KV: ROUTE_SNAPSHOTS
+  KV: ROUTE_SNAPSHOTS, V1_SITES
   Durable Objects: ROUTE_POINTER_LOCKS
-  service: PAGES_AUTH
-  VPC Network: XD_OFFICE_NET
+  VPC Network: XD_OFFICE_NET（配置 Tunnel ID 时）
 
 secrets:
   CF_ACCOUNT_ID
   CF_API_TOKEN
-  CLOUDFLARE_ZONE_ID
+  CF_ZONE_ID_NEW
+  SITE_SECRET_ENCRYPTION_KEY
+  WEBHOOK_URL_ENCRYPTION_KEY
+  SLACK_PAGES_ALERT_WEBHOOK_URL
   XDS_OPENAI_TOKEN
+  PAGES_V1_SITES_KV_NAMESPACE_ID（可选）
   ACCESS_KEY_PEPPER_*
 ```
 
@@ -378,7 +384,7 @@ secrets:
 
 `ACCESS_KEY_PEPPERS` 是 access key HMAC pepper registry，格式为 `pepperId:secretEnvName`，例如 `pepper_2026_06:ACCESS_KEY_PEPPER_202606`。`ACCESS_KEY_ACTIVE_PEPPER_ID` 指向当前签发新 access key 使用的 pepper id。registry 只包含 secret env 名，可以写入 wrangler template 和 workflow 接受 Git 审查；真实 pepper 值只能作为 `ACCESS_KEY_PEPPER_*` Worker secret 注入 `pages-api`，不能写进 wrangler template、GitHub vars、CLI config、`--config` 文件或文档示例。
 
-`pages-api` 不能持有 `auth_session`、`site_session` 或 `internal_worker_jwt` 的 signing secret。控制面如需校验用户态 token，只能使用 verify-only JWKS / public key，或通过 `PAGES_AUTH` service binding 完成一次性 code / session 校验；不能在 API Worker 中签发子站 session 或 router internal JWT。
+`pages-api` 不持有 `auth_session`、`site_session` 或 `internal_worker_jwt` 的 signing secret，也没有指向 `pages-auth` 的 service binding。公开 API 只接受 access key 或 Cindy connection assertion；Console BFF 由 `pages-console` 验证 session 后，通过 `pages-api.internal` service binding 转发受控身份 headers。`pages-api` 不能签发子站 session 或 router internal JWT。
 
 #### pages-auth
 
@@ -398,6 +404,8 @@ vars:
 bindings:
   D1: PAGES_METADATA
   Durable Objects: OAUTH_STATES, CLI_LOGINS, AUTH_SESSIONS
+  service: PAGES_API
+  VPC Network: XD_OFFICE_NET（配置 Tunnel ID 时）
 
 secrets:
   SSO_CLIENT_SECRET
@@ -406,14 +414,13 @@ secrets:
 
 production / staging 的 `SSO_AUTHORIZATION_URL`、`SSO_TOKEN_URL`、`SSO_PROFILE_URL` 和 `SSO_CLIENT_ID` 是稳定、非 secret 的 SSO 应用拓扑配置，当前直接写在 `pages-auth` wrangler template 中并通过 PR 审查：production client id 为 `xd_pages`，staging client id 为 `xd_pages_staging`。`SSO_CLIENT_SECRET` 必须通过 secret 注入，不能写入 template、GitHub Vars、文档示例、CLI config 或 `--config` 文件。`PAGES_SESSION_JWT_KEYS` 是 `kid:alg:secretEnvName` registry，真实密钥值只存在于对应 secret env。
 
-SSO callback 在签发 `auth_session`、`site_session` code 或 CLI token 之前，必须先成功换取 SSO profile，再写入共享 D1 `PAGES_METADATA` 中的 `users` 权威记录，并以写入后的权威用户状态决定是否签发 session。SSO profile 成功返回代表用户已通过 `xd_pages` / `xd_pages_staging` 应用授权；XD Cell 不再用本地邮箱域或 `xindong` 字符串二次缩窄允许人群。即使 SSO profile 显示用户已 disabled / left，也要先同步并 bump `sessionVersion`，再返回 403。若 D1 中用户已经是 `disabled` / `left`，一次并发或滞后的 `active` / `unknown` profile 不能把用户恢复为 active；恢复 active 需要后续明确的组织目录同步或管理员流程。这样 `xd-cell login` 成功后，控制面 `users` 表已经有 active 用户状态；用户离职或禁用后，CLI access key 也会被 API 层的用户状态与 `sessionVersion` 校验拒绝。
+SSO callback 在签发 `auth_session`、`site_session` code 或确认 CLI login 之前，必须先成功换取 SSO profile，再写入共享 D1 `PAGES_METADATA` 中的 `users` 权威记录，并以写入后的权威用户状态决定是否签发 session。SSO profile 成功返回代表用户已通过 `xd_pages` / `xd_pages_staging` 应用授权；XD Cell 不再用本地邮箱域或 `xindong` 字符串二次缩窄允许人群。即使 SSO profile 显示用户已 disabled / left，也要先同步并 bump `sessionVersion`，再返回 403。若 D1 中用户已经是 `disabled` / `left`，一次并发或滞后的 `active` / `unknown` profile 不能把用户恢复为 active；恢复 active 需要后续明确的组织目录同步或管理员流程。这样 `xd-cell login` 成功后，控制面 `users` 表已经有 active 用户状态；用户离职或禁用后，CLI access key 也会被 API 层的用户状态与 `sessionVersion` 校验拒绝。
 
 `xd-cell login` 的凭证由 pages-auth 在 CLI login poll 确认后，经 `PAGES_API` service binding 调 pages-api 内部端点 `/.xd-pages/internal/cli-access-keys` 换发一把 `issued_source='cli_login'` 的个人 access key（scope `*`、默认 TTL 1 年、`CLI_ACCESS_KEY_TTL_SECONDS=0` 表示永不过期），poll 响应契约保持不变，旧版 CLI 无感。因此 v2 的 service binding 依赖关系如下：
 
-- 稳态方向是单向 `pages-auth -> pages-api`（换发 access key）。
-- 过渡期内 `pages-api -> pages-auth` 仍保留一条反向 binding，仅用于校验尚未过期的 legacy CLI token JWT（`authenticateCliToken`）；`pages-api` 不能持有 session 签发或验签用的私密 signing secret。等 legacy JWT 全部过期、删除 `authenticateCliToken` 分支后，必须一并移除 `pages-api` 的 `PAGES_AUTH` binding，使拓扑回到无环。
+- 方向是单向 `pages-auth -> pages-api`（换发 access key），`pages-api` 不反向依赖 `pages-auth`。
+- 非 access-key / 非 Cindy assertion 的 Bearer（包括历史 CLI JWT）由 `pages-api` 直接拒绝为 `CLI_TOKEN_INVALID`，提示重新登录。
 - 部署顺序：`pages-api` 必须先于 `pages-auth` 部署，保证 `/.xd-pages/internal/cli-access-keys` 端点先在线，否则 `DEPLOY_COMPONENT=all` 的窗口期内 `xd-cell login` 会返回 502。`deploy-pages-v2.yml` / `deploy-pages-v2-staging.yml` 已按此顺序编排。
-- 全新环境首次 bootstrap：由于过渡期 `pages-api <-> pages-auth` 互相持有 binding 形成环，无法一次拉起。首次部署需分两遍——先部署去掉互相 binding 的最小版本建立两个 service，再补齐 binding 重新部署；或先部署 `pages-api`（此时其 `PAGES_AUTH` binding 目标已存在于历史环境）。既有环境增量部署不受影响，因为两个 service 都已存在。
 
 #### pages-router
 
@@ -572,7 +579,7 @@ Cloudflare account id、zone id、D1/KV namespace id 不是凭证，v2 workflow 
 | `PAGES_SESSION_JWT_SECRET_*`          | secret  | `pages-auth` / `pages-router` runtime | 必须覆盖 `PAGES_SESSION_JWT_KEYS` registry 中每个 `secretEnvName` |
 | `PAGES_CAP_JWT_SECRET_*`              | secret  | `pages-router` / `pages-kv-gateway` runtime | 必须覆盖 `PAGES_CAP_JWT_KEYS` registry 中每个 `secretEnvName` |
 
-v2 平台部署使用独立 workflow：`deploy-pages-v2.yml` 在 GitHub Actions 中显示为 `Deploy XD Cell Production`，只允许 `workflow_dispatch` 手动部署 production；`deploy-pages-v2-staging.yml` 显示为 `Deploy XD Cell Staging`，支持手动部署，也可以在 `staging` 分支的 v2 app / package / render script 相关文件变更时自动部署。它们只处理 v2 系统 Worker：`pages-api`、`pages-auth`、`pages-router`、`pages-kv-gateway`、`pages-console`，不部署 v1 `apps/server`、ACK、用户站点或发布执行器。首次 `component=all` 部署的依赖顺序必须是：先执行 D1 migrations，再部署 `pages-auth`，再部署带 `PAGES_AUTH` service binding 的 `pages-api`，随后部署 `pages-kv-gateway`，最后 provision slot 并部署 `pages-router`，并在系统 Worker 可用后构建部署 `pages-console`。
+v2 平台部署使用独立 workflow：`deploy-pages-v2.yml` 在 GitHub Actions 中显示为 `Deploy XD Cell Production`，只允许 `workflow_dispatch` 手动部署 production；`deploy-pages-v2-staging.yml` 显示为 `Deploy XD Cell Staging`，支持手动部署，也可以在 `staging` 分支的 v2 app / package / render script 相关文件变更时自动部署。它们只处理 v2 系统 Worker：`pages-api`、`pages-auth`、`pages-router`、`pages-kv-gateway`、`pages-console`，不部署 v1 `apps/server`、ACK、用户站点或发布执行器。`component=all` 的依赖顺序必须是：先执行 D1 migrations，再部署 `pages-api`，随后部署持有 `PAGES_API` service binding 的 `pages-auth`，再部署 `pages-kv-gateway`，最后 provision slot 并部署 `pages-router`，并在系统 Worker 可用后构建部署 `pages-console`。
 
 v2 runtime secret 注入使用 `scripts/put-pages-v2-secrets.sh <app>`。它会在部署前用 `DRY_RUN=1` 校验 registry 和必需 secret 是否齐全，部署后再写入 Worker secret。`pages-api` 注入 `CF_ACCOUNT_ID`、`CF_API_TOKEN`、`SLACK_PAGES_ALERT_WEBHOOK_URL`、`SITE_SECRET_ENCRYPTION_KEY`、`WEBHOOK_URL_ENCRYPTION_KEY`、`XDS_OPENAI_TOKEN` 和 `ACCESS_KEY_PEPPER_*`；如果配置了 `PAGES_V1_SITES_KV_NAMESPACE_ID`，也会作为可选 secret 注入，清空时脚本会删除 Worker 上的旧值；已废弃的 `PAGES_V1_ZONE_ID` 会被脚本持续清理残留。`pages-auth` 注入 `SSO_CLIENT_SECRET`、`XDS_OPENAI_TOKEN` 和 `PAGES_SESSION_JWT_SECRET_*`；`pages-router` 注入 `PAGES_SESSION_JWT_SECRET_*` 和 `PAGES_CAP_JWT_SECRET_*`；`pages-kv-gateway` 只注入 `PAGES_CAP_JWT_SECRET_*`；`pages-console` 注入 `PAGES_SESSION_JWT_SECRET_*`。
 
@@ -637,7 +644,7 @@ staging 首次部署前必须完成：
 6. 手动或由 `staging` 分支触发 XD Cell staging 部署 workflow（当前 workflow 文件为 `deploy-pages-v2-staging.yml`），先用 `component=all` 验证四个系统 Worker 一起部署；单组件部署只用于已确认依赖兼容的修复。
 7. workflow 中四个 `DRY_RUN=1 scripts/put-pages-v2-secrets.sh ...` 步骤先通过，再执行真正 secret 注入。
 8. `https://api-staging.pages.xd.team/.xd-pages/health` 返回 staging `pages-api` 状态，且 `/skill.md`、`/readme.md` 只返回 staging API/auth/domain，不出现 production 地址，不把 v2 新建子站误描述为 `pages.xd.team` 默认后缀。
-9. `xd-cell login --env staging` 能完成 SSO、device code 手动确认和 CLI token 保存。
+9. `xd-cell login --env staging` 能完成 SSO、device code 手动确认和 CLI access key 保存。
 10. `xd-cell deploy --env staging` 至少验证 static、SPA 和 custom `.js/.mjs` Worker 三类 artifact；`.ts` Worker 入口在未接入 bundler 前必须 fail closed。
 11. 验证 `xd-cell secrets put/delete <site> <name>`、带 `vars` 的 Worker deploy、后续不传 `vars` 的 Worker deploy 沿用站点级 vars、显式空 `vars` 的 Worker deploy 会清空站点级 vars；后续不传 secret 的 deploy 仍能注入站点级 enabled secrets，删除 secret 后下一次 Worker deploy 不再注入。
 12. staging 子站访问验证 internal/public exposure × `internal`(anonymous)、`org`、`acl`、`owner`、`disabled`；确认只有可信 public snapshot 绕过 IP，public runtime 跨源请求被拒绝，Public Worker 无 `XD_OFFICE_NET`，关闭 public 不即时恢复 binding，后续 internal deploy 才恢复。

@@ -1,11 +1,11 @@
+import { readLegacyCloudflareConfig } from '../infrastructure/config/legacy-config.js';
+
 const CLOUDFLARE_API_BASE = 'https://api.cloudflare.com/client/v4';
 
 export function createLegacyV1CloudflareClient(env) {
-  const token = String(env.CF_API_TOKEN || '').trim();
-  const accountId = String(env.CF_ACCOUNT_ID || '').trim();
-  const zoneId = String(env.CF_ZONE_ID_NEW || '').trim();
-  const fetchImpl = env.fetch || globalThis.fetch;
-  if (!token || !accountId || !zoneId || typeof fetchImpl !== 'function') throw cloudflareRequestError();
+  const config = readLegacyCloudflareConfig(env);
+  if (!config) throw cloudflareRequestError();
+  const { apiToken: token, fetchImpl } = config;
 
   return {
     async listRoutes({ zoneId: requestedZoneId }) {

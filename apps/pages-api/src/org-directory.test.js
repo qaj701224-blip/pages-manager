@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import worker from './index.js';
 import { fetchOrgUsersByEmail, normalizeXdsUserItem, signXdsRequest } from './org-directory.js';
-import { createTestPagesStore } from './test-store.js';
+import { createTestPagesStore } from '../test-support/pages-store-fixture.js';
 
 test('signXdsRequest signs timestamp, nonce, and token without returning the token', async () => {
   const signed = await signXdsRequest({

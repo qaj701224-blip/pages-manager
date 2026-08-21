@@ -5,6 +5,7 @@ import {
 } from './connection-assertion.js';
 import { constantTimeEqualHex, hashAccessKey, parseAccessKeyPlaintext } from './crypto.js';
 import { nextId } from './id.js';
+import { readAccessKeyPepper } from './infrastructure/config/identity-config.js';
 
 const CONNECTION_ACTOR_SCOPES = ['deploy:site', 'read:site', 'rollback:site'];
 
@@ -314,21 +315,6 @@ function readBearerToken(request) {
   const authorization = request.headers.get('Authorization') || '';
   const match = authorization.match(/^Bearer ([A-Za-z0-9._~+/-]+)$/);
   return match ? match[1] : null;
-}
-
-function readAccessKeyPepper(env, pepperId) {
-  const registry = String(env?.ACCESS_KEY_PEPPERS || '').trim();
-  if (!registry) throw new Error('Access key pepper registry is required');
-
-  for (const entry of registry.split(',')) {
-    const [entryPepperId, secretEnvName] = entry.split(':').map((part) => part.trim());
-    if (entryPepperId === pepperId) {
-      const secret = env[secretEnvName];
-      if (typeof secret !== 'string' || secret === '') throw new Error('Access key pepper secret is invalid');
-      return secret;
-    }
-  }
-  throw new Error('Access key pepper is unknown');
 }
 
 function authError(code, message, status, action) {

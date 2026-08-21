@@ -3,6 +3,7 @@ import { isConsoleBffRequest, requireConsoleUserSession } from './console-auth.j
 import { createAccessKeyPlaintext, hashAccessKey } from './crypto.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
 import { nextId } from './id.js';
+import { readActiveAccessKeyPepper, readCliAccessKeyTtlSeconds } from './infrastructure/config/identity-config.js';
 
 const ALLOWED_SCOPES = new Set(['deploy:site', 'read:site', 'rollback:site']);
 const DEFAULT_EXPIRY_MONTHS = 3;
@@ -244,8 +245,6 @@ export async function createAccessKeyMaterial(env, config, input) {
   };
 }
 
-const DEFAULT_CLI_ACCESS_KEY_TTL_SECONDS = 31_536_000;
-
 export async function issueCliLoginAccessKey(env, environment, store, { userId, cliLoginId, sessionVersion, now }) {
   const ttlSeconds = readCliAccessKeyTtlSeconds(env);
   const expiresAt = ttlSeconds === 0 ? null : new Date((now + ttlSeconds) * 1000).toISOString();
@@ -263,15 +262,6 @@ export async function issueCliLoginAccessKey(env, environment, store, { userId, 
   });
   const accessKey = await store.createAccessKey(record);
   return { plaintext, accessKey };
-}
-
-function readCliAccessKeyTtlSeconds(env) {
-  const configured = env?.CLI_ACCESS_KEY_TTL_SECONDS;
-  const raw = typeof configured === 'string' ? configured.trim() : configured;
-  if (raw === undefined || raw === '') return DEFAULT_CLI_ACCESS_KEY_TTL_SECONDS;
-  const parsed = Number(raw);
-  if (!Number.isInteger(parsed) || parsed < 0) return DEFAULT_CLI_ACCESS_KEY_TTL_SECONDS;
-  return parsed;
 }
 
 function isUserOwnedAccessKey(accessKey, userId) {
@@ -336,22 +326,6 @@ async function requireTeamAdmin(store, config, session, teamId) {
     return jsonError('TEAM_ADMIN_REQUIRED', 'Team admin role required.', 403, 'Ask a team admin to perform this action.');
   }
   return { team, member };
-}
-
-function readActiveAccessKeyPepper(env) {
-  const activePepperId = String(env?.ACCESS_KEY_ACTIVE_PEPPER_ID || '').trim();
-  if (!activePepperId) throw new Error('ACCESS_KEY_ACTIVE_PEPPER_ID is required');
-
-  const registry = String(env?.ACCESS_KEY_PEPPERS || '').trim();
-  for (const entry of registry.split(',')) {
-    const [pepperId, secretEnvName] = entry.split(':').map((part) => part.trim());
-    if (pepperId === activePepperId) {
-      const secret = env[secretEnvName];
-      if (typeof secret !== 'string' || secret === '') throw new Error('Access key pepper secret is invalid');
-      return { id: pepperId, secret };
-    }
-  }
-  throw new Error('Active access key pepper is not present in registry');
 }
 
 function validateScopes(scopes) {

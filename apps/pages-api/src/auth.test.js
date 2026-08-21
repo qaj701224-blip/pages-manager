@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { authenticateApiRequest } from './auth.js';
 import { createAccessKeyPlaintext, hashAccessKey } from './crypto.js';
-import { createTestPagesStore } from './test-store.js';
+import { createTestPagesStore } from '../test-support/pages-store-fixture.js';
 
 const config = {
   environment: 'production',

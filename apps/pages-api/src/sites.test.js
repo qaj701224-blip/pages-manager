@@ -4,8 +4,16 @@ import test from 'node:test';
 import { createAccessKeyPlaintext, hashAccessKey } from './crypto.js';
 import worker from './index.js';
 import { markRuntimeConfigError } from './runtime-config-diagnostics.js';
-import { syncActiveWfpPlainTextBindings, syncActiveWfpSecret } from './sites.js';
-import { createTestPagesStore } from './test-store.js';
+import {
+  syncActiveWfpPlainTextBindings,
+  syncActiveWfpSecret,
+} from './transport/shared/runtime-config-application.js';
+import {
+  addTestSiteMember,
+  createTestPagesStore,
+  updateTestRoute,
+  updateTestSitePolicy,
+} from '../test-support/pages-store-fixture.js';
 import { seedLifecycleWebhook, TEST_WEBHOOK_URL_ENCRYPTION_KEY } from './lifecycle-webhook-test-fixtures.js';
 
 const BEARER_USR_1 = createAccessKeyPlaintext({
@@ -673,7 +681,7 @@ test('site delete rejects read-only access keys and non-owner members', async ()
     routeId: 'route_1',
     hostname: 'guide.workers.xd.team',
   });
-  await store.addSiteMember({
+  await addTestSiteMember(store, {
     siteId: 'site_1',
     userId: 'usr_2',
     role: 'viewer',
@@ -1149,8 +1157,8 @@ test('regular visibility update uses the site lease and preserves an existing pu
     hostname: 'guide.pages.xd.team',
   });
   const initialRoute = await activateSite(store, site.id, { visibility: 'org' });
-  store.routes.get(initialRoute.id).exposure = 'public';
-  store.sites.get(site.id).defaultExposure = 'public';
+  await updateTestRoute(store, initialRoute.id, { exposure: 'public' });
+  await updateTestSitePolicy(store, site.id, { defaultExposure: 'public' });
   const originalWithSiteCommitLock = store.withSiteCommitLock.bind(store);
   let lockCalls = 0;
   store.withSiteCommitLock = async (...args) => {
@@ -1218,7 +1226,7 @@ test('regular site visibility API rejects explicit exposure changes', async () =
     hostname: 'guide.pages.xd.team',
   });
   const route = await activateSite(store, 'site_1', { visibility: 'org' });
-  store.routes.get(route.id).exposure = 'public';
+  await updateTestRoute(store, route.id, { exposure: 'public' });
   const snapshots = createSnapshotStore();
 
   const response = await worker.fetch(
@@ -1449,21 +1457,15 @@ test('secrets put reports the shared runtime binding quota without exposing the 
     routeId: 'route_1',
     hostname: 'guide.pages.xd.team',
   });
-  for (let index = 0; index < 64; index += 1) {
-    const name = `VAR_${String(index).padStart(2, '0')}`;
-    store.siteVars.set(`production:site_1:${name}`, {
-      id: `var_${index}`,
-      environment: 'production',
-      siteId: 'site_1',
-      name,
-      value: String(index),
-      revision: 1,
-      createdBy: 'usr_1',
-      createdAt: '2026-06-15T00:00:00.000Z',
-      updatedAt: '2026-06-15T00:00:00.000Z',
-      deletedAt: null,
-    });
-  }
+  await store.replaceSiteVars({
+    environment: 'production',
+    siteId: 'site_1',
+    vars: Object.fromEntries(
+      Array.from({ length: 64 }, (_, index) => [`VAR_${String(index).padStart(2, '0')}`, String(index)])
+    ),
+    actorId: 'usr_1',
+    createId: (name) => `var_${name.toLowerCase()}`,
+  });
 
   const lines = [];
   const environment = testEnv(store, { logRuntimeConfigFailure: (line) => lines.push(line) });
@@ -3235,17 +3237,13 @@ test('runtime vars map shared binding quotas and store revision conflicts to sta
   });
   for (let index = 0; index < 64; index += 1) {
     const name = `SECRET_${String(index).padStart(2, '0')}`;
-    store.siteSecrets.set(`production:site_1:${name}`, {
+    await store.putSiteSecret({
       id: `sec_${index}`,
       environment: 'production',
       siteId: 'site_1',
       name,
       value: `value-${index}`,
-      revision: 1,
-      createdBy: 'usr_1',
-      createdAt: '2026-06-15T00:00:00.000Z',
-      updatedAt: '2026-06-15T00:00:00.000Z',
-      deletedAt: null,
+      actorId: 'usr_1',
     });
   }
 
@@ -3334,19 +3332,21 @@ test('replaces site ACL with allow-only OR entries and rejects unsupported polic
 
   assert.equal(put.status, 200);
   assert.deepEqual(
-    (await put.json()).aclEntries.map(({ subjectType, subjectValue, effect }) => ({ subjectType, subjectValue, effect })),
+    sortAclEntries(
+      (await put.json()).aclEntries.map(({ subjectType, subjectValue, effect }) => ({ subjectType, subjectValue, effect }))
+    ),
     [
-      { subjectType: 'email', subjectValue: 'bob@example.com', effect: 'allow' },
-      { subjectType: 'email', subjectValue: 'alice@example.com', effect: 'allow' },
       { subjectType: 'department', subjectValue: '心动/技术平台部', effect: 'allow' },
+      { subjectType: 'email', subjectValue: 'alice@example.com', effect: 'allow' },
+      { subjectType: 'email', subjectValue: 'bob@example.com', effect: 'allow' },
     ]
   );
   assert.deepEqual(
-    (await get.json()).aclEntries.map(({ subjectType, subjectValue }) => ({ subjectType, subjectValue })),
+    sortAclEntries((await get.json()).aclEntries.map(({ subjectType, subjectValue }) => ({ subjectType, subjectValue }))),
     [
-      { subjectType: 'email', subjectValue: 'bob@example.com' },
-      { subjectType: 'email', subjectValue: 'alice@example.com' },
       { subjectType: 'department', subjectValue: '心动/技术平台部' },
+      { subjectType: 'email', subjectValue: 'alice@example.com' },
+      { subjectType: 'email', subjectValue: 'bob@example.com' },
     ]
   );
   assert.equal((await store.getRouteBySiteId('site_1')).policyVersion, 2);
@@ -3375,8 +3375,8 @@ test('regular ACL replacement uses the site lease and preserves public exposure 
     hostname: 'guide.pages.xd.team',
   });
   const initialRoute = await activateSite(store, site.id, { visibility: 'acl' });
-  store.routes.get(initialRoute.id).exposure = 'public';
-  store.sites.get(site.id).defaultExposure = 'public';
+  await updateTestRoute(store, initialRoute.id, { exposure: 'public' });
+  await updateTestSitePolicy(store, site.id, { defaultExposure: 'public' });
   const originalWithSiteCommitLock = store.withSiteCommitLock.bind(store);
   let lockCalls = 0;
   store.withSiteCommitLock = async (...args) => {
@@ -3447,11 +3447,11 @@ test('grants and revokes site ACL entries incrementally', async () => {
 
   assert.equal(grant.status, 200);
   assert.deepEqual(
-    (await grant.json()).aclEntries.map(({ subjectType, subjectValue }) => ({ subjectType, subjectValue })),
+    sortAclEntries((await grant.json()).aclEntries.map(({ subjectType, subjectValue }) => ({ subjectType, subjectValue }))),
     [
+      { subjectType: 'department', subjectValue: '心动/技术平台部' },
       { subjectType: 'email', subjectValue: 'alice@example.com' },
       { subjectType: 'email', subjectValue: 'bob@example.com' },
-      { subjectType: 'department', subjectValue: '心动/技术平台部' },
     ]
   );
   assert.equal(revoke.status, 200);
@@ -3461,6 +3461,45 @@ test('grants and revokes site ACL entries incrementally', async () => {
   );
   assert.equal((await store.getRouteBySiteId('site_1')).policyVersion, 4);
   assert.equal(snapshots.read('production:route_pointer:guide.pages.xd.team').policyVersion, 4);
+});
+
+test('incremental ACL grants reject a merged collection above the platform limit', async () => {
+  const store = await createSeededStore();
+  const site = await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'acl',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  await store.replaceSiteAclEntries(
+    site.id,
+    Array.from({ length: 200 }, (_, index) => ({
+      id: `acl_${index}`,
+      subjectType: 'email',
+      subjectValue: `reader-${index}@example.com`,
+      accessRole: 'viewer',
+      effect: 'allow',
+    })),
+    { createdBy: 'usr_1', updatedAt: '2026-06-15T00:00:00.000Z' },
+    'production'
+  );
+  const route = await activateSite(store, site.id, { visibility: 'acl' });
+
+  const response = await worker.fetch(
+    jsonMethodRequest('POST', 'https://api.pages.xd.team/.xd-pages/api/sites/site_1/acl/entries', {
+      entries: [{ subjectType: 'email', subjectValue: 'overflow@example.com' }],
+    }),
+    testEnv(store, { ROUTE_SNAPSHOTS: createSnapshotStore() })
+  );
+
+  assert.equal(response.status, 400, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'ACL_ENTRIES_INVALID');
+  assert.equal((await store.listSiteAclEntries(site.id)).length, 200);
+  assert.equal((await store.getRouteBySiteId(site.id)).policyVersion, route.policyVersion);
 });
 
 test('allows deploy-capable access keys to read ACL entries for manageable sites', async () => {
@@ -4056,6 +4095,12 @@ async function seedAccessKey(store, keyId, scopes, siteId = 'site_1', options = 
     expiresAt: '2026-07-15T00:00:00.000Z',
   });
   return plaintext;
+}
+
+function sortAclEntries(entries) {
+  return entries.sort((left, right) =>
+    `${left.subjectType}:${left.subjectValue}`.localeCompare(`${right.subjectType}:${right.subjectValue}`)
+  );
 }
 
 function testEnv(store, overrides = {}) {

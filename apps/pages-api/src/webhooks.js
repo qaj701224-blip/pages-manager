@@ -1,6 +1,7 @@
 import { sha256HexForText } from './crypto.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
 import { nextId } from './id.js';
+import { readWebhookEncryptionConfig } from './infrastructure/config/integration-config.js';
 import { assertSafeWebhookUrl, dispatchWebhook, nextRetryAt } from './webhook-dispatcher.js';
 import {
   buildStandardWebhookPayload,
@@ -439,9 +440,7 @@ function methodNotAllowed() {
 }
 
 function readWebhookUrlEncryptionKey(env) {
-  const key = env.WEBHOOK_URL_ENCRYPTION_KEY;
-  if (typeof key !== 'string' || !key) throw new Error('WEBHOOK_URL_ENCRYPTION_KEY_REQUIRED');
-  return key;
+  return readWebhookEncryptionConfig(env).encryptionKey;
 }
 
 function isWebhookUrlConflict(error) {

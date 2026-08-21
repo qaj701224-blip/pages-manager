@@ -6,9 +6,15 @@ import test from 'node:test';
 import { WfpApiError } from '@xd/wfp-client';
 import worker from './index.js';
 import { createAccessKeyPlaintext, hashAccessKey } from './crypto.js';
-import { ensurePublicWorkerOfficeNetAbsent } from './deployments.js';
+import { ensurePublicWorkerOfficeNetAbsent } from './transport/shared/public-office-net-application.js';
 import { buildRouteSnapshot, RoutePointerDO, writeRouteSnapshot } from './route-snapshot.js';
-import { createTestPagesStore } from './test-store.js';
+import {
+  addTestSiteMember,
+  createTestPagesStore,
+  updateTestDeployment,
+  updateTestSite,
+  updateTestSiteVersion,
+} from '../test-support/pages-store-fixture.js';
 import { seedLifecycleWebhook, TEST_WEBHOOK_URL_ENCRYPTION_KEY } from './lifecycle-webhook-test-fixtures.js';
 
 const BEARER_USR_1 = createAccessKeyPlaintext({
@@ -1577,7 +1583,10 @@ test('successful deployments deliver site.deployed webhooks for matching subscri
   assert.equal(payload.site.hostname, 'guide.pages.xd.team');
   assert.equal(payload.deployment.id, 'dep_1');
   assert.equal(payload.deployment.status, 'succeeded');
-  const deliveries = await store.listWebhookDeliveries({ environment: 'production', subscriptionId: 'wh_1' });
+  const deliveries = await store.listWebhookDeliveries({
+    environment: 'production',
+    subscriptionId: 'wh_1',
+  });
   assert.equal(deliveries.length, 1);
   assert.equal(deliveries[0].deliveryStatus, 'succeeded');
   assert.equal(deliveries[0].eventType, 'site.deployed');
@@ -1643,6 +1652,68 @@ test('first persisted deployment failure delivers site.failed with safe failure 
   assert.equal(replay.status, 200, await replay.clone().text());
   assert.equal((await replay.json()).deployment.status, 'failed');
   assert.equal(requests.length, 1);
+});
+
+test('failed deployment schedules site.failed delivery with waitUntil without blocking the response', async () => {
+  const store = await createSeededStore();
+  await seedLifecycleWebhook(store, 'site.failed');
+  let releaseWebhook;
+  const waitUntilPromises = [];
+  const env = testEnv(store, createSnapshotStore(), {
+    WEBHOOK_URL_ENCRYPTION_KEY: TEST_WEBHOOK_URL_ENCRYPTION_KEY,
+    resolveWebhookHost: async () => ['8.8.8.8'],
+    WEBHOOK_FETCH: async () =>
+      new Promise((resolve) => {
+        releaseWebhook = () => resolve(new Response('ok', { status: 200 }));
+      }),
+    WFP_PROVIDER: {
+      upload: async () => {
+        throw new Error('upload failed');
+      },
+      verify: async () => assert.fail('verify must not run'),
+    },
+  });
+
+  const responsePromise = worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'failed_webhook_wait_until',
+    }),
+    env,
+    {
+      waitUntil(promise) {
+        waitUntilPromises.push(promise);
+      },
+    }
+  );
+  const earlyResult = await Promise.race([
+    responsePromise.then(() => 'response'),
+    new Promise((resolve) => setTimeout(() => resolve('blocked'), 20)),
+  ]);
+  if (earlyResult === 'blocked') {
+    for (let attempt = 0; attempt < 10 && !releaseWebhook; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    releaseWebhook?.();
+  }
+  const response = await responsePromise;
+
+  assert.equal(earlyResult, 'response');
+  assert.equal(response.status, 502, await response.clone().text());
+  assert.equal(waitUntilPromises.length, 1);
+  if (!releaseWebhook) {
+    for (let attempt = 0; attempt < 10 && !releaseWebhook; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+  assert.equal(typeof releaseWebhook, 'function');
+  releaseWebhook();
+  await waitUntilPromises[0];
+  const deliveries = await store.listWebhookDeliveries({
+    environment: 'production',
+    subscriptionId: 'wh_site_failed',
+  });
+  assert.equal(deliveries[0].deliveryStatus, 'succeeded');
+  assert.equal(deliveries[0].eventType, 'site.failed');
 });
 
 test('team-owned deployments include team fields in webhook payloads', async () => {
@@ -2135,7 +2206,7 @@ test('accepts v2 publishPlan multipart metadata and passes resolved decision to 
 
 test('site normal worker override no longer diverts new deployments away from WFP', async () => {
   const store = await createSeededStore();
-  store.sites.get('site_1').executionModeOverride = 'normal-worker-slot';
+  await updateTestSite(store, 'site_1', { executionModeOverride: 'normal-worker-slot' });
   await store.createWorkerSlot({
     id: 'slot_production_007',
     environment: 'production',
@@ -2542,6 +2613,7 @@ test('assets-only deploys ignore vars metadata without syncing site vars', async
     actorId: 'usr_1',
     updatedAt: '2026-06-15T00:00:00.000Z',
   });
+  const varsBeforeDeployment = await store.listEnabledSiteVars('production', 'site_1');
   const uploads = [];
   const env = testEnv(store, createSnapshotStore(), {
     WFP_PROVIDER: {
@@ -2567,20 +2639,7 @@ test('assets-only deploys ignore vars metadata without syncing site vars', async
 
   assert.equal(response.status, 201, await response.clone().text());
   assert.deepEqual(uploads, [{ vars: {}, secrets: [] }]);
-  assert.deepEqual(await store.listEnabledSiteVars('production', 'site_1'), [
-    {
-      id: 'var_1',
-      environment: 'production',
-      siteId: 'site_1',
-      name: 'FEATURE_FLAG',
-      value: 'on',
-      revision: 1,
-      createdBy: 'usr_1',
-      createdAt: '2026-06-15T00:00:00.000Z',
-      updatedAt: '2026-06-15T00:00:00.000Z',
-      deletedAt: null,
-    },
-  ]);
+  assert.deepEqual(await store.listEnabledSiteVars('production', 'site_1'), varsBeforeDeployment);
   const version = await store.getSiteVersion('ver_1');
   assert.deepEqual(version.varNamesJson, []);
   assert.deepEqual(version.runtimeConfigSnapshotJson, { vars: [], secrets: [] });
@@ -2735,8 +2794,28 @@ test('deployment fails closed when runtime config hash pepper is unavailable', a
   );
 
   assert.equal(response.status, 503, await response.clone().text());
-  assert.equal((await response.json()).error.code, 'RUNTIME_CONFIG_UNSUPPORTED');
+  const body = await response.json();
+  assert.equal(body.error.code, 'RUNTIME_CONFIG_UNSUPPORTED');
+  assert.equal(body.error.action, 'Check runtime configuration and retry with a new Idempotency-Key.');
   assert.deepEqual(uploads, []);
+  assert.equal(await store.getSiteVersion('ver_1'), null);
+});
+
+test('deployment reports retry-later when runtime config Store capabilities are unavailable', async () => {
+  const store = await createSeededStore();
+  store.listEnabledSiteVars = undefined;
+  const response = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'runtime_config_store_capability_missing',
+    }),
+    testEnv(store, createSnapshotStore())
+  );
+
+  assert.equal(response.status, 503, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.error.code, 'RUNTIME_CONFIG_UNSUPPORTED');
+  assert.equal(body.error.action, 'Retry later.');
+  assert.equal((await store.getDeployment('dep_1')).status, 'failed');
   assert.equal(await store.getSiteVersion('ver_1'), null);
 });
 
@@ -2782,6 +2861,41 @@ test('deployment runtime snapshot hashes use the active access-key pepper when e
     version.runtimeConfigSnapshotJson.secrets[0].valueHash,
     await hashAccessKey('xd-pages-runtime-secret-v1\0API_TOKEN\0secret-value', 'old-pepper')
   );
+});
+
+test('deployment fails closed when the runtime config snapshot authority cannot be read', async () => {
+  const store = await createSeededStore();
+  const originalListEnabledSiteVars = store.listEnabledSiteVars.bind(store);
+  let reads = 0;
+  store.listEnabledSiteVars = async (...args) => {
+    reads += 1;
+    if (reads === 2) throw new Error('snapshot authority unavailable');
+    return originalListEnabledSiteVars(...args);
+  };
+  const uploads = [];
+  const response = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'runtime_snapshot_authority_unavailable',
+    }),
+    testEnv(store, createSnapshotStore(), {
+      WFP_PROVIDER: {
+        upload: async () => {
+          uploads.push('upload');
+          return { artifactRef: 'wfp://unexpected' };
+        },
+        verify: async () => ({ ok: true }),
+      },
+    })
+  );
+
+  assert.equal(response.status, 503, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.error.code, 'RUNTIME_CONFIG_UNSUPPORTED');
+  assert.equal(body.error.action, 'Check runtime configuration and retry with a new Idempotency-Key.');
+  assert.deepEqual(uploads, []);
+  const deployment = await store.getDeployment('dep_1');
+  assert.equal(deployment.status, 'failed');
+  assert.equal(deployment.failureStage, 'runtime_config_snapshot');
 });
 
 test('deployment fails closed when site secrets change before provider upload', async () => {
@@ -3250,6 +3364,7 @@ test('deployments reject runtime binding quotas before provider upload', async (
 
 test('secrets API stores site-level secrets and delete disables future deployments without listing values', async () => {
   const store = await createSeededStore();
+  const env = testEnv(store, createSnapshotStore());
   const put = await worker.fetch(
     jsonRequest(
       'https://api.pages.xd.team/.xd-pages/api/sites/guide/secrets',
@@ -3259,7 +3374,7 @@ test('secrets API stores site-level secrets and delete disables future deploymen
       },
       { method: 'PUT' }
     ),
-    testEnv(store, createSnapshotStore())
+    env
   );
   const del = await worker.fetch(
     jsonRequest(
@@ -3269,11 +3384,11 @@ test('secrets API stores site-level secrets and delete disables future deploymen
       },
       { method: 'DELETE' }
     ),
-    testEnv(store, createSnapshotStore())
+    env
   );
   const list = await worker.fetch(
     authRequest('https://api.pages.xd.team/.xd-pages/api/sites/guide/secrets'),
-    testEnv(store, createSnapshotStore())
+    env
   );
 
   assert.equal(put.status, 200, await put.clone().text());
@@ -4491,7 +4606,7 @@ test('viewer members cannot deploy rollback or manage site secrets', async () =>
     realname: 'Viewer User',
     employeeStatus: 'active',
   });
-  await store.addSiteMember({
+  await addTestSiteMember(store, {
     siteId: 'site_1',
     userId: 'usr_2',
     role: 'viewer',
@@ -5165,22 +5280,20 @@ test('WFP public rollback removes and verifies OfficeNet before route cutover', 
   await writeCurrentRouteSnapshot(store, snapshots);
 
   const events = [];
-  const env = testEnv(store, snapshots, {
-    WFP_PROVIDER: {
-      removeOfficeNetBinding: async ({ workerName }) => events.push(['remove', workerName]),
-      verifyOfficeNetAbsent: async ({ workerName }) => {
-        events.push(['verify', workerName]);
-        return true;
-      },
+  initialEnv.WFP_PROVIDER = {
+    removeOfficeNetBinding: async ({ workerName }) => events.push(['remove', workerName]),
+    verifyOfficeNetAbsent: async ({ workerName }) => {
+      events.push(['verify', workerName]);
+      return true;
     },
-  });
+  };
   const rollback = await worker.fetch(
     jsonRequest(
       'https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback',
       {},
       { 'Idempotency-Key': 'public_rollback_1' }
     ),
-    env
+    initialEnv
   );
 
   assert.equal(rollback.status, 201, await rollback.clone().text());
@@ -5251,6 +5364,70 @@ test('WFP public rollback fails before cutover when the current Worker OfficeNet
   const failed = await store.getDeployment('dep_3', 'production');
   assert.equal(failed.status, 'failed');
   assert.equal(failed.failureStage, 'rollback_public_office_net');
+});
+
+test('WFP public rollback preserves the current-version verification failure before cutover', async () => {
+  const store = await createSeededStore();
+  const snapshots = createSnapshotStore();
+  const env = testEnv(store, snapshots);
+  await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'public_rollback_missing_current_deploy_1',
+    }),
+    env
+  );
+  await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ moduleContent: 'export default { fetch() { return new Response("v2"); } };' }),
+      { 'Idempotency-Key': 'public_rollback_missing_current_deploy_2' }
+    ),
+    env
+  );
+  const lease = await store.acquireSiteCommitLock('production', 'site_1', {
+    lockId: 'public_rollback_missing_current_policy',
+  });
+  const currentRoute = await store.getRouteBySiteId('site_1', 'production');
+  await store.updateSiteAccessPolicy({
+    environment: 'production',
+    siteId: 'site_1',
+    exposure: 'public',
+    expected: {
+      policyVersion: currentRoute.policyVersion,
+      routeGeneration: currentRoute.routeGeneration,
+      activeVersionId: currentRoute.activeVersionId,
+      runtimeConfigGeneration: currentRoute.runtimeConfigGeneration,
+    },
+    lease,
+  });
+  await store.releaseSiteCommitLock('production', 'site_1', lease.lockId);
+  await writeCurrentRouteSnapshot(store, snapshots);
+
+  const getSiteVersion = store.getSiteVersion.bind(store);
+  let currentVersionReads = 0;
+  store.getSiteVersion = async (versionId, environment) => {
+    if (versionId === 'ver_2' && ++currentVersionReads === 2) return null;
+    return getSiteVersion(versionId, environment);
+  };
+  env.WFP_PROVIDER = {
+    removeOfficeNetBinding: async () => ({ removed: true }),
+    verifyOfficeNetAbsent: async () => true,
+  };
+  const rollback = await worker.fetch(
+    jsonRequest(
+      'https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback',
+      {},
+      { 'Idempotency-Key': 'public_rollback_missing_current' }
+    ),
+    env
+  );
+
+  assert.equal(rollback.status, 503, await rollback.clone().text());
+  const body = await rollback.json();
+  assert.equal(body.error.code, 'SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED');
+  assert.equal(body.error.message, 'The current public Worker version could not be verified before rollback.');
+  assert.equal((await store.getRouteBySiteId('site_1', 'production')).activeVersionId, 'ver_2');
+  assert.equal((await store.getDeployment('dep_3', 'production')).failureStage, 'rollback_public_office_net');
 });
 
 test('rollback records a terminal failure and releases its lease when the route disappears after locking', async () => {
@@ -5536,7 +5713,7 @@ test('rollback policy conflict keeps the WFP provider fallback for legacy versio
       env
     )
   );
-  store.siteVersions.get('ver_1').executionProvider = null;
+  await updateTestSiteVersion(store, 'ver_1', { executionProvider: null });
   store.acquireSiteCommitLock = async () => null;
 
   const rollback = await worker.fetch(
@@ -6790,7 +6967,7 @@ test('deployment idempotency replay claims a trace for legacy deployments withou
     }),
     env
   );
-  await store.updateDeployment('dep_1', { traceId: null });
+  await updateTestDeployment(store, 'dep_1', { traceId: null });
 
   const replay = await worker.fetch(
     deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
@@ -6816,7 +6993,7 @@ test('deployment idempotency replay keeps a trace when legacy trace claiming fai
       env
     )
   );
-  await store.updateDeployment('dep_1', { traceId: null });
+  await updateTestDeployment(store, 'dep_1', { traceId: null });
   store.claimDeploymentTrace = async () => {
     throw new Error('claim failed');
   };
@@ -6878,7 +7055,7 @@ test('rollback idempotency replay keeps a trace when legacy trace claiming fails
     env
   );
   assert.equal(firstRollback.status, 201, await firstRollback.clone().text());
-  await store.updateDeployment('dep_3', { traceId: null });
+  await updateTestDeployment(store, 'dep_3', { traceId: null });
   store.claimDeploymentTrace = async () => {
     throw new Error('claim failed');
   };
