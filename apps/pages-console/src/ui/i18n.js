@@ -1,6 +1,8 @@
+import { BRAND_NAME } from './brand.js';
+
 export const messages = {
   'zh-CN': {
-    sites: 'Sites',
+    sites: BRAND_NAME,
     workspace: '工作台',
     theme: '主题',
     language: '语言',
@@ -67,7 +69,7 @@ export const messages = {
     ownerTeam: '团队',
   },
   en: {
-    sites: 'Sites',
+    sites: BRAND_NAME,
     workspace: 'Workspace',
     theme: 'Theme',
     language: 'Language',

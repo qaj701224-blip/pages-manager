@@ -15,12 +15,9 @@ import {
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
+import { BRAND_NAME } from '../brand.js';
 import { IconDropdown, MenuItem, Tooltip } from './RadixPrimitives.jsx';
-import {
-  getConsoleEnvironmentBanner,
-  getConsoleEnvironmentShortLabel,
-  readTopNavUserState,
-} from '../top-nav-model.js';
+import { getConsoleEnvironmentBanner, getConsoleEnvironmentShortLabel, readTopNavUserState } from '../top-nav-model.js';
 import { usePreferences } from '../preferences-context.jsx';
 import { clearCachedConsoleSession } from '../session-cache.js';
 
@@ -40,7 +37,7 @@ export function TopNav({ activeSection, sessionState }) {
         <Link className="brand" to="/">
           <span className="brand-mark">XD</span>
           <span className="brand-copy">
-            <strong>XD Cell</strong>
+            <strong>{BRAND_NAME}</strong>
             <span>站点平台</span>
           </span>
         </Link>
