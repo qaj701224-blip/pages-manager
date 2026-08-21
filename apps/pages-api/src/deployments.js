@@ -10,7 +10,6 @@ import { createDeploymentFailureCompletion } from './application/deployments/com
 import { createDeploymentPreviousResourceCleanup } from './application/deployments/cleanup-previous-resources.js';
 import { createUploadedWorkerCompensation } from './application/deployments/cleanup-uploaded-worker.js';
 import { createDeploymentRouteSnapshotCommit } from './application/deployments/commit-route-snapshot.js';
-import { createDeploymentRuntimeConfigCommit } from './application/deployments/commit-runtime-config.js';
 import { createDeploymentVersionCreation } from './application/deployments/create-version.js';
 import { createDeploymentSucceededWebhook } from './application/deployments/deliver-succeeded-webhook.js';
 import { createDeploymentFailedWebhook } from './application/deployments/deliver-failed-webhook.js';
@@ -31,12 +30,9 @@ import { createDeploymentRouteSnapshotRecovery } from './application/deployments
 import { createRollbackRouteSnapshotRecovery } from './application/deployments/recover-rollback-route-snapshot.js';
 import { createDeploySiteResolution } from './application/deployments/resolve-deploy-site.js';
 import { createRollbackSiteResolution } from './application/deployments/resolve-rollback-site.js';
-import { createDeploymentRuntimeConfigResolution } from './application/deployments/resolve-runtime-config.js';
-import { createDeploymentRuntimeConfigRestoration } from './application/deployments/restore-runtime-config.js';
 import { createDeploymentOwnerTransferRestoration } from './application/deployments/restore-owner-transfer.js';
 import { createRollbackSite } from './application/deployments/rollback-site.js';
 import { createDeploymentCommitLease } from './application/deployments/run-under-commit-lease.js';
-import { createDeploymentRuntimeConfigSnapshotValidation } from './application/deployments/validate-runtime-config-snapshot.js';
 import { createRollbackVersionValidation } from './application/deployments/validate-rollback-version.js';
 import { createDeploySiteResolutionPort } from './application/ports/deploy-site-resolution.js';
 import { createDeploymentCleanupTasksPort } from './application/ports/deployment-cleanup.js';
@@ -55,11 +51,6 @@ import { createRollbackLeasePort } from './application/ports/rollback-lease.js';
 import { createRollbackOfficeNetVersionsPort } from './application/ports/rollback-office-net-versions.js';
 import { createRollbackRouteStatePort } from './application/ports/rollback-route-state.js';
 import { createRollbackSiteResolutionPort } from './application/ports/rollback-site-resolution.js';
-import {
-  createDeploymentRuntimeConfigMutationPort,
-  createDeploymentRuntimeConfigResolutionPort,
-  createDeploymentRuntimeConfigSnapshotPort,
-} from './application/ports/runtime-config.js';
 import { createUnexpectedDeploymentRecoveryPort } from './application/ports/unexpected-deployment-recovery.js';
 import { canonicalRequestHash } from './crypto.js';
 import { runtimeConfigHashInput, runtimeSecretSnapshotRecords } from './deployment-runtime-config.js';
@@ -138,13 +129,18 @@ import {
   rollbackOfficeNetOperationError,
   rollbackRouteSnapshotRecoveryError,
   rollbackVersionAvailabilityErrorResponse,
-  runtimeConfigCommitTraceFailure,
   runtimeConfigFailurePatch,
   runtimeConfigResolutionErrorMessage,
   runtimeConfigSnapshotFailure,
   runtimeConfigUnavailable,
   siteNotFound,
 } from './transport/public/deployment-errors.js';
+import {
+  createDeploymentRuntimeConfigCommitApplication,
+  createDeploymentRuntimeConfigResolutionApplication,
+  createDeploymentRuntimeConfigRestorationApplication,
+  validateDeploymentRuntimeConfigSnapshot,
+} from './transport/public/deployment-runtime-config.js';
 import { deploymentEnvelope, inactiveRouteVersion } from './transport/public/deployment-projection.js';
 import {
   deploySiteResolutionErrorResponse,
@@ -2754,78 +2750,6 @@ function createRollbackVersionValidationApplication(store) {
       get: (deploymentId, environment) => store.getDeployment(deploymentId, environment),
     },
   });
-}
-
-function createDeploymentRuntimeConfigResolutionApplication(store, env, trace = null) {
-  return createDeploymentRuntimeConfigResolution({
-    runtimeConfig: createDeploymentRuntimeConfigResolutionPort(store, {
-      hashInput: (vars, secrets) => runtimeConfigHashInput(env, vars, secrets),
-    }),
-    telemetry: {
-      start: () =>
-        trace
-          ? startDeploymentStage(trace, {
-              stage: 'runtime_config',
-              operation: 'resolve_runtime_config',
-            })
-          : null,
-      finish: (stage, outcome) =>
-        stage
-          ? finishDeploymentStage(stage, {
-              status: outcome.status,
-              ...(outcome.status === 'failed'
-                ? {
-                    errorCode: outcome.error.code,
-                    errorMessage: runtimeConfigResolutionErrorMessage(outcome.error.code),
-                    diagnostics: { causeClass: 'runtime_config_error' },
-                  }
-                : {}),
-            })
-          : undefined,
-    },
-  });
-}
-
-function createDeploymentRuntimeConfigCommitApplication(store, env, trace = null) {
-  const runtimeConfig = createDeploymentRuntimeConfigMutationPort(store);
-  return createDeploymentRuntimeConfigCommit({
-    runtimeConfig,
-    snapshotValidation: createDeploymentRuntimeConfigSnapshotValidation({ runtimeConfig }),
-    telemetry: {
-      start: () =>
-        trace
-          ? startDeploymentStage(trace, {
-              stage: 'runtime_config_commit',
-              operation: 'commit_runtime_config',
-            })
-          : null,
-      finish: (stage, outcome) =>
-        stage
-          ? finishDeploymentStage(stage, {
-              status: outcome.status,
-              ...(outcome.status === 'failed' ? runtimeConfigCommitTraceFailure(outcome.error) : {}),
-            })
-          : undefined,
-    },
-    clock: { now: () => readNow(env) },
-    ids: { next: (prefix) => nextId(env, prefix) },
-  });
-}
-
-function createDeploymentRuntimeConfigRestorationApplication(store, env) {
-  return createDeploymentRuntimeConfigRestoration({
-    runtimeConfig: createDeploymentRuntimeConfigMutationPort(store),
-    clock: { now: () => readNow(env) },
-    ids: { next: (prefix) => nextId(env, prefix) },
-  });
-}
-
-async function validateDeploymentRuntimeConfigSnapshot(store, command) {
-  const application = createDeploymentRuntimeConfigSnapshotValidation({
-    runtimeConfig: createDeploymentRuntimeConfigSnapshotPort(store),
-  });
-  const result = await application.validate(command);
-  return result.ok ? null : runtimeConfigSnapshotFailure(result.error);
 }
 
 function normalizeOptionalString(value) {
