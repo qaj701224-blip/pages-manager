@@ -35,6 +35,7 @@ import { createExposureUpdatePreparation } from './application/governance/prepar
 import { createExposureOfficeNetVerification } from './application/governance/ensure-exposure-office-net.js';
 import { createExposureSnapshotFinalization } from './application/governance/finalize-exposure-snapshot.js';
 import { createSiteExposureUpdate } from './application/governance/update-site-exposure.js';
+import { createWorkerOrphanScan } from './application/governance/scan-worker-orphans.js';
 import { buildRouteSnapshot, clearRoutePointerIfCurrent, readRouteSnapshotState } from './route-snapshot.js';
 import { createDeploymentProvider } from './execution-provider.js';
 import { sanitizeDeploymentTraceDiagnostics } from './deployment-trace.js';
@@ -355,48 +356,37 @@ async function scanAdminWorkerOrphans(env, config, store) {
       'Configure Cloudflare WFP inventory access.'
     );
   }
-  try {
-    const configuredLimit = readWorkerOrphanScanLimit(env);
-    const [inventory, references] = await Promise.all([
-      client.listWorkers({ maxWorkers: configuredLimit }),
-      store.listWorkerOrphanScanReferences({ environment: config.environment, limit: configuredLimit }),
-    ]);
-    const workers = Array.isArray(inventory) ? inventory : inventory?.workers;
-    const completeness = Array.isArray(inventory) ? null : inventory?.completeness;
-    const scannedCount = Array.isArray(inventory) ? null : inventory?.scannedCount;
-    const namespaceScriptCount = Array.isArray(inventory) ? null : inventory?.namespaceScriptCount;
-    const observedCount = Math.max(
-      Array.isArray(workers) ? workers.length : 0,
-      Number.isInteger(scannedCount) ? scannedCount : 0,
-      Number.isInteger(namespaceScriptCount) ? namespaceScriptCount : 0
+  const result = await createWorkerOrphanScanApplication({ env, store, client }).scan({
+    environment: config.environment,
+    limit: readWorkerOrphanScanLimit(env),
+  });
+  if (result.ok) return jsonOk({ scan: result.scan });
+  if (result.reason === 'limit_exceeded') {
+    return jsonError(
+      'WORKER_ORPHAN_SCAN_LIMIT_EXCEEDED',
+      'Worker orphan scan exceeds the configured inventory limit.',
+      413,
+      'Increase PAGES_WFP_ORPHAN_SCAN_MAX_WORKERS or narrow the upstream inventory before retrying.'
     );
-    if (observedCount > configuredLimit || references?.scanLimitExceeded) {
-      return jsonError(
-        'WORKER_ORPHAN_SCAN_LIMIT_EXCEEDED',
-        'Worker orphan scan exceeds the configured inventory limit.',
-        413,
-        'Increase PAGES_WFP_ORPHAN_SCAN_MAX_WORKERS or narrow the upstream inventory before retrying.'
-      );
-    }
-    return jsonOk({
-      scan: buildWorkerOrphanScan({
-        workers,
-        references,
-        environment: config.environment,
-        scannedAt: readNow(env),
-        completeness,
-        scannedCount,
-        namespaceScriptCount,
-      }),
-    });
-  } catch (error) {
+  }
+  if (result.reason === 'scan_failed') {
     return jsonError(
       'WORKER_ORPHAN_SCAN_FAILED',
       'Worker orphan scan failed.',
       502,
-      `Cause: ${cloudflareFailureCause(error)}. Check Cloudflare credentials and retry.`
+      `Cause: ${cloudflareFailureCause(result.error)}. Check Cloudflare credentials and retry.`
     );
   }
+  throw new Error('WORKER_ORPHAN_SCAN_RESULT_INVALID');
+}
+
+function createWorkerOrphanScanApplication({ env, store, client }) {
+  return createWorkerOrphanScan({
+    inventory: { list: (query) => client.listWorkers(query) },
+    references: { list: (query) => store.listWorkerOrphanScanReferences(query) },
+    projection: { build: buildWorkerOrphanScan },
+    clock: { now: () => readNow(env) },
+  });
 }
 
 function cloudflareFailureCause(error) {
