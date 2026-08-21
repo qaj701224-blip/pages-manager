@@ -5,6 +5,7 @@ import {
   requireConsoleUserSession,
 } from './console-auth.js';
 import { departmentTeamDisplayName } from './department-path.js';
+import { isSiteVisibility } from './domain/sites/access-policy.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
 import { newHexId, nextId } from './id.js';
 import { MAX_SITE_SECRET_VALUE_BYTES, normalizeRuntimeSecretName, normalizeRuntimeVars } from './runtime-config.js';
@@ -13,10 +14,7 @@ import {
   hostnameForSlug,
   normalizeSlug,
   normalizeAclEntries,
-  mutateUserSiteAccessPolicy,
   rejectUserExposureMutation,
-  refreshActiveRouteSnapshot,
-  refreshCurrentRouteSnapshot,
   buildSiteOwnerTransferAuditEvent,
   enqueueDeletedSiteWfpCleanup,
   siteCreateErrorResponse,
@@ -26,11 +24,15 @@ import {
   createRuntimeConfigApplication,
   runtimeConfigSyncErrorResponse,
 } from './transport/shared/runtime-config-application.js';
+import { mutateUserSiteAccessPolicy } from './transport/shared/site-policy-application.js';
+import {
+  refreshActiveRouteSnapshot,
+  refreshCurrentRouteSnapshot,
+} from './transport/shared/site-route-snapshots.js';
 import { emitSiteDeletedWebhook, emitSiteDisabledWebhook } from './lifecycle-webhooks.js';
 
 const CONSOLE_PREFIX = '/.xd-pages/api/console';
 const DEFAULT_REUSE_HOLD_SECONDS = 300;
-const VISIBILITIES = new Set(['internal', 'org', 'acl', 'owner', 'disabled']);
 
 export async function handleConsoleApi(request, env, config, store, ctx) {
   if (!isConsoleBffRequest(request)) return null;
@@ -173,7 +175,7 @@ async function createConsoleSite(request, env, config, store, session) {
   const ownerType = body.ownerType === 'team' ? 'team' : 'user';
   const slugError = validateSlug(slug, config.environment);
   if (slugError) return slugError;
-  if (!VISIBILITIES.has(visibility)) {
+  if (!isSiteVisibility(visibility)) {
     return jsonError(
       'SITE_VISIBILITY_INVALID',
       'Site visibility is invalid.',
@@ -457,7 +459,7 @@ export async function updateSiteAccess(request, env, config, store, session, sit
   if (exposureError) return exposureError;
 
   const visibility = typeof body.visibility === 'string' ? body.visibility : site.route?.visibility || site.defaultVisibility;
-  if (!VISIBILITIES.has(visibility)) {
+  if (!isSiteVisibility(visibility)) {
     return jsonError(
       'SITE_VISIBILITY_INVALID',
       'Site visibility is invalid.',

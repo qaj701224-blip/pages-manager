@@ -23,6 +23,7 @@ import {
   withDeploymentTraceHeader,
 } from './deployment-trace.js';
 import { isMultipartRequest, readMultipartDeploymentBody, validateAssetFiles } from './deployment-upload.js';
+import { isSiteVisibility } from './domain/sites/access-policy.js';
 import { jsonError, jsonOk } from './http.js';
 import { newHexId, nextId } from './id.js';
 import {
@@ -49,7 +50,6 @@ import { emitSiteDisabledWebhook, emitSiteFailedWebhook } from './lifecycle-webh
 import { createSiteWithLegacyV1Takeover } from './legacy-v1/takeover.js';
 
 const encoder = new globalThis.TextEncoder();
-const VISIBILITIES = new Set(['internal', 'org', 'acl', 'owner', 'disabled']);
 const PROVIDER_DIAGNOSTIC_CLIENT_CODES = new Set(['WFP_API_ERROR', 'WFP_API_INVALID_JSON', 'WFP_NETWORK_ERROR']);
 const PROVIDER_DIAGNOSTIC_OPERATIONS = new Set(['assets_upload_session', 'assets_upload', 'worker_put', 'worker_get']);
 const TERMINAL_DEPLOYMENT_STATUSES = new Set(['succeeded', 'failed']);
@@ -352,7 +352,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
     const slugError = validateDeploySiteSlug(requestedSiteSlug, config.environment, { allowReserved: true });
     if (slugError) return slugError;
   }
-  if (requestedVisibility && !VISIBILITIES.has(requestedVisibility)) {
+  if (requestedVisibility && !isSiteVisibility(requestedVisibility)) {
     return jsonError(
       'SITE_VISIBILITY_INVALID',
       'Site visibility is invalid.',

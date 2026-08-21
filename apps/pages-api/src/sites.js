@@ -1,8 +1,9 @@
 import { validateSiteSlug } from '@xd/pages-runtime-protocol';
-import { accessModeFromVisibility } from '@xd/pages-access-policy';
 
 import { isWfpWorkerResource } from './admin-resource-governance.js';
 import { authenticateApiRequest } from './auth.js';
+import { isSiteVisibility } from './domain/sites/access-policy.js';
+import { actorCanManageSite, actorHasPublishScope } from './domain/sites/authorization.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
 import { newHexId, nextId } from './id.js';
 import {
@@ -12,7 +13,6 @@ import {
 } from './runtime-config.js';
 import { logRuntimeConfigFailure, readRuntimeConfigErrorDiagnostic } from './runtime-config-diagnostics.js';
 import { createRuntimeConfigSync } from './infrastructure/providers/runtime-config-sync.js';
-import { buildRouteSnapshot, writeRouteSnapshot } from './route-snapshot.js';
 import { createDeploymentProvider as createWfpDeploymentProvider } from './wfp-provider.js';
 import { createSiteWithLegacyV1Takeover } from './legacy-v1/takeover.js';
 import { emitSiteDeletedWebhook, emitSiteDisabledWebhook } from './lifecycle-webhooks.js';
@@ -20,8 +20,14 @@ import {
   createRuntimeConfigApplication,
   runtimeConfigSyncErrorResponse,
 } from './transport/shared/runtime-config-application.js';
+import { mutateUserSiteAccessPolicy } from './transport/shared/site-policy-application.js';
+import {
+  refreshActiveRouteSnapshot,
+  refreshCurrentRouteSnapshot,
+} from './transport/shared/site-route-snapshots.js';
 
-const VISIBILITIES = new Set(['internal', 'org', 'acl', 'owner', 'disabled']);
+export { actorCanManageSite };
+
 const ACL_SUBJECT_TYPES = new Set(['email', 'department']);
 const ACL_ACCESS_ROLES = new Set(['viewer']);
 const MAX_ACL_ENTRIES = 200;
@@ -415,7 +421,7 @@ async function updateSite(request, env, config, store, actor, siteId, ctx) {
   if (exposureError) return exposureError;
 
   const visibility = typeof body.visibility === 'string' ? body.visibility : '';
-  if (!VISIBILITIES.has(visibility)) {
+  if (!isSiteVisibility(visibility)) {
     return jsonError('SITE_VISIBILITY_INVALID', 'Site visibility is invalid.', 400, VISIBILITY_ACTION);
   }
   if (site.ownerType === 'team' && visibility === 'owner') return teamOwnerVisibilityUnsupported();
@@ -705,134 +711,6 @@ export function rejectUserExposureMutation(body) {
   );
 }
 
-export async function mutateUserSiteAccessPolicy({ env, config, store, siteId, actorUserId, visibility, resolveAclEntries }) {
-  try {
-    return await store.withSiteCommitLock(
-      config.environment,
-      siteId,
-      async (lease) => {
-        const currentSite = await store.getSite(siteId, config.environment);
-        const currentRoute = await store.getRouteBySiteId(siteId, config.environment);
-        if (!currentSite || !currentRoute) {
-          return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
-        }
-
-        const previousAclEntries = await store.listSiteAclEntries(siteId);
-        const nextAclEntries = resolveAclEntries ? resolveAclEntries(previousAclEntries) : undefined;
-        if (nextAclEntries instanceof Response) return nextAclEntries;
-        const updatedAt = readNow(env);
-        const mutation = await store.updateSiteAccessPolicy({
-          environment: config.environment,
-          siteId,
-          actorUserId,
-          ...(visibility === undefined ? {} : { accessMode: accessModeFromVisibility(visibility) }),
-          ...(resolveAclEntries ? { aclEntries: nextAclEntries } : {}),
-          expected: sitePolicyExpected(currentRoute),
-          lease,
-          updatedAt,
-        });
-
-        const snapshotError = await refreshActiveRouteSnapshot(
-          env,
-          store,
-          mutation.site,
-          mutation.route,
-          config.environment,
-          mutation.aclEntries
-        );
-        if (!snapshotError) return mutation;
-
-        let compensation;
-        try {
-          const latestRoute = await store.getRouteBySiteId(siteId, config.environment);
-          if (!sitePolicyRouteCanBeCompensated(latestRoute, mutation.route)) return routePolicyRepairRequired();
-          compensation = await store.updateSiteAccessPolicy({
-            environment: config.environment,
-            siteId,
-            actorUserId,
-            exposure: previousRouteExposure(currentRoute),
-            accessMode: accessModeFromVisibility(currentRoute.visibility),
-            aclEntries: previousAclEntries,
-            expected: sitePolicyExpected(latestRoute),
-            lease,
-            updatedAt,
-          });
-        } catch {
-          return routePolicyRepairRequired();
-        }
-
-        const compensationSnapshotError = await refreshActiveRouteSnapshot(
-          env,
-          store,
-          compensation.site,
-          compensation.route,
-          config.environment,
-          compensation.aclEntries
-        );
-        return compensationSnapshotError ? routePolicyRepairRequired() : snapshotError;
-      },
-      { bestEffortRelease: true }
-    );
-  } catch (error) {
-    if (isSitePolicyMutationConflict(error)) {
-      return jsonError(
-        'SITE_POLICY_CONFLICT',
-        'Site policy changed while the access update was being applied.',
-        409,
-        'Refresh the site and retry.'
-      );
-    }
-    return jsonError(
-      'SITE_POLICY_UPDATE_FAILED',
-      'Site access policy could not be updated.',
-      503,
-      'Retry after refreshing the site.'
-    );
-  }
-}
-
-function sitePolicyExpected(route) {
-  return {
-    policyVersion: route.policyVersion,
-    routeGeneration: route.routeGeneration,
-    activeVersionId: route.activeVersionId,
-    runtimeConfigGeneration: route.runtimeConfigGeneration,
-  };
-}
-
-function previousRouteExposure(route) {
-  return route.exposure === 'public' ? 'public' : 'internal';
-}
-
-function sitePolicyRouteCanBeCompensated(current, committed) {
-  if (!current || !committed) return false;
-  return (
-    current.id === committed.id &&
-    current.environment === committed.environment &&
-    current.siteId === committed.siteId &&
-    current.exposure === committed.exposure &&
-    current.accessMode === committed.accessMode &&
-    current.visibility === committed.visibility &&
-    current.policyVersion === committed.policyVersion &&
-    current.routeGeneration === committed.routeGeneration &&
-    current.activeVersionId === committed.activeVersionId &&
-    current.routeStatus === committed.routeStatus
-  );
-}
-
-function isSitePolicyMutationConflict(error) {
-  return ['SITE_POLICY_LOCKED', 'SITE_POLICY_CONFLICT', 'SITE_COMMIT_TIMEOUT'].includes(error?.code || error?.message);
-}
-
-function routePolicyRepairRequired() {
-  return jsonError(
-    'ROUTE_POLICY_REPAIR_REQUIRED',
-    'Route policy could not be confirmed effective.',
-    503,
-    'Repair the route snapshot before retrying.'
-  );
-}
-
 async function listSiteAcl(store, actor, siteId, environment) {
   const site = await store.getSiteForUser(siteId, actor.userId, actor, environment);
   if (!site) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
@@ -939,7 +817,7 @@ async function createSite(request, env, config, store, actor) {
   const ownerType = body.ownerType === 'team' ? 'team' : 'user';
   const slugError = validateSlug(slug, config.environment);
   if (slugError) return slugError;
-  if (!VISIBILITIES.has(visibility)) {
+  if (!isSiteVisibility(visibility)) {
     return jsonError('SITE_VISIBILITY_INVALID', 'Site visibility is invalid.', 400, VISIBILITY_ACTION);
   }
   if (ownerType === 'team' && visibility === 'owner') return teamOwnerVisibilityUnsupported();
@@ -1119,25 +997,6 @@ async function getRuntimeManageableSiteBySlug(store, actor, siteSlug, environmen
 
 function actorCanManageRuntimeConfig(actor, site) {
   return actorCanManageSite(actor, site);
-}
-
-export function actorCanManageSite(actor, site) {
-  if (!site) return false;
-  if (actor.type === 'access_key') {
-    if (actor.siteId && actor.siteId !== site.id) return false;
-    if (!actorHasPublishScope(actor)) return false;
-    const ownerType = actor.ownerType || 'user';
-    const ownerId = actor.ownerId || actor.userId;
-    if (ownerType === 'team') return site.ownerType === 'team' && site.ownerId === ownerId;
-    if (site.ownerType === 'team') return site.managementRole === 'admin' || site.managementRole === 'publisher';
-    return (site.ownerId || site.ownerUserId) === ownerId;
-  }
-  if (site.ownerType === 'team') return site.managementRole === 'admin' || site.managementRole === 'publisher';
-  return (site.ownerId || site.ownerUserId) === actor.userId;
-}
-
-function actorHasPublishScope(actor) {
-  return actor.type !== 'access_key' || actor.scopes.includes('deploy:site') || actor.scopes.includes('*');
 }
 
 function normalizeSecretNameForResponse(value) {
@@ -1347,53 +1206,6 @@ function removeSiteAclEntries(existing, removed) {
 
 function aclEntryKey(entry) {
   return `${entry.effect || 'allow'}:${entry.subjectType}:${entry.subjectValue}:${entry.accessRole || 'viewer'}`;
-}
-
-export async function refreshActiveRouteSnapshot(env, store, site, route, environment, knownAclEntries) {
-  if (!route || route.routeStatus !== 'active' || !route.activeVersionId) return null;
-
-  const version = await store.getSiteVersion(route.activeVersionId, environment);
-  if (!version) {
-    return jsonError('ROUTE_VERSION_NOT_FOUND', 'Active route version was not found.', 500, 'Check route consistency.');
-  }
-  const aclEntries = knownAclEntries || (await store.listSiteAclEntries(site.id));
-  try {
-    await writeRouteSnapshot(env, buildRouteSnapshot({ site, route, version, aclEntries }));
-  } catch {
-    return jsonError('ROUTE_SNAPSHOT_WRITE_FAILED', 'Route snapshot could not be written.', 503, 'Retry the policy update.');
-  }
-  return null;
-}
-
-export async function refreshCurrentRouteSnapshot(env, store, site, route, environment) {
-  if (!route) return null;
-  const version = route.activeVersionId
-    ? await store.getSiteVersion(route.activeVersionId, environment)
-    : inactiveRouteVersion(route);
-  if (!version && route.routeStatus === 'active') {
-    return jsonError('ROUTE_VERSION_NOT_FOUND', 'Active route version was not found.', 500, 'Check route consistency.');
-  }
-  const aclEntries = await store.listSiteAclEntries(site.id);
-  try {
-    await writeRouteSnapshot(env, buildRouteSnapshot({ site, route, version, aclEntries }));
-  } catch {
-    return jsonError('ROUTE_SNAPSHOT_WRITE_FAILED', 'Route snapshot could not be written.', 503, 'Retry the policy update.');
-  }
-  return null;
-}
-
-function inactiveRouteVersion(route) {
-  return {
-    id: null,
-    executionProvider: route.executionProvider,
-    dispatchType: route.dispatchType,
-    dispatchBindingName: route.dispatchBindingName,
-    slotId: route.slotId,
-    contentHash: null,
-    deploymentShape: 'inactive',
-    resolvedFallback: null,
-    routingMode: null,
-  };
 }
 
 function routeWasActive(route) {

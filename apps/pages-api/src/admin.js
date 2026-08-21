@@ -19,10 +19,12 @@ import { newId, nextId } from './id.js';
 import { handleConsoleAdminWebhooksApi } from './webhooks.js';
 import {
   buildSiteOwnerTransferAuditEvent,
-  refreshActiveRouteSnapshot,
-  refreshCurrentRouteSnapshot,
   restoreSiteVisibilityAfterSnapshotFailure,
 } from './sites.js';
+import {
+  refreshActiveRouteSnapshot,
+  refreshCurrentRouteSnapshot,
+} from './transport/shared/site-route-snapshots.js';
 import { buildRouteSnapshot, clearRoutePointerIfCurrent, readRouteSnapshotState } from './route-snapshot.js';
 import { createDeploymentProvider } from './execution-provider.js';
 import { sanitizeDeploymentTraceDiagnostics } from './deployment-trace.js';
