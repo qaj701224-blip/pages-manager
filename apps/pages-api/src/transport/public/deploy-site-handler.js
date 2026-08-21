@@ -467,7 +467,7 @@ export async function createDeployment(request, env, config, store, actor, ctx, 
           executionProvider: 'unknown',
           plannedVersionId: version?.id,
           routePointerCommitted: false,
-          cause: deploymentStoreErrorCause(error),
+          cause: deploymentStoreErrorCause(),
         }),
         completedAt: readNow(env),
       }
