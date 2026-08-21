@@ -65,6 +65,7 @@ import { nextId } from './id.js';
 import { createSiteRouteSnapshots } from './infrastructure/route-snapshots/site-route-snapshots.js';
 import { createPublicOfficeNetSettings } from './infrastructure/providers/public-office-net-settings.js';
 import { createDeploymentWebhookDispatcher } from './infrastructure/integrations/webhooks/deployment-webhook-dispatcher.js';
+import { createDeploymentFailureRecoveryMarkers } from './infrastructure/route-snapshots/deployment-failure-recovery.js';
 import { createDeploymentRouteSnapshotRecoveryAdapter } from './infrastructure/route-snapshots/deployment-recovery.js';
 import {
   buildRouteSnapshot,
@@ -99,7 +100,6 @@ import {
 const PROVIDER_DIAGNOSTIC_CLIENT_CODES = new Set(['WFP_API_ERROR', 'WFP_API_INVALID_JSON', 'WFP_NETWORK_ERROR']);
 const PROVIDER_DIAGNOSTIC_OPERATIONS = new Set(['assets_upload_session', 'assets_upload', 'worker_put', 'worker_get']);
 const TERMINAL_DEPLOYMENT_STATUSES = new Set(['succeeded', 'failed']);
-const DEPLOYMENT_FAILURE_RECOVERY_KEY_PART = 'deployment_failure_recovery';
 const deploymentRequestTraceStates = new WeakMap();
 
 const deploymentHttpHandlers = createDeploymentsHttpHandlers({
@@ -2976,6 +2976,7 @@ function createDeploymentCompletionApplication(store) {
 
 function createDeploymentFailureCompletionApplication({ store, env, config, ctx, trace }) {
   const failedWebhook = createDeploymentFailedWebhookApplication({ store, env, config });
+  const recoveryMarkers = createDeploymentFailureRecoveryMarkersInfrastructure(env, config);
   return createDeploymentFailureCompletion({
     deployments: createDeploymentFailurePort(store),
     telemetry: {
@@ -3010,9 +3011,7 @@ function createDeploymentFailureCompletionApplication({ store, env, config, ctx,
           : undefined;
       },
     },
-    recoveryMarkers: {
-      persist: (input) => persistFailedDeploymentRecoveryMarker(env, config, input),
-    },
+    recoveryMarkers,
     repairs: {
       report: (input) => logDeploymentRepairRequired(env, input),
     },
@@ -3230,6 +3229,31 @@ function createDeploymentRouteSnapshotInfrastructure(store, env) {
     store,
     buildSnapshot: buildRouteSnapshot,
     writeSnapshot: (snapshot) => writeRouteSnapshot(env, snapshot),
+  });
+}
+
+function createDeploymentFailureRecoveryMarkersInfrastructure(env, config) {
+  return createDeploymentFailureRecoveryMarkers({
+    markers: env?.ROUTE_SNAPSHOTS,
+    environment: config.environment,
+    durableRecords: {
+      write: (input) =>
+        writeDeploymentFailureRecoveryRecord(env, {
+          environment: config.environment,
+          ...input,
+        }),
+      list: (input) =>
+        listDeploymentFailureRecoveryRecords(env, {
+          environment: config.environment,
+          ...input,
+        }),
+      delete: (input) =>
+        deleteDeploymentFailureRecoveryRecord(env, {
+          environment: config.environment,
+          ...input,
+        }),
+    },
+    clock: { now: () => readNow(env) },
   });
 }
 
@@ -3554,50 +3578,12 @@ async function recoverUnexpectedRequestFailure({ trace, store, env, config, ctx,
   }
 }
 
-async function persistFailedDeploymentRecoveryMarker(env, config, input) {
-  const markers = env?.ROUTE_SNAPSHOTS;
-  if (!input.siteId || !input.deploymentId) return false;
-  const marker = {
-    schemaVersion: 1,
-    environment: config.environment,
-    siteId: input.siteId,
-    deploymentId: input.deploymentId,
-    operation: input.operation === 'rollback' ? 'rollback' : 'deploy',
-    failedPatch: recoveryMarkerFailedPatch(input.failedPatch, env),
-    createdAt: readNow(env),
-  };
-  const markerValue = JSON.stringify(marker);
-  if (typeof markers?.put === 'function') {
-    try {
-      await markers.put(deploymentFailureRecoveryKey(config.environment, input.siteId, input.deploymentId), markerValue);
-      return true;
-    } catch {
-      // RoutePointer durable state is the independent fallback when D1 and KV are unavailable together.
-    }
-  }
-  try {
-    return await writeDeploymentFailureRecoveryRecord(env, {
-      environment: config.environment,
-      hostname: input.siteHostname,
-      deploymentId: input.deploymentId,
-      value: markerValue,
-    });
-  } catch {
-    return false;
-  }
-}
-
 async function recoverFailedDeploymentsForSite({ store, env, config, ctx, actor, site }) {
   if (site.pendingSiteCreation) return;
-  const { records: recoveryMarkers, readError } = await loadDeploymentFailureRecoveryMarkers(env, config, site);
+  const { records: recoveryMarkers, readError } =
+    await createDeploymentFailureRecoveryMarkersInfrastructure(env, config).list(site);
   for (const recoveryMarker of recoveryMarkers) {
-    const rawMarker = recoveryMarker.value;
-    let marker;
-    try {
-      marker = parseDeploymentFailureRecoveryMarker(rawMarker, config.environment, site.id);
-    } catch {
-      marker = null;
-    }
+    const { marker } = recoveryMarker;
     if (!marker) {
       await recoveryMarker.delete();
       continue;
@@ -3679,166 +3665,6 @@ async function recoverFailedDeploymentsForSite({ store, env, config, ctx, actor,
     }
   }
   if (readError) throw readError;
-}
-
-async function loadDeploymentFailureRecoveryMarkers(env, config, site) {
-  const records = [];
-  let readError = null;
-  const markers = env?.ROUTE_SNAPSHOTS;
-  if (typeof markers?.list === 'function' && typeof markers?.get === 'function') {
-    let markerKeys;
-    try {
-      markerKeys = await listDeploymentFailureRecoveryKeys(markers, config.environment, site.id);
-    } catch (cause) {
-      readError = deploymentRecoveryReadError('Deployment recovery markers could not be listed.', cause);
-      markerKeys = [];
-    }
-    for (const markerKey of markerKeys) {
-      let value;
-      try {
-        value = await markers.get(markerKey);
-      } catch (cause) {
-        readError ||= deploymentRecoveryReadError('Deployment recovery marker could not be read.', cause);
-        continue;
-      }
-      records.push({
-        value,
-        delete: () => deleteDeploymentFailureRecoveryMarker(markers, markerKey),
-      });
-    }
-  }
-
-  let durableRecords;
-  try {
-    durableRecords = await listDeploymentFailureRecoveryRecords(env, {
-      environment: config.environment,
-      hostname: site.route?.hostname || site.hostname,
-    });
-  } catch (cause) {
-    readError ||= deploymentRecoveryReadError('Durable deployment recovery markers could not be listed.', cause);
-    durableRecords = [];
-  }
-  for (const record of durableRecords) {
-    records.push({
-      value: record?.value,
-      delete: () =>
-        deleteDeploymentFailureRecoveryRecordBestEffort(env, {
-          environment: config.environment,
-          hostname: site.route?.hostname || site.hostname,
-          deploymentId: record?.deploymentId,
-        }),
-    });
-  }
-  return { records, readError };
-}
-
-function deploymentRecoveryReadError(message, cause) {
-  const error = new Error(message, { cause });
-  error.code = 'DEPLOYMENT_STATE_WRITE_FAILED';
-  return error;
-}
-
-async function listDeploymentFailureRecoveryKeys(markers, environment, siteId) {
-  const prefix = deploymentFailureRecoveryPrefix(environment, siteId);
-  const keys = [];
-  let cursor;
-  let hasNextPage = true;
-  while (hasNextPage) {
-    const page = await markers.list(omitUndefined({ prefix, cursor }));
-    for (const item of page?.keys || []) {
-      if (typeof item?.name === 'string' && item.name.startsWith(prefix)) keys.push(item.name);
-    }
-    hasNextPage = page?.list_complete === false && Boolean(page.cursor);
-    cursor = hasNextPage ? page.cursor : undefined;
-  }
-  return keys;
-}
-
-function deploymentFailureRecoveryPrefix(environment, siteId) {
-  return `${environment}:${DEPLOYMENT_FAILURE_RECOVERY_KEY_PART}:${siteId}:`;
-}
-
-function deploymentFailureRecoveryKey(environment, siteId, deploymentId) {
-  return `${deploymentFailureRecoveryPrefix(environment, siteId)}${deploymentId}`;
-}
-
-function recoveryMarkerFailedPatch(patch, env) {
-  return omitUndefined({
-    versionId: safeRecoveryMarkerId(patch?.versionId),
-    previousVersionId: safeRecoveryMarkerId(patch?.previousVersionId),
-    errorCode: safeRecoveryMarkerErrorCode(patch?.errorCode) || 'DEPLOYMENT_STATE_WRITE_FAILED',
-    errorMessage: safeRecoveryMarkerMessage(patch?.errorMessage) || 'Deployment failure state required recovery.',
-    failureStage: safeRecoveryMarkerIdentifier(patch?.failureStage) || 'persist_deployment_state',
-    failureDiagnostics: safeRecoveryMarkerDiagnostics(patch?.failureDiagnostics),
-    completedAt: safeRecoveryMarkerTimestamp(patch?.completedAt) || readNow(env),
-  });
-}
-
-function parseDeploymentFailureRecoveryMarker(raw, environment, siteId) {
-  if (typeof raw !== 'string' || raw.length > 32 * 1024) return null;
-  const marker = JSON.parse(raw);
-  if (
-    !marker ||
-    marker.schemaVersion !== 1 ||
-    marker.environment !== environment ||
-    marker.siteId !== siteId ||
-    !safeRecoveryMarkerId(marker.deploymentId)
-  ) {
-    return null;
-  }
-  return {
-    deploymentId: marker.deploymentId,
-    operation: marker.operation === 'rollback' ? 'rollback' : 'deploy',
-    failedPatch: recoveryMarkerFailedPatch(marker.failedPatch),
-  };
-}
-
-function safeRecoveryMarkerId(value) {
-  return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value) ? value : undefined;
-}
-
-function safeRecoveryMarkerErrorCode(value) {
-  return typeof value === 'string' && /^[A-Z][A-Z0-9_]{0,95}$/.test(value) ? value : undefined;
-}
-
-function safeRecoveryMarkerIdentifier(value) {
-  return typeof value === 'string' && /^[a-z][a-z0-9_]{0,95}$/.test(value) ? value : undefined;
-}
-
-function safeRecoveryMarkerMessage(value) {
-  if (typeof value !== 'string' || !value || value.length > 512) return undefined;
-  return /(?:authorization|bearer|cookie|password|secret|token|https?:\/\/)/i.test(value) ? undefined : value;
-}
-
-function safeRecoveryMarkerDiagnostics(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value) || value.schemaVersion !== 1) return undefined;
-  try {
-    const serialized = JSON.stringify(value);
-    return serialized.length <= 24 * 1024 ? JSON.parse(serialized) : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function safeRecoveryMarkerTimestamp(value) {
-  return typeof value === 'string' && Number.isFinite(Date.parse(value)) ? value : undefined;
-}
-
-async function deleteDeploymentFailureRecoveryMarker(markers, key) {
-  if (typeof markers?.delete !== 'function') return;
-  try {
-    await markers.delete(key);
-  } catch {
-    // A retained marker is safe: the next request observes the terminal deployment and retries deletion.
-  }
-}
-
-async function deleteDeploymentFailureRecoveryRecordBestEffort(env, input) {
-  try {
-    await deleteDeploymentFailureRecoveryRecord(env, input);
-  } catch {
-    // A retained durable marker is safe: the next request observes the terminal deployment and retries deletion.
-  }
 }
 
 async function bindExistingDeploymentTrace(trace, store, deployment, environment) {
