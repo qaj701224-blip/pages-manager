@@ -32,6 +32,7 @@ import { createAdminDashboardQuery } from './application/governance/get-admin-da
 import { createDeploymentTraceQuery } from './application/governance/get-deployment-trace.js';
 import { createAuditEventsQuery } from './application/governance/list-audit-events.js';
 import { createExposureUpdatePreparation } from './application/governance/prepare-exposure-update.js';
+import { createExposureOfficeNetVerification } from './application/governance/ensure-exposure-office-net.js';
 import { buildRouteSnapshot, clearRoutePointerIfCurrent, readRouteSnapshotState } from './route-snapshot.js';
 import { createDeploymentProvider } from './execution-provider.js';
 import { sanitizeDeploymentTraceDiagnostics } from './deployment-trace.js';
@@ -2303,57 +2304,17 @@ async function updateAdminSiteExposure(request, env, config, store, session, sit
       }
 
       if (exposure === 'public') {
-        const provider = createDeploymentProvider(env, config, store, currentSite);
-        const officeNetEvidence = await ensurePublicWorkerOfficeNetAbsent(provider, {
-          store,
+        await createExposureOfficeNetVerificationApplication({ env, config, store, site: currentSite }).ensure({
           environment: config.environment,
-          siteId: currentSite.id,
-          workerName: currentRoute.workerName || activeVersion?.workerName,
-          executionProvider: currentRoute.executionProvider || activeVersion?.executionProvider,
-          deploymentShape: activeVersion?.deploymentShape || 'inactive',
+          actorUserId: session.userId,
+          site: currentSite,
+          route: currentRoute,
+          version: activeVersion,
+          lease,
           exposure,
-          signal: lease.signal,
+          previousExposure: currentExposure,
+          operation: { operationId, now, auditMetadata },
         });
-        const officeNetVerified = officeNetEvidence?.status === 'verified';
-        const officeNetStage = officeNetVerified ? 'office_net_removed_verified' : 'office_net_not_applicable';
-        try {
-          await store.recordAuditEvent({
-            id: `${operationId}:${officeNetStage}`,
-            environment: config.environment,
-            traceId: operationId,
-            eventType: 'admin.site.exposure',
-            actorUserId: session.userId,
-            actorType: 'platform_admin',
-            siteId: currentSite.id,
-            routeId: currentRoute.id,
-            versionId: activeVersion.id,
-            decision: 'allow',
-            statusCode: 200,
-            metadata: {
-              ...auditMetadata,
-              previousExposure: currentExposure,
-              authorityExposure: currentExposure,
-              effectiveExposure: null,
-              officeNetBindingRemoved: officeNetVerified,
-              officeNetBindingVerified: officeNetVerified,
-              officeNetBindingNotApplicable: !officeNetVerified,
-              officeNetCheckReason: officeNetEvidence?.reason || null,
-              stage: officeNetStage,
-            },
-            createdAt: now,
-          });
-        } catch (cause) {
-          globalThis.console?.warn?.(
-            'SITE_EXPOSURE_STAGE_AUDIT_UNCONFIRMED',
-            JSON.stringify({
-              operationId,
-              siteId: currentSite.id,
-              environment: config.environment,
-              stage: officeNetStage,
-              errorCode: safeAdminExposureAuditWarningCode(cause),
-            })
-          );
-        }
       }
 
       const mutation = await store.updateSiteAccessPolicy({
@@ -2544,6 +2505,32 @@ function createExposureUpdatePreparationApplication({ store, env }) {
     audits: { record: (event) => store.recordAuditEvent(event) },
     ids: { next: newId },
     clock: { now: () => readNow(env) },
+  });
+}
+
+function createExposureOfficeNetVerificationApplication({ env, config, store, site }) {
+  let provider = null;
+  return createExposureOfficeNetVerification({
+    officeNet: {
+      ensure: (command) => {
+        provider ||= createDeploymentProvider(env, config, store, site);
+        return ensurePublicWorkerOfficeNetAbsent(provider, { store, ...command });
+      },
+    },
+    audits: { record: (event) => store.recordAuditEvent(event) },
+    telemetry: {
+      auditUnconfirmed: ({ operationId, siteId, environment, stage, cause }) =>
+        globalThis.console?.warn?.(
+          'SITE_EXPOSURE_STAGE_AUDIT_UNCONFIRMED',
+          JSON.stringify({
+            operationId,
+            siteId,
+            environment,
+            stage,
+            errorCode: safeAdminExposureAuditWarningCode(cause),
+          })
+        ),
+    },
   });
 }
 
