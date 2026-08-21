@@ -1960,9 +1960,11 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
         operation: 'rollback_route_snapshot',
       })
     : null;
+  const rollbackRouteSnapshotApplication = createDeploymentRouteSnapshotCommitApplication(store, env);
   try {
     assertCommitLeaseHealthy(rollbackLease);
-    await writeSnapshot(env, store, { site, route, version });
+    const snapshotResult = await rollbackRouteSnapshotApplication.commit({ site, route, version });
+    if (!snapshotResult.ok) throw snapshotResult.error.cause;
     assertCommitLeaseHealthy(rollbackLease);
     if (rollbackRouteSnapshotStage) {
       await finishDeploymentStage(rollbackRouteSnapshotStage, { status: 'succeeded' });
