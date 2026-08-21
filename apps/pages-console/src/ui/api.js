@@ -1,3 +1,5 @@
+import { BRAND_NAME } from './brand.js';
+
 export async function fetchJson(path, options = {}) {
   const fetchImpl = options.fetchImpl || fetch;
   const method = String(options.method || 'GET').toUpperCase();
@@ -19,7 +21,7 @@ export async function fetchJson(path, options = {}) {
   if (response.status === 204) return null;
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
-    const error = new Error(payload?.error?.message || 'XD Cell API request failed');
+    const error = new Error(payload?.error?.message || `${BRAND_NAME} API request failed`);
     error.code = payload?.error?.code || 'API_REQUEST_FAILED';
     error.status = response.status;
     error.action = payload?.error?.action || '';

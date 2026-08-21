@@ -3,6 +3,7 @@ import { ExternalLink } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 import { fetchJson } from '../api.js';
+import { BRAND_NAME } from '../brand.js';
 import { siteCardOwnerLabel, sitePublicUrl, siteVisibilityLabel } from '../site-display-model.js';
 
 const WATERFALL_BATCH_SIZE = 24;
@@ -26,7 +27,7 @@ export function SitesDirectory() {
 
   return (
     <main className="page">
-      <PageHeading title="站点目录" meta="Sites" />
+      <PageHeading title="站点目录" meta={BRAND_NAME} />
       <SiteWaterfall state={state} cardAction="open" activeOnly />
     </main>
   );

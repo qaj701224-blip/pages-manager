@@ -102,6 +102,16 @@ test('fetchJson throws API error code', async () => {
   );
 });
 
+test('fetchJson uses the Sites brand in its fallback error', async () => {
+  await assert.rejects(
+    () =>
+      fetchJson('/api/console/directory', {
+        fetchImpl: async () => new Response(null, { status: 502 }),
+      }),
+    { message: 'Sites API request failed' }
+  );
+});
+
 test('fetchJson sends csrf header for write requests', async () => {
   const payload = await fetchJson('/api/console/auth/logout', {
     method: 'POST',
