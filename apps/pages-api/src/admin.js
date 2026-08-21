@@ -40,7 +40,11 @@ import { createWorkerOrphanBackfill } from './application/governance/backfill-wo
 import { createNormalWorkersQuery } from './application/governance/list-normal-workers.js';
 import { createNormalWorkerRetirement } from './application/governance/retire-normal-workers.js';
 import { createV1SitesQuery } from './application/governance/list-v1-sites.js';
+import { createV1SiteRetirement } from './application/governance/retire-v1-sites.js';
 import { createNormalWorkerAdminClient } from './infrastructure/providers/normal-worker-admin-client.js';
+import {
+  createV1SitesAdminClient as createInfrastructureV1SitesAdminClient,
+} from './infrastructure/integrations/legacy-v1/sites-admin-client.js';
 import { buildRouteSnapshot, clearRoutePointerIfCurrent, readRouteSnapshotState } from './route-snapshot.js';
 import { createDeploymentProvider } from './execution-provider.js';
 import { sanitizeDeploymentTraceDiagnostics } from './deployment-trace.js';
@@ -50,16 +54,11 @@ import { cleanupDeferredLegacyV1WorkerScript, resolveDeferredLegacyV1WorkerTarge
 import { createWfpClient, readWfpConfig } from '@xd/wfp-client';
 import {
   buildWorkerOrphanScan,
-  createV1SitesAdminClient,
-  expectedV1WorkerName,
   formatV1SitesInventory,
   formatV1UnregisteredWorkers,
   isManagedWfpWorkerName,
-  isManagedV1WorkerName,
-  isValidV1SiteScriptName,
   isWfpWorkerResource,
   readV1ReservedWorkerNames,
-  readV1SiteRecord,
 } from './admin-resource-governance.js';
 
 const CONSOLE_PREFIX = '/.xd-pages/api/console';
@@ -67,7 +66,6 @@ const TEAM_ROLES = new Set(['viewer', 'publisher', 'admin']);
 const NORMAL_WORKER_BULK_DELETE_LIMIT = 100;
 const WFP_ORPHAN_BACKFILL_LIMIT = 100;
 const V1_SITE_BULK_RETIRE_LIMIT = 100;
-const V1_SITE_BULK_RETIRE_CONCURRENCY = 5;
 const DEFAULT_WFP_ORPHAN_SCAN_MAX_WORKERS = 10_000;
 const CLEANUP_TASK_LOCK_SECONDS = 5 * 60;
 const CLEANUP_TASK_FAILED_CODE = 'CLEANUP_TASK_FAILED';
@@ -408,6 +406,18 @@ function readWorkerOrphanScanLimit(env) {
   return configured;
 }
 
+function createV1SitesAdminClient(env = {}) {
+  return createInfrastructureV1SitesAdminClient({
+    client: env.V1_SITES_ADMIN_CLIENT,
+    accountId: env.CF_ACCOUNT_ID,
+    apiToken: env.CF_API_TOKEN,
+    namespaceId: env.PAGES_V1_SITES_KV_NAMESPACE_ID,
+    zoneId: normalizeNullableString(env.PAGES_V1_ZONE_ID) || env.CF_ZONE_ID_NEW,
+    environment: env.PUBLIC_ENVIRONMENT || env.PAGES_ENV || 'production',
+    fetch: env.fetch || globalThis.fetch,
+  });
+}
+
 async function listAdminV1Sites(env, config, store) {
   const client = createV1SitesAdminClient(env);
   if (!client || typeof store.listActiveSiteSlugs !== 'function') {
@@ -461,50 +471,18 @@ async function retireAdminV1Site(env, config, store, session, siteName) {
     return jsonError('V1_SITES_UNSUPPORTED', 'Legacy v1 site retirement is unavailable.', 503, 'Configure v1 inventory access.');
   }
 
-  let siteKeys;
-  try {
-    siteKeys = await client.listSites();
-  } catch {
-    await recordV1RetireAuditSafe(
-      store,
-      env,
-      config,
-      session,
-      { name: siteName, workerName: null, hostname: null },
-      'metadata_read',
-      'deny',
-      502
-    );
-    return jsonError(
-      'V1_SITES_READ_FAILED',
-      'Legacy v1 site inventory could not be read.',
-      502,
-      'Check Cloudflare credentials and retry.'
-    );
-  }
-  const record = findV1SiteRecord(siteKeys, siteName);
-  if (!record) {
-    await recordV1RetireAuditSafe(
-      store,
-      env,
-      config,
-      session,
-      { name: siteName, workerName: null, hostname: null },
-      'metadata_read',
-      'deny',
-      404
-    );
-    return v1RetireError(
-      'metadata_read',
-      'V1_SITE_NOT_FOUND',
-      'Legacy v1 site was not found.',
-      404,
-      'Refresh the v1 site inventory.'
-    );
-  }
-  const result = await retireV1SiteRecord({ env, config, store, session, record, client });
+  const outcome = await createV1SiteRetirementApplication({ env, store, client }).retire({
+    name: siteName,
+    environment: config.environment,
+    actorUserId: session.user?.userId || session.userId || null,
+    reservedWorkerNames: readV1ReservedWorkerNames(env),
+    reuseHoldSeconds: readReuseHoldSeconds(env),
+  });
+  if (!outcome.ok) return v1RetireOperationError(outcome.errorCode, outcome.cause);
+  const result = outcome.result;
   if (result.status === 'retired') return jsonOk({ result });
-  return v1RetireError(result.stage, result.error.code, result.error.message, result.httpStatus, result.error.action, result);
+  const failure = v1RetireFailureDetails(result.errorCode, result.cause);
+  return v1RetireError(result.stage, failure.code, failure.message, failure.status, failure.action, result);
 }
 
 async function bulkRetireAdminV1Sites(request, env, config, store, session) {
@@ -568,320 +546,75 @@ async function bulkRetireAdminV1Sites(request, env, config, store, session) {
     return jsonError('V1_SITE_BATCH_TOO_LARGE', 'Too many legacy v1 sites selected.', 400, 'Select at most 100 sites.');
   }
 
-  let siteKeys;
-  try {
-    siteKeys = await client.listSites();
-  } catch {
-    await recordV1RetireAuditSafe(
-      store,
-      env,
-      config,
-      session,
-      { name: null, workerName: null, hostname: null },
-      'metadata_read',
-      'deny',
-      502
-    );
-    return jsonError(
-      'V1_SITES_READ_FAILED',
-      'Legacy v1 site inventory could not be read.',
-      502,
-      'Check Cloudflare credentials and retry.'
-    );
-  }
-  const records = new Map(
-    (siteKeys || [])
-      .map((site) => readV1SiteRecord(site))
-      .filter(Boolean)
-      .map((record) => [record.name, record])
-  );
-  const results = await mapV1SiteRetireBatch(names, async (name) => {
-    const record = records.get(name);
-    if (!record) {
-      await recordV1RetireAuditSafe(
-        store,
-        env,
-        config,
-        session,
-        { name, workerName: null, hostname: null },
-        'metadata_read',
-        'deny',
-        404
-      );
-      return {
-        name,
-        status: 'failed',
-        stage: 'metadata_read',
-        httpStatus: 404,
-        error: {
-          code: 'V1_SITE_NOT_FOUND',
-          message: 'Legacy v1 site was not found.',
-          action: 'Refresh the v1 site inventory.',
-        },
-      };
-    }
-    return retireV1SiteRecord({ env, config, store, session, record, client });
+  const outcome = await createV1SiteRetirementApplication({ env, store, client }).retireBatch({
+    names,
+    environment: config.environment,
+    actorUserId: session.user?.userId || session.userId || null,
+    reservedWorkerNames: readV1ReservedWorkerNames(env),
+    reuseHoldSeconds: readReuseHoldSeconds(env),
   });
+  if (!outcome.ok) return v1RetireOperationError(outcome.errorCode, outcome.cause);
 
   return jsonOk({
-    summary: {
-      requested: names.length,
-      retired: results.filter((result) => result.status === 'retired').length,
-      failed: results.filter((result) => result.status === 'failed').length,
+    summary: outcome.summary,
+    results: outcome.results.map(formatV1RetireResult),
+  });
+}
+
+function createV1SiteRetirementApplication({ env, store, client }) {
+  return createV1SiteRetirement({
+    inventory: {
+      listSites: () => client.listSites(),
+      ...(typeof client.getSiteRecord === 'function'
+        ? { getSiteRecord: (name) => client.getSiteRecord(name) }
+        : {}),
+      ...(typeof client.deleteSite === 'function' ? { deleteSite: (name) => client.deleteSite(name) } : {}),
     },
-    results: results.map(formatV1RetireResult),
+    workers:
+      typeof client.deleteWorker === 'function'
+        ? { delete: (command) => client.deleteWorker(command) }
+        : {},
+    routes:
+      typeof client.unbindRoute === 'function'
+        ? { unbind: (command) => client.unbindRoute(command) }
+        : {},
+    claims: {
+      get: (hostname) => store.getHostnameClaim(hostname),
+      release: (command) => store.releaseHostnameClaim(command),
+    },
+    audits: {
+      record: (event) => writeV1RetireAudit(store, env, event),
+    },
+    clock: { now: () => readNow(env) },
   });
-}
-
-async function mapV1SiteRetireBatch(names, mapper) {
-  const results = new Array(names.length);
-  let nextIndex = 0;
-  const consumers = Array.from({ length: Math.min(V1_SITE_BULK_RETIRE_CONCURRENCY, names.length) }, async () => {
-    while (nextIndex < names.length) {
-      const index = nextIndex;
-      nextIndex += 1;
-      results[index] = await mapper(names[index]);
-    }
-  });
-  await Promise.all(consumers);
-  return results;
-}
-
-async function retireV1SiteRecord({ env, config, store, session, record, client }) {
-  const reservedWorkerNames = readV1ReservedWorkerNames(env);
-  const resolvedScriptName = await resolveV1RetireScriptName({ record, client, environment: config.environment });
-  if (resolvedScriptName.error) {
-    await recordV1RetireAuditSafe(
-      store,
-      env,
-      config,
-      session,
-      { name: record.name, workerName: null, hostname: null },
-      'metadata_read',
-      'deny',
-      resolvedScriptName.httpStatus
-    );
-    return v1RetireFailure(
-      record.name,
-      'metadata_read',
-      resolvedScriptName.error.code,
-      resolvedScriptName.error.message,
-      resolvedScriptName.httpStatus,
-      resolvedScriptName.error.action
-    );
-  }
-  const workerName = resolvedScriptName.workerName;
-  const expectedWorkerName = expectedV1WorkerName(record.name, config.environment);
-  const earlyBase = { name: record.name, workerName: expectedWorkerName, hostname: null };
-  if (reservedWorkerNames.has(expectedWorkerName) || reservedWorkerNames.has(String(workerName || '').toLowerCase())) {
-    await recordV1RetireAuditSafe(store, env, config, session, earlyBase, 'platform_reserved', 'deny', 409);
-    return v1RetireFailure(
-      record.name,
-      'platform_reserved',
-      'V1_SITE_PLATFORM_RESERVED',
-      'Platform-reserved Worker cannot be retired.',
-      409,
-      'Choose a user-owned v1 site.'
-    );
-  }
-  if (
-    !isValidV1SiteScriptName(record.name, workerName, config.environment) ||
-    !isManagedV1WorkerName(workerName, config.environment)
-  ) {
-    await recordV1RetireAuditSafe(store, env, config, session, earlyBase, 'metadata_read', 'deny', 409);
-    return v1RetireFailure(
-      record.name,
-      'metadata_read',
-      'V1_SITE_SCRIPT_INVALID',
-      'Legacy v1 site script metadata is invalid.',
-      409,
-      'Refresh the v1 site inventory.'
-    );
-  }
-  const hostname = readV1Hostname(record.url);
-  if (!hostname) {
-    await recordV1RetireAuditSafe(store, env, config, session, earlyBase, 'route_unbind', 'deny', 409);
-    return v1RetireFailure(
-      record.name,
-      'route_unbind',
-      'V1_SITE_ROUTE_UNSAFE',
-      'Legacy v1 hostname is missing or unsafe.',
-      409,
-      'Refresh the v1 site inventory and verify the hostname.'
-    );
-  }
-  if (
-    typeof client.deleteWorker !== 'function' ||
-    typeof client.unbindRoute !== 'function' ||
-    typeof client.deleteSite !== 'function'
-  ) {
-    await recordV1RetireAuditSafe(
-      store,
-      env,
-      config,
-      session,
-      { name: record.name, workerName, hostname },
-      'capability_check',
-      'deny',
-      503
-    );
-    return v1RetireFailure(
-      record.name,
-      'capability_check',
-      'V1_SITES_UNSUPPORTED',
-      'Legacy v1 site retirement is unavailable.',
-      503,
-      'Configure Cloudflare account, zone, and KV access.'
-    );
-  }
-
-  const base = { name: record.name, workerName, hostname };
-  let existingClaim;
-  try {
-    existingClaim = await store.getHostnameClaim(hostname);
-  } catch {
-    await recordV1RetireAuditSafe(store, env, config, session, base, 'hostname_claim_validation', 'deny', 502);
-    return v1RetireFailure(
-      record.name,
-      'hostname_claim_validation',
-      'V1_SITE_HOSTNAME_CLAIM_READ_FAILED',
-      'Legacy v1 hostname claim could not be read.',
-      502,
-      'Check hostname claims and retry.'
-    );
-  }
-  if (existingClaim && !v1HostnameClaimMatches(existingClaim, config, record, workerName)) {
-    await recordV1RetireAuditSafe(store, env, config, session, base, 'hostname_claim_validation', 'deny', 409);
-    return v1RetireFailure(
-      record.name,
-      'hostname_claim_validation',
-      'V1_SITE_HOSTNAME_CLAIM_UNSAFE',
-      'Legacy v1 hostname claim belongs to another resource.',
-      409,
-      'Review the hostname claim before retrying.'
-    );
-  }
-  try {
-    await recordV1RetireAudit(store, env, config, session, base, 'validation', 'allow', 200);
-  } catch {
-    return v1RetireFailure(
-      record.name,
-      'audit',
-      'V1_SITE_AUDIT_FAILED',
-      'V1 site retirement audit could not be written.',
-      500,
-      'Retry after checking the audit store.'
-    );
-  }
-
-  try {
-    await client.deleteWorker({ workerName });
-  } catch (error) {
-    await recordV1RetireAuditSafe(store, env, config, session, base, 'worker_delete', 'deny', 502);
-    return v1RetireFailure(
-      record.name,
-      'worker_delete',
-      'V1_SITE_WORKER_DELETE_FAILED',
-      'Legacy v1 Worker could not be deleted.',
-      502,
-      `Cause: ${cloudflareFailureCause(error)}. Check Cloudflare credentials and retry.`
-    );
-  }
-  await recordV1RetireAuditSafe(store, env, config, session, base, 'worker_delete', 'allow', 200);
-
-  try {
-    await client.unbindRoute({ hostname, expectedScriptName: workerName, environment: config.environment });
-  } catch (error) {
-    await recordV1RetireAuditSafe(store, env, config, session, base, 'route_unbind', 'deny', 502);
-    return v1RetireFailure(
-      record.name,
-      'route_unbind',
-      'V1_SITE_ROUTE_UNBIND_FAILED',
-      'Legacy v1 hostname route could not be unbound.',
-      502,
-      `Cause: ${cloudflareFailureCause(error)}. Verify the exact route and retry.`
-    );
-  }
-  await recordV1RetireAuditSafe(store, env, config, session, base, 'route_unbind', 'allow', 200);
-
-  // The claim must be released before the KV record is deleted: the KV record is the
-  // retry anchor for this site, and every failure after its deletion would strand an
-  // active claim with no admin-channel recovery path.
-  if (existingClaim && !['released', 'held'].includes(existingClaim.status)) {
-    let released;
-    try {
-      released = await store.releaseHostnameClaim({
-        environment: config.environment,
-        hostname,
-        normalizedSlug: record.name,
-        hostnameFamily: 'workers',
-        ownerSystem: 'v1',
-        ownerId: `v1:${config.environment}:${record.name}`,
-        ownerRef: workerName,
-        source: 'v1_delete',
-        status: 'active',
-        releaseReason: 'site_retired',
-        reuseHoldUntil: addSecondsIso(readNow(env), readReuseHoldSeconds(env)),
-        releasedAt: readNow(env),
-      });
-    } catch {
-      released = null;
-    }
-    if (!released?.ok) {
-      await recordV1RetireAuditSafe(store, env, config, session, base, 'hostname_claim_release', 'deny', 502);
-      return v1RetireFailure(
-        record.name,
-        'hostname_claim_release',
-        'V1_SITE_HOSTNAME_CLAIM_RELEASE_FAILED',
-        'Legacy v1 hostname claim could not be released.',
-        502,
-        'Check hostname claims and retry.'
-      );
-    }
-  }
-  await recordV1RetireAuditSafe(store, env, config, session, base, 'hostname_claim_release', 'allow', 200);
-
-  try {
-    await client.deleteSite(record.name);
-  } catch (error) {
-    await recordV1RetireAuditSafe(store, env, config, session, base, 'kv_delete', 'deny', 502);
-    return v1RetireFailure(
-      record.name,
-      'kv_delete',
-      'V1_SITE_KV_DELETE_FAILED',
-      'Legacy v1 site metadata could not be deleted.',
-      502,
-      `Cause: ${cloudflareFailureCause(error)}. Check Cloudflare KV credentials and retry.`
-    );
-  }
-  await recordV1RetireAuditSafe(store, env, config, session, base, 'kv_delete', 'allow', 200);
-  return { ...base, status: 'retired' };
-}
-
-function v1HostnameClaimMatches(claim, config, record, workerName) {
-  return (
-    claim.environment === config.environment &&
-    claim.ownerSystem === 'v1' &&
-    claim.ownerId === `v1:${config.environment}:${record.name}` &&
-    (!claim.ownerRef || claim.ownerRef === workerName)
-  );
 }
 
 async function recordV1RetireAudit(store, env, config, session, site, stage, decision, statusCode) {
+  return writeV1RetireAudit(store, env, {
+    environment: config.environment,
+    actorUserId: session.user?.userId || session.userId || null,
+    site,
+    stage,
+    decision,
+    statusCode,
+  });
+}
+
+async function writeV1RetireAudit(store, env, event) {
   if (typeof store.recordAuditEvent !== 'function') throw new Error('V1_SITE_AUDIT_UNSUPPORTED');
   return store.recordAuditEvent({
     id: nextId(env, 'audit'),
-    environment: config.environment,
+    environment: event.environment,
     eventType: 'admin.v1_site_retire',
-    actorUserId: session.user?.userId || session.userId || null,
+    actorUserId: event.actorUserId,
     actorType: 'platform_admin',
-    decision,
-    statusCode,
+    decision: event.decision,
+    statusCode: event.statusCode,
     metadata: {
-      siteName: site.name,
-      workerName: site.workerName,
-      hostname: site.hostname,
-      stage,
+      siteName: event.site.name,
+      workerName: event.site.workerName,
+      hostname: event.site.hostname,
+      stage: event.stage,
     },
     createdAt: readNow(env),
   });
@@ -891,47 +624,6 @@ async function recordV1RetireAuditSafe(store, env, config, session, site, stage,
   try {
     await recordV1RetireAudit(store, env, config, session, site, stage, decision, statusCode);
   } catch {}
-}
-
-async function resolveV1RetireScriptName({ record, client, environment }) {
-  if (record.scriptName) return { workerName: record.scriptName };
-  // v1 stores scriptName only in the KV value body, not in list-key metadata (deploy.js
-  // writes a reduced metadata object), so retirement reads the authoritative record here.
-  if (typeof client.getSiteRecord === 'function') {
-    let value;
-    try {
-      value = await client.getSiteRecord(record.name);
-    } catch {
-      return {
-        httpStatus: 502,
-        error: {
-          code: 'V1_SITE_METADATA_READ_FAILED',
-          message: 'Legacy v1 site record could not be read.',
-          action: 'Check Cloudflare KV credentials and retry.',
-        },
-      };
-    }
-    if (!value) {
-      return {
-        httpStatus: 404,
-        error: {
-          code: 'V1_SITE_NOT_FOUND',
-          message: 'Legacy v1 site was not found.',
-          action: 'Refresh the v1 site inventory.',
-        },
-      };
-    }
-    if (value.scriptName) return { workerName: value.scriptName };
-  }
-  // The strict validation below requires scriptName to equal the derived per-site name,
-  // so the derived name is the only value a missing field could legally hold.
-  return { workerName: expectedV1WorkerName(record.name, environment) };
-}
-
-function findV1SiteRecord(siteKeys, name) {
-  const normalizedName = normalizeRequiredString(name);
-  if (!normalizedName) return null;
-  return (siteKeys || []).map((site) => readV1SiteRecord(site)).find((record) => record?.name === normalizedName) || null;
 }
 
 function normalizeV1SiteNames(value) {
@@ -949,24 +641,105 @@ function normalizeV1SiteNames(value) {
 }
 
 function formatV1RetireResult(result) {
+  const failure = result.errorCode ? v1RetireFailureDetails(result.errorCode, result.cause) : null;
   return {
     name: result.name,
     status: result.status,
     ...(result.workerName ? { workerName: result.workerName } : {}),
     ...(result.hostname ? { hostname: result.hostname } : {}),
     ...(result.stage ? { stage: result.stage } : {}),
-    ...(result.error ? { error: result.error } : {}),
+    ...(failure ? { error: { code: failure.code, message: failure.message, action: failure.action } } : {}),
   };
 }
 
-function v1RetireFailure(name, stage, code, message, httpStatus, action) {
-  return {
-    name,
-    status: 'failed',
-    stage,
-    httpStatus,
-    error: { code, message, action },
-  };
+function v1RetireOperationError(code, cause) {
+  if (code === 'V1_SITES_READ_FAILED') {
+    return jsonError(
+      code,
+      'Legacy v1 site inventory could not be read.',
+      502,
+      'Check Cloudflare credentials and retry.'
+    );
+  }
+  const failure = v1RetireFailureDetails(code, cause);
+  return v1RetireError('metadata_read', failure.code, failure.message, failure.status, failure.action);
+}
+
+function v1RetireFailureDetails(code, cause) {
+  if (code === 'V1_SITE_METADATA_READ_FAILED') {
+    return failure(code, 'Legacy v1 site record could not be read.', 502, 'Check Cloudflare KV credentials and retry.');
+  }
+  if (code === 'V1_SITE_NOT_FOUND') {
+    return failure(code, 'Legacy v1 site was not found.', 404, 'Refresh the v1 site inventory.');
+  }
+  if (code === 'V1_SITE_PLATFORM_RESERVED') {
+    return failure(code, 'Platform-reserved Worker cannot be retired.', 409, 'Choose a user-owned v1 site.');
+  }
+  if (code === 'V1_SITE_SCRIPT_INVALID') {
+    return failure(code, 'Legacy v1 site script metadata is invalid.', 409, 'Refresh the v1 site inventory.');
+  }
+  if (code === 'V1_SITE_ROUTE_UNSAFE') {
+    return failure(
+      code,
+      'Legacy v1 hostname is missing or unsafe.',
+      409,
+      'Refresh the v1 site inventory and verify the hostname.'
+    );
+  }
+  if (code === 'V1_SITES_UNSUPPORTED') {
+    return failure(
+      code,
+      'Legacy v1 site retirement is unavailable.',
+      503,
+      'Configure Cloudflare account, zone, and KV access.'
+    );
+  }
+  if (code === 'V1_SITE_HOSTNAME_CLAIM_READ_FAILED') {
+    return failure(code, 'Legacy v1 hostname claim could not be read.', 502, 'Check hostname claims and retry.');
+  }
+  if (code === 'V1_SITE_HOSTNAME_CLAIM_UNSAFE') {
+    return failure(
+      code,
+      'Legacy v1 hostname claim belongs to another resource.',
+      409,
+      'Review the hostname claim before retrying.'
+    );
+  }
+  if (code === 'V1_SITE_AUDIT_FAILED') {
+    return failure(code, 'V1 site retirement audit could not be written.', 500, 'Retry after checking the audit store.');
+  }
+  if (code === 'V1_SITE_WORKER_DELETE_FAILED') {
+    return failure(
+      code,
+      'Legacy v1 Worker could not be deleted.',
+      502,
+      `Cause: ${cloudflareFailureCause(cause)}. Check Cloudflare credentials and retry.`
+    );
+  }
+  if (code === 'V1_SITE_ROUTE_UNBIND_FAILED') {
+    return failure(
+      code,
+      'Legacy v1 hostname route could not be unbound.',
+      502,
+      `Cause: ${cloudflareFailureCause(cause)}. Verify the exact route and retry.`
+    );
+  }
+  if (code === 'V1_SITE_HOSTNAME_CLAIM_RELEASE_FAILED') {
+    return failure(code, 'Legacy v1 hostname claim could not be released.', 502, 'Check hostname claims and retry.');
+  }
+  if (code === 'V1_SITE_KV_DELETE_FAILED') {
+    return failure(
+      code,
+      'Legacy v1 site metadata could not be deleted.',
+      502,
+      `Cause: ${cloudflareFailureCause(cause)}. Check Cloudflare KV credentials and retry.`
+    );
+  }
+  throw new Error('V1_SITE_RETIRE_RESULT_INVALID');
+}
+
+function failure(code, message, status, action) {
+  return { code, message, status, action };
 }
 
 function v1RetireError(stage, code, message, status, action, result = null) {
@@ -980,28 +753,9 @@ function v1RetireError(stage, code, message, status, action, result = null) {
   );
 }
 
-function readV1Hostname(url) {
-  if (typeof url !== 'string' || !url.trim()) return null;
-  try {
-    const parsed = new URL(url);
-    if (!['', '/'].includes(parsed.pathname) || parsed.search || parsed.hash) return null;
-    const hostname = parsed.hostname.toLowerCase();
-    if (!hostname.endsWith('.workers.xd.team')) return null;
-    const label = hostname.slice(0, -'.workers.xd.team'.length);
-    if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)) return null;
-    return hostname;
-  } catch {
-    return null;
-  }
-}
-
 function readReuseHoldSeconds(env) {
   const value = Number(env?.HOSTNAME_REUSE_HOLD_SECONDS || 300);
   return Number.isInteger(value) && value >= 0 && value <= 86_400 ? value : 300;
-}
-
-function addSecondsIso(iso, seconds) {
-  return new Date(Date.parse(iso) + seconds * 1000).toISOString();
 }
 
 function getAdminOps(config) {
