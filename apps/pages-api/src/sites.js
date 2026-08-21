@@ -22,7 +22,10 @@ import {
 } from './transport/shared/runtime-config-application.js';
 import { mutateUserSiteAccessPolicy } from './transport/shared/site-policy-application.js';
 import {
-  refreshActiveRouteSnapshot,
+  createSiteOwnershipApplication,
+  siteTransferErrorResponse,
+} from './transport/shared/site-ownership-application.js';
+import {
   refreshCurrentRouteSnapshot,
 } from './transport/shared/site-route-snapshots.js';
 
@@ -572,26 +575,25 @@ async function transferSiteOwner(request, env, config, store, actor, siteId) {
   const currentVisibility = site.route?.visibility || site.defaultVisibility;
   if (target.ownerType === 'team' && currentVisibility === 'owner') return teamOwnerVisibilityUnsupported();
 
-  const updatedAt = readNow(env);
-  const updated = await store.transferSiteOwner(
-    site.id,
-    {
-      ownerType: target.ownerType,
-      ownerId: target.ownerId,
-      ownerUserId: target.ownerUserId,
-      updatedAt,
-      auditEvent: buildSiteOwnerTransferAuditEvent(env, config, actor, site, target, {
-        source: 'api',
-        createdAt: updatedAt,
-      }),
-    },
-    config.environment
-  );
-  if (!updated) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
-
-  const route = await store.getRouteBySiteId(updated.id, config.environment);
-  const snapshotError = await refreshActiveRouteSnapshot(env, store, updated, route, config.environment);
-  if (snapshotError) return snapshotError;
+  let updated;
+  let route;
+  try {
+    const result = await createSiteOwnershipApplication({ store, env })({
+      environment: config.environment,
+      site,
+      target,
+      buildAuditEvent: (updatedAt) =>
+        buildSiteOwnerTransferAuditEvent(env, config, actor, site, target, {
+          source: 'api',
+          createdAt: updatedAt,
+        }),
+      compensateSnapshotFailure: false,
+    });
+    updated = result.site;
+    route = result.route;
+  } catch (error) {
+    return siteTransferErrorResponse(error);
+  }
 
   const visible = await store.getSiteForUser(updated.id, actor.userId, actor, config.environment);
   return jsonOk({ site: formatSite({ ...(visible || updated), route }) });

@@ -22,9 +22,12 @@ import {
   restoreSiteVisibilityAfterSnapshotFailure,
 } from './sites.js';
 import {
-  refreshActiveRouteSnapshot,
   refreshCurrentRouteSnapshot,
 } from './transport/shared/site-route-snapshots.js';
+import {
+  createSiteOwnershipApplication,
+  siteTransferErrorResponse,
+} from './transport/shared/site-ownership-application.js';
 import { buildRouteSnapshot, clearRoutePointerIfCurrent, readRouteSnapshotState } from './route-snapshot.js';
 import { createDeploymentProvider } from './execution-provider.js';
 import { sanitizeDeploymentTraceDiagnostics } from './deployment-trace.js';
@@ -2731,51 +2734,31 @@ async function updateAdminSiteSettings(request, env, config, store, session, sit
   const currentVisibility = site.route?.visibility || site.defaultVisibility;
   if (target.ownerType === 'team' && currentVisibility === 'owner') return teamOwnerVisibilityUnsupported();
 
-  const updatedAt = readNow(env);
-  const updated = await store.transferSiteOwner(
-    site.id,
-    {
-      ownerType: target.ownerType,
-      ownerId: target.ownerId,
-      ownerUserId: target.ownerUserId || session.userId,
-      updatedAt,
-      auditEvent: buildSiteOwnerTransferAuditEvent(env, config, { type: 'user', userId: session.userId }, site, target, {
-        source: 'console-admin',
-        createdAt: updatedAt,
-      }),
-    },
-    config.environment
-  );
-  if (!updated) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
-
-  const route = await store.getRouteBySiteId(updated.id, config.environment);
-  const snapshotError = await refreshActiveRouteSnapshot(env, store, updated, route, config.environment);
-  if (snapshotError) {
-    await rollbackAdminSiteOwnerTransfer(store, site, updatedAt, config.environment);
-    return snapshotError;
+  let updated;
+  try {
+    const result = await createSiteOwnershipApplication({ store, env })({
+      environment: config.environment,
+      site,
+      target: { ...target, ownerUserId: target.ownerUserId || session.userId },
+      buildAuditEvent: (updatedAt) =>
+        buildSiteOwnerTransferAuditEvent(
+          env,
+          config,
+          { type: 'user', userId: session.userId },
+          site,
+          target,
+          { source: 'console-admin', createdAt: updatedAt }
+        ),
+      compensateSnapshotFailure: true,
+    });
+    updated = result.site;
+  } catch (error) {
+    return siteTransferErrorResponse(error);
   }
 
   const refreshed = await getAdminSite(config, store, updated.id);
   if (refreshed instanceof Response) return refreshed;
   return jsonOk({ site: formatAdminSiteDetail(refreshed) });
-}
-
-async function rollbackAdminSiteOwnerTransfer(store, previousSite, updatedAt, environment) {
-  const previousOwnerType = previousSite.ownerType || 'user';
-  const previousOwnerId = previousSite.ownerId || previousSite.ownerUserId;
-  const previousOwnerUserId = previousSite.ownerUserId || (previousOwnerType === 'user' ? previousOwnerId : null);
-  if (!previousOwnerId) return null;
-  return store.transferSiteOwner(
-    previousSite.id,
-    {
-      ownerType: previousOwnerType,
-      ownerId: previousOwnerId,
-      ownerUserId: previousOwnerUserId,
-      defaultVisibility: previousSite.defaultVisibility,
-      updatedAt,
-    },
-    environment
-  );
 }
 
 async function resolveAdminSiteOwnerTarget(store, config, body) {

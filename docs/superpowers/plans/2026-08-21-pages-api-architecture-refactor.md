@@ -243,7 +243,7 @@ pnpm exec eslint apps/pages-auth/src packages/pages-metadata/src apps/pages-api/
 
 - [ ] create site；
 - [ ] delete site / enqueue deleted resources；
-- [ ] transfer owner；
+- [x] transfer owner；
 - [x] update access policy + route snapshot compensation；
 - [x] put/delete runtime var；
 - [x] put/delete site secret。

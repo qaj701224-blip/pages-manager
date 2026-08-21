@@ -26,7 +26,10 @@ import {
 } from './transport/shared/runtime-config-application.js';
 import { mutateUserSiteAccessPolicy } from './transport/shared/site-policy-application.js';
 import {
-  refreshActiveRouteSnapshot,
+  createSiteOwnershipApplication,
+  siteTransferErrorResponse,
+} from './transport/shared/site-ownership-application.js';
+import {
   refreshCurrentRouteSnapshot,
 } from './transport/shared/site-route-snapshots.js';
 import { emitSiteDeletedWebhook, emitSiteDisabledWebhook } from './lifecycle-webhooks.js';
@@ -309,28 +312,28 @@ async function updateConsoleSiteSettings(request, env, config, store, session, s
   const currentVisibility = site.route?.visibility || site.defaultVisibility;
   if (target.ownerType === 'team' && currentVisibility === 'owner') return teamOwnerVisibilityUnsupported();
 
-  const updatedAt = readNow(env);
-  const updated = await store.transferSiteOwner(
-    site.id,
-    {
-      ownerType: target.ownerType,
-      ownerId: target.ownerId,
-      ownerUserId: target.ownerUserId,
-      updatedAt,
-      auditEvent: buildSiteOwnerTransferAuditEvent(env, config, { type: 'user', userId: session.userId }, site, target, {
-        source: 'console',
-        createdAt: updatedAt,
-      }),
-    },
-    config.environment
-  );
-  if (!updated) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
-
-  const route = await store.getRouteBySiteId(updated.id, config.environment);
-  const snapshotError = await refreshActiveRouteSnapshot(env, store, updated, route, config.environment);
-  if (snapshotError) {
-    await rollbackConsoleSiteOwnerTransfer(store, site, updatedAt, config.environment);
-    return snapshotError;
+  let updated;
+  let route;
+  try {
+    const result = await createSiteOwnershipApplication({ store, env })({
+      environment: config.environment,
+      site,
+      target,
+      buildAuditEvent: (updatedAt) =>
+        buildSiteOwnerTransferAuditEvent(
+          env,
+          config,
+          { type: 'user', userId: session.userId },
+          site,
+          target,
+          { source: 'console', createdAt: updatedAt }
+        ),
+      compensateSnapshotFailure: true,
+    });
+    updated = result.site;
+    route = result.route;
+  } catch (error) {
+    return siteTransferErrorResponse(error);
   }
 
   const visible = await store.getConsoleSiteDetail({
@@ -351,24 +354,6 @@ async function updateConsoleSiteSettings(request, env, config, store, session, s
       ownerTeamType: target.teamType || null,
     }),
   });
-}
-
-async function rollbackConsoleSiteOwnerTransfer(store, previousSite, updatedAt, environment) {
-  const previousOwnerType = previousSite.ownerType || 'user';
-  const previousOwnerId = previousSite.ownerId || previousSite.ownerUserId;
-  const previousOwnerUserId = previousSite.ownerUserId || (previousOwnerType === 'user' ? previousOwnerId : null);
-  if (!previousOwnerId) return null;
-  return store.transferSiteOwner(
-    previousSite.id,
-    {
-      ownerType: previousOwnerType,
-      ownerId: previousOwnerId,
-      ownerUserId: previousOwnerUserId,
-      defaultVisibility: previousSite.defaultVisibility,
-      updatedAt,
-    },
-    environment
-  );
 }
 
 async function resolveConsoleSiteOwnerTarget(store, config, session, body) {
