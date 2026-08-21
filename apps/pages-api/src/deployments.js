@@ -409,7 +409,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
   const runtimeBindings = runtimeConfigResult.runtimeBindings;
   const versionId = nextId(env, 'ver');
   const plannedWorkerName = workerNameFor(site, versionId, config.environment);
-  const providerApplication = createDeploymentProviderApplication({ env, config, store });
+  const providerApplication = createDeploymentProviderApplication({ env, config, store, trace });
   const providerResult = providerApplication.prepare({ site });
   if (!providerResult.ok) {
     await recordDeploymentStage(trace, {
@@ -512,12 +512,6 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
     );
   }
   const uploadExposure = normalizeExposureForDeployment(site.route?.exposure || site.defaultExposure);
-  const providerUploadStage = trace
-    ? startDeploymentStage(trace, {
-        stage: 'provider_upload',
-        operation: 'provider_upload',
-      })
-    : null;
   const providerUploadResult = await providerApplication.upload({
     provider,
     site,
@@ -531,37 +525,13 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
     assetFiles,
     runtimeBindings,
   });
-  let uploaded = providerUploadResult.ok ? providerUploadResult.uploaded : null;
-  let providerUploadFailed = !providerUploadResult.ok;
-  let providerUploadError = providerUploadResult.error?.cause;
-  if (!providerUploadFailed) {
-    try {
-      if (providerUploadStage) {
-        await finishDeploymentStage(providerUploadStage, {
-          status: 'succeeded',
-          operation: uploaded?.operation,
-        });
-      }
-    } catch (error) {
-      providerUploadFailed = true;
-      providerUploadError = error;
-    }
-  }
-  if (providerUploadFailed) {
-    const error = providerUploadError;
+  const uploaded = providerUploadResult.ok ? providerUploadResult.uploaded : null;
+  if (!providerUploadResult.ok) {
+    const error = providerUploadResult.error?.cause;
     const code = publicProviderErrorCode(error, 'upload');
     const executionProvider = provider.executionProvider || 'wfp';
     const providerDiagnostics = buildProviderFailureDiagnostics(error, executionProvider);
     const disposition = providerFailureDisposition(error, 'upload', providerDiagnostics);
-    if (providerUploadStage) {
-      await finishDeploymentStage(providerUploadStage, {
-        status: 'failed',
-        error,
-        errorCode: code,
-        errorMessage: 'Deployment upload failed.',
-        diagnostics: { causeClass: 'provider_upload_error' },
-      });
-    }
     await finalizeFailedDeployment({
       errorCode: code,
       errorMessage: 'Deployment upload failed.',
@@ -3018,9 +2988,32 @@ async function completeCommittedDeployment({
   }).complete(command);
 }
 
-function createDeploymentProviderApplication({ env, config, store }) {
+function createDeploymentProviderApplication({ env, config, store, trace = null }) {
   return createDeploymentProviderOperations({
     providers: createDeploymentProviderPort((site) => createDeploymentProvider(env, config, store, site)),
+    uploadTelemetry: {
+      start: () =>
+        trace
+          ? startDeploymentStage(trace, {
+              stage: 'provider_upload',
+              operation: 'provider_upload',
+            })
+          : null,
+      finish: (stage, outcome) =>
+        stage
+          ? finishDeploymentStage(stage, {
+              status: outcome.status,
+              ...(outcome.status === 'succeeded'
+                ? { operation: outcome.operation }
+                : {
+                    error: outcome.cause,
+                    errorCode: publicProviderErrorCode(outcome.cause, 'upload'),
+                    errorMessage: 'Deployment upload failed.',
+                    diagnostics: { causeClass: 'provider_upload_error' },
+                  }),
+            })
+          : undefined,
+    },
   });
 }
 

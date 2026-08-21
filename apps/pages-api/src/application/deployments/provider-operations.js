@@ -1,5 +1,7 @@
-export function createDeploymentProviderOperations({ providers }) {
+export function createDeploymentProviderOperations({ providers, uploadTelemetry }) {
   if (typeof providers?.create !== 'function') throw new TypeError('providers.create is required');
+  if (typeof uploadTelemetry?.start !== 'function') throw new TypeError('uploadTelemetry.start is required');
+  if (typeof uploadTelemetry?.finish !== 'function') throw new TypeError('uploadTelemetry.finish is required');
 
   return { prepare, upload, verify };
 
@@ -11,11 +13,28 @@ export function createDeploymentProviderOperations({ providers }) {
     }
   }
 
-  async function upload(command) {
+  function upload(command) {
+    const stage = uploadTelemetry.start();
+    return uploadAfterStart(command, stage);
+  }
+
+  async function uploadAfterStart(command, stage) {
     const { provider, ...input } = command;
+    let result;
     try {
-      return { ok: true, uploaded: await provider.upload(input) };
+      result = { ok: true, uploaded: await provider.upload(input) };
     } catch (cause) {
+      result = failed('DEPLOYMENT_PROVIDER_UPLOAD_FAILED', cause);
+    }
+    if (!result.ok) {
+      await uploadTelemetry.finish(stage, { status: 'failed', cause: result.error.cause });
+      return result;
+    }
+    try {
+      await uploadTelemetry.finish(stage, { status: 'succeeded', operation: result.uploaded?.operation });
+      return result;
+    } catch (cause) {
+      await uploadTelemetry.finish(stage, { status: 'failed', cause });
       return failed('DEPLOYMENT_PROVIDER_UPLOAD_FAILED', cause);
     }
   }
