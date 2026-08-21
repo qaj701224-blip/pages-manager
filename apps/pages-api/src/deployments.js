@@ -1,6 +1,7 @@
 import { validateSiteSlug } from '@xd/pages-runtime-protocol';
 
 import { isManagedWfpWorkerName } from './admin-resource-governance.js';
+import { createRollbackLeaseAcquisition } from './application/deployments/acquire-rollback-lease.js';
 import { createDeploymentRouteActivation } from './application/deployments/activate-route.js';
 import {
   createDeploymentCompletion,
@@ -32,6 +33,7 @@ import { createDeploymentRecordsPort } from './application/ports/deployment-reco
 import { createDeploymentRoutesPort } from './application/ports/deployment-routes.js';
 import { createDeploymentVersionsPort } from './application/ports/deployment-versions.js';
 import { createDeploymentWebhookTeamsPort } from './application/ports/deployment-webhooks.js';
+import { createRollbackLeasePort } from './application/ports/rollback-lease.js';
 import { createRollbackOfficeNetVersionsPort } from './application/ports/rollback-office-net-versions.js';
 import { createRollbackRouteStatePort } from './application/ports/rollback-route-state.js';
 import { createRollbackSiteResolutionPort } from './application/ports/rollback-site-resolution.js';
@@ -1641,25 +1643,17 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
       trace,
     });
 
-  let rollbackLease = null;
   let rollbackPolicyStage = trace
     ? startDeploymentStage(trace, {
         stage: 'route_policy_lock',
         operation: 'rollback_policy_lock',
       })
     : null;
-  try {
-    rollbackLease =
-      typeof store.acquireSiteCommitLock === 'function'
-        ? await acquireRenewableSiteCommitLease(store, config.environment, site.id, {
-            lockId: nextId(env, 'rollbacklock'),
-            ...(Number.isFinite(env?.SITE_COMMIT_LOCK_RENEW_INTERVAL_MS)
-              ? { renewIntervalMs: env.SITE_COMMIT_LOCK_RENEW_INTERVAL_MS }
-              : {}),
-            ...(Number.isFinite(env?.SITE_COMMIT_LOCK_TIMEOUT_MS) ? { timeoutMs: env.SITE_COMMIT_LOCK_TIMEOUT_MS } : {}),
-          })
-        : null;
-  } catch {
+  const rollbackLeaseResult = await createRollbackLeaseAcquisitionApplication(store, env).acquire({
+    environment: config.environment,
+    siteId: site.id,
+  });
+  if (!rollbackLeaseResult.ok && rollbackLeaseResult.error.reason === 'acquire_failed') {
     if (rollbackPolicyStage) {
       await finishDeploymentStage(rollbackPolicyStage, {
         status: 'failed',
@@ -1684,7 +1678,7 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
       'Refresh the site status and retry the rollback.'
     );
   }
-  if (!rollbackLease) {
+  if (!rollbackLeaseResult.ok) {
     if (rollbackPolicyStage) {
       await finishDeploymentStage(rollbackPolicyStage, {
         status: 'failed',
@@ -1710,6 +1704,7 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
       'Refresh the site status and retry the rollback.'
     );
   }
+  const rollbackLease = rollbackLeaseResult.lease;
   if (rollbackPolicyStage) {
     await finishDeploymentStage(rollbackPolicyStage, { status: 'succeeded' });
     rollbackPolicyStage = null;
@@ -3148,6 +3143,22 @@ function createRollbackOfficeNetVerificationApplication({ store, provider }) {
     officeNet: {
       ensure: (command) => ensurePublicWorkerOfficeNetAbsent(provider, { store, ...command }),
     },
+  });
+}
+
+function createRollbackLeaseAcquisitionApplication(store, env) {
+  return createRollbackLeaseAcquisition({
+    leases: createRollbackLeasePort({
+      store,
+      acquireRenewable: acquireRenewableSiteCommitLease,
+      ids: { next: (prefix) => nextId(env, prefix) },
+      options: {
+        ...(Number.isFinite(env?.SITE_COMMIT_LOCK_RENEW_INTERVAL_MS)
+          ? { renewIntervalMs: env.SITE_COMMIT_LOCK_RENEW_INTERVAL_MS }
+          : {}),
+        ...(Number.isFinite(env?.SITE_COMMIT_LOCK_TIMEOUT_MS) ? { timeoutMs: env.SITE_COMMIT_LOCK_TIMEOUT_MS } : {}),
+      },
+    }),
   });
 }
 
