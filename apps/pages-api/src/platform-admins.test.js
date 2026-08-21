@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import worker from './index.js';
-import { createTestPagesStore } from './test-store.js';
+import { createTestPagesStore } from '../test-support/pages-store-fixture.js';
 
 test('platform admin store grants, lists, checks, and revokes active admins while preserving one admin', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-01T00:00:00.000Z' });

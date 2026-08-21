@@ -4,7 +4,7 @@ import test from 'node:test';
 import { handleAccessKeysApi } from './access-keys.js';
 import { authenticateApiRequest } from './auth.js';
 import { createConnectionJwksCache } from './connection-assertion.js';
-import { createTestPagesStore } from './test-store.js';
+import { createTestPagesStore } from '../test-support/pages-store-fixture.js';
 import { handleWhoamiApi } from './whoami.js';
 
 const ISSUER = 'https://auth-dev.cindy.test';

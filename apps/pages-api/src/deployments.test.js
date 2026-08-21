@@ -8,7 +8,13 @@ import worker from './index.js';
 import { createAccessKeyPlaintext, hashAccessKey } from './crypto.js';
 import { ensurePublicWorkerOfficeNetAbsent } from './transport/shared/public-office-net-application.js';
 import { buildRouteSnapshot, RoutePointerDO, writeRouteSnapshot } from './route-snapshot.js';
-import { createTestPagesStore } from './test-store.js';
+import {
+  addTestSiteMember,
+  createTestPagesStore,
+  updateTestDeployment,
+  updateTestSite,
+  updateTestSiteVersion,
+} from '../test-support/pages-store-fixture.js';
 import { seedLifecycleWebhook, TEST_WEBHOOK_URL_ENCRYPTION_KEY } from './lifecycle-webhook-test-fixtures.js';
 
 const BEARER_USR_1 = createAccessKeyPlaintext({
@@ -2200,7 +2206,7 @@ test('accepts v2 publishPlan multipart metadata and passes resolved decision to 
 
 test('site normal worker override no longer diverts new deployments away from WFP', async () => {
   const store = await createSeededStore();
-  store.sites.get('site_1').executionModeOverride = 'normal-worker-slot';
+  await updateTestSite(store, 'site_1', { executionModeOverride: 'normal-worker-slot' });
   await store.createWorkerSlot({
     id: 'slot_production_007',
     environment: 'production',
@@ -2607,6 +2613,7 @@ test('assets-only deploys ignore vars metadata without syncing site vars', async
     actorId: 'usr_1',
     updatedAt: '2026-06-15T00:00:00.000Z',
   });
+  const varsBeforeDeployment = await store.listEnabledSiteVars('production', 'site_1');
   const uploads = [];
   const env = testEnv(store, createSnapshotStore(), {
     WFP_PROVIDER: {
@@ -2632,20 +2639,7 @@ test('assets-only deploys ignore vars metadata without syncing site vars', async
 
   assert.equal(response.status, 201, await response.clone().text());
   assert.deepEqual(uploads, [{ vars: {}, secrets: [] }]);
-  assert.deepEqual(await store.listEnabledSiteVars('production', 'site_1'), [
-    {
-      id: 'var_1',
-      environment: 'production',
-      siteId: 'site_1',
-      name: 'FEATURE_FLAG',
-      value: 'on',
-      revision: 1,
-      createdBy: 'usr_1',
-      createdAt: '2026-06-15T00:00:00.000Z',
-      updatedAt: '2026-06-15T00:00:00.000Z',
-      deletedAt: null,
-    },
-  ]);
+  assert.deepEqual(await store.listEnabledSiteVars('production', 'site_1'), varsBeforeDeployment);
   const version = await store.getSiteVersion('ver_1');
   assert.deepEqual(version.varNamesJson, []);
   assert.deepEqual(version.runtimeConfigSnapshotJson, { vars: [], secrets: [] });
@@ -3370,6 +3364,7 @@ test('deployments reject runtime binding quotas before provider upload', async (
 
 test('secrets API stores site-level secrets and delete disables future deployments without listing values', async () => {
   const store = await createSeededStore();
+  const env = testEnv(store, createSnapshotStore());
   const put = await worker.fetch(
     jsonRequest(
       'https://api.pages.xd.team/.xd-pages/api/sites/guide/secrets',
@@ -3379,7 +3374,7 @@ test('secrets API stores site-level secrets and delete disables future deploymen
       },
       { method: 'PUT' }
     ),
-    testEnv(store, createSnapshotStore())
+    env
   );
   const del = await worker.fetch(
     jsonRequest(
@@ -3389,11 +3384,11 @@ test('secrets API stores site-level secrets and delete disables future deploymen
       },
       { method: 'DELETE' }
     ),
-    testEnv(store, createSnapshotStore())
+    env
   );
   const list = await worker.fetch(
     authRequest('https://api.pages.xd.team/.xd-pages/api/sites/guide/secrets'),
-    testEnv(store, createSnapshotStore())
+    env
   );
 
   assert.equal(put.status, 200, await put.clone().text());
@@ -4611,7 +4606,7 @@ test('viewer members cannot deploy rollback or manage site secrets', async () =>
     realname: 'Viewer User',
     employeeStatus: 'active',
   });
-  await store.addSiteMember({
+  await addTestSiteMember(store, {
     siteId: 'site_1',
     userId: 'usr_2',
     role: 'viewer',
@@ -5285,22 +5280,20 @@ test('WFP public rollback removes and verifies OfficeNet before route cutover', 
   await writeCurrentRouteSnapshot(store, snapshots);
 
   const events = [];
-  const env = testEnv(store, snapshots, {
-    WFP_PROVIDER: {
-      removeOfficeNetBinding: async ({ workerName }) => events.push(['remove', workerName]),
-      verifyOfficeNetAbsent: async ({ workerName }) => {
-        events.push(['verify', workerName]);
-        return true;
-      },
+  initialEnv.WFP_PROVIDER = {
+    removeOfficeNetBinding: async ({ workerName }) => events.push(['remove', workerName]),
+    verifyOfficeNetAbsent: async ({ workerName }) => {
+      events.push(['verify', workerName]);
+      return true;
     },
-  });
+  };
   const rollback = await worker.fetch(
     jsonRequest(
       'https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback',
       {},
       { 'Idempotency-Key': 'public_rollback_1' }
     ),
-    env
+    initialEnv
   );
 
   assert.equal(rollback.status, 201, await rollback.clone().text());
@@ -5720,7 +5713,7 @@ test('rollback policy conflict keeps the WFP provider fallback for legacy versio
       env
     )
   );
-  store.siteVersions.get('ver_1').executionProvider = null;
+  await updateTestSiteVersion(store, 'ver_1', { executionProvider: null });
   store.acquireSiteCommitLock = async () => null;
 
   const rollback = await worker.fetch(
@@ -6974,7 +6967,7 @@ test('deployment idempotency replay claims a trace for legacy deployments withou
     }),
     env
   );
-  await store.updateDeployment('dep_1', { traceId: null });
+  await updateTestDeployment(store, 'dep_1', { traceId: null });
 
   const replay = await worker.fetch(
     deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
@@ -7000,7 +6993,7 @@ test('deployment idempotency replay keeps a trace when legacy trace claiming fai
       env
     )
   );
-  await store.updateDeployment('dep_1', { traceId: null });
+  await updateTestDeployment(store, 'dep_1', { traceId: null });
   store.claimDeploymentTrace = async () => {
     throw new Error('claim failed');
   };
@@ -7062,7 +7055,7 @@ test('rollback idempotency replay keeps a trace when legacy trace claiming fails
     env
   );
   assert.equal(firstRollback.status, 201, await firstRollback.clone().text());
-  await store.updateDeployment('dep_3', { traceId: null });
+  await updateTestDeployment(store, 'dep_3', { traceId: null });
   store.claimDeploymentTrace = async () => {
     throw new Error('claim failed');
   };

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import worker from './index.js';
-import { createTestPagesStore } from './test-store.js';
+import { createTestPagesStore } from '../test-support/pages-store-fixture.js';
 import { deliverWebhookEvent } from './webhooks.js';
 
 const FULL_WEBHOOK_URL = 'https://hooks.slack.com/services/T000/B000/super-secret-token?debug=1';
@@ -88,7 +88,7 @@ test('console admin accepts catalog events and rejects events without producers'
   assert.deepEqual((await create.json()).webhook.events, ['site.deployed', 'site.failed', 'site.disabled', 'site.deleted']);
 
   await store.createWebhookSubscription({
-    id: 'wh_1',
+    id: 'wh_seed',
     environment: 'production',
     name: 'Slack deploy events',
     events: ['site.deployed'],
@@ -101,7 +101,7 @@ test('console admin accepts catalog events and rejects events without producers'
     createdByUserId: 'usr_root',
   });
   const update = await worker.fetch(
-    internalConsoleRequest('/.xd-pages/api/console/admin/webhooks/wh_1', {
+    internalConsoleRequest('/.xd-pages/api/console/admin/webhooks/wh_seed', {
       method: 'PATCH',
       body: {
         events: ['team.member.updated'],

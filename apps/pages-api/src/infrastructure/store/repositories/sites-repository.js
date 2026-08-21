@@ -232,7 +232,6 @@ export const sitesRepositoryMethods = {
             FROM site_routes AS route
             WHERE route.site_id = sites.id
               AND route.environment = sites.environment
-              AND route.route_status = 'active'
             ORDER BY route.updated_at DESC, route.id DESC
             LIMIT 1
           )
@@ -284,7 +283,6 @@ export const sitesRepositoryMethods = {
               FROM site_routes AS route
               WHERE route.site_id = sites.id
                 AND route.environment = sites.environment
-                AND route.route_status = 'active'
               ORDER BY route.updated_at DESC, route.id DESC
               LIMIT 1
             )

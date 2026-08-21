@@ -206,7 +206,7 @@ export const departmentMetadataMethods = {
       return this.getTeam(target.id);
     }
     const deterministicId = departmentTeamId(environment, normalizedPath);
-    const existingById = await this.getTeam(deterministicId);
+    const existingById = await this.getTeamForDepartmentMerge(deterministicId, environment);
     if (existingById?.mergedIntoTeamId) {
       target = await this.getTeam(existingById.mergedIntoTeamId);
       if (target && target.environment === environment && target.status === 'active' && !target.deletedAt) {
@@ -263,7 +263,7 @@ export const departmentMetadataMethods = {
         ),
       this.auditEventStatement(departmentTeamAuditEvent(team, 'system.department_team.create', now)),
     ]);
-    const inserted = await this.getTeam(team.id);
+    const inserted = await this.getTeamForDepartmentMerge(team.id, environment);
     if (inserted?.mergedIntoTeamId) {
       const target = await this.getTeam(inserted.mergedIntoTeamId);
       if (target && target.environment === environment && target.status === 'active' && !target.deletedAt) return target;

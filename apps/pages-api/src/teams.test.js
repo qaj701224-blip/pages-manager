@@ -3,7 +3,11 @@ import test from 'node:test';
 
 import { createAccessKeyPlaintext, hashAccessKey } from './crypto.js';
 import worker from './index.js';
-import { createTestPagesStore } from './test-store.js';
+import {
+  createTestPagesStore,
+  insertTestTeam,
+  insertTestTeamMember,
+} from '../test-support/pages-store-fixture.js';
 
 const BEARER_USR_MEMBER = createAccessKeyPlaintext({
   environment: 'production',
@@ -322,11 +326,11 @@ test('department hydration updates full member path without migrating within the
 
 test('department hydration merges an existing leaf department team into the canonical team', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
-  const legacy = seedLegacyDepartmentTeam(store, {
+  const legacy = await seedLegacyDepartmentTeam(store, {
     id: 'team_legacy_leaf',
     departmentPath: '心动/发行服务/平台支撑部/技术/Web',
   });
-  store.teamMembers.set(`${legacy.id}:usr_member`, {
+  await insertTestTeamMember(store, {
     teamId: legacy.id,
     userId: 'usr_member',
     role: 'admin',
@@ -340,7 +344,7 @@ test('department hydration merges an existing leaf department team into the cano
     createdAt: '2026-06-14T00:00:00.000Z',
     updatedAt: '2026-06-14T00:00:00.000Z',
   });
-  store.teamMembers.set(`${legacy.id}:usr_other`, {
+  await insertTestTeamMember(store, {
     teamId: legacy.id,
     userId: 'usr_other',
     role: 'publisher',
@@ -368,7 +372,7 @@ test('department hydration merges an existing leaf department team into the cano
   const movedOtherMember = await store.getTeamMember({ teamId: hydrated.team.id, userId: 'usr_other' });
   assert.equal(movedOtherMember.departmentPath, '心动/发行服务/平台支撑部/技术/Web');
   assert.equal((await store.getSite('site_legacy')).ownerId, hydrated.team.id);
-  assert.equal(store.teams.get(legacy.id).status, 'merged');
+  assert.equal((await store.getTeamForDepartmentMerge(legacy.id, 'production')).status, 'merged');
   const mergeAudit = (await store.listAuditEvents()).find((event) => event.eventType === 'admin.department_team.merge');
   assert.equal(mergeAudit?.actorType, 'system');
   assert.equal(mergeAudit?.actorUserId, 'system:xds');
@@ -980,7 +984,7 @@ async function seedAccessKey(store, keyId, ownerUserId, options = {}) {
   return plaintext;
 }
 
-function seedLegacyDepartmentTeam(store, { id, departmentPath }) {
+async function seedLegacyDepartmentTeam(store, { id, departmentPath }) {
   const now = '2026-06-14T00:00:00.000Z';
   const team = {
     id,
@@ -1000,7 +1004,7 @@ function seedLegacyDepartmentTeam(store, { id, departmentPath }) {
     createdAt: now,
     updatedAt: now,
   };
-  store.teams.set(team.id, team);
+  await insertTestTeam(store, team);
   return team;
 }
 
