@@ -13,6 +13,7 @@ import { createDeploymentVersionCreation } from './application/deployments/creat
 import { createDeploymentSucceededWebhook } from './application/deployments/deliver-succeeded-webhook.js';
 import { createDeploymentFailedWebhook } from './application/deployments/deliver-failed-webhook.js';
 import { createDeploymentRecord } from './application/deployments/deployment-record.js';
+import { createSuccessfulRollbackFinalization } from './application/deployments/finalize-successful-rollback.js';
 import { createSuccessfulDeploymentFinalization } from './application/deployments/finalize-successful-deployment.js';
 import { createPublicWorkerOfficeNetGuard } from './application/deployments/ensure-public-office-net.js';
 import { createRollbackOfficeNetVerification } from './application/deployments/ensure-rollback-office-net.js';
@@ -1653,20 +1654,10 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
 
   await releaseSiteCommitLeaseBestEffort(rollbackLease);
 
-  const completedAt = readNow(env);
-  const completed = await completeCommittedDeployment({
-    store,
-    env,
-    trace,
+  const completed = await createSuccessfulRollbackFinalizationApplication({ store, env, trace }).finalize({
     deployment: deploymentResult.deployment,
-    versionId: version.id,
-    previousVersionId: currentRoute.activeVersionId,
-    completedAt,
-  });
-  await recordDeploymentStage(trace, {
-    stage: 'webhook_delivery',
-    operation: 'rollback_no_webhook',
-    status: 'skipped',
+    version,
+    previousRoute: currentRoute,
   });
 
   return jsonOk(await deploymentEnvelope(store, completed, { version, route }), 201);
@@ -2742,6 +2733,21 @@ function createSuccessfulDeploymentFinalizationApplication({ store, env, config,
   });
 }
 
+function createSuccessfulRollbackFinalizationApplication({ store, env, trace }) {
+  return createSuccessfulRollbackFinalization({
+    completion: createDeploymentCompletionApplication({ store, env, trace }),
+    telemetry: {
+      webhookSkipped: () =>
+        recordDeploymentStage(trace, {
+          stage: 'webhook_delivery',
+          operation: 'rollback_no_webhook',
+          status: 'skipped',
+        }),
+    },
+    clock: { now: () => readNow(env) },
+  });
+}
+
 function createDeploymentRouteSnapshotRecoveryApplication({ store, env, trace = null }) {
   return createDeploymentRouteSnapshotRecovery({
     routes: createDeploymentRecoveryPort(store),
@@ -2912,23 +2918,6 @@ function createDeploymentFailedWebhookApplication({ store, env, config, trace })
     clock: { now: () => readNow(env) },
     ids: { next: (prefix) => nextId(env, prefix) },
   });
-}
-
-async function completeCommittedDeployment({
-  store,
-  env,
-  trace,
-  deployment,
-  versionId,
-  previousVersionId,
-  completedAt,
-}) {
-  const command = { deployment, versionId, previousVersionId, completedAt };
-  return createDeploymentCompletionApplication({
-    store,
-    trace,
-    env,
-  }).complete(command);
 }
 
 function createDeploymentProviderApplication({ env, config, store, trace = null }) {
