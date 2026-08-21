@@ -25,11 +25,13 @@ import { createDeploySiteResolution } from './application/deployments/resolve-de
 import { createRollbackSiteResolution } from './application/deployments/resolve-rollback-site.js';
 import { createDeploymentRuntimeConfigResolution } from './application/deployments/resolve-runtime-config.js';
 import { createDeploymentRuntimeConfigRestoration } from './application/deployments/restore-runtime-config.js';
+import { createDeploymentCommitLease } from './application/deployments/run-under-commit-lease.js';
 import { createDeploymentRuntimeConfigSnapshotValidation } from './application/deployments/validate-runtime-config-snapshot.js';
 import { createDeploySiteResolutionPort } from './application/ports/deploy-site-resolution.js';
 import { createDeploymentCleanupTasksPort } from './application/ports/deployment-cleanup.js';
 import { createDeploymentCommitReconciliationPort } from './application/ports/deployment-commit-reconciliation.js';
 import { createDeploymentCompletionPort } from './application/ports/deployment-completion.js';
+import { createDeploymentCommitLeasePort } from './application/ports/deployment-commit-lease.js';
 import { createDeploymentFailurePort } from './application/ports/deployment-failure.js';
 import { createDeploymentFailureRecoveryPort } from './application/ports/deployment-failure-recovery.js';
 import { createDeploymentProviderPort } from './application/ports/deployment-provider.js';
@@ -848,7 +850,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
   let ownerTransferRollbackSite = null;
   let ownerTransferApplied = false;
   let activationSnapshotFailureResponse = null;
-  let routePolicyLockStage = null;
+  let routePolicyLockFailed = false;
   try {
     await persistIntermediateDeploymentState(store, deployment.id, { status: 'verified' }, 'persist_verified_deployment');
     previousRoute = await store.getRouteBySiteId(siteId, config.environment);
@@ -953,13 +955,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
       },
       'persist_activating_deployment'
     );
-    routePolicyLockStage = trace
-      ? startDeploymentStage(trace, {
-          stage: 'route_policy_lock',
-          operation: 'acquire_site_commit_lock',
-        })
-      : null;
-    if (typeof store.withSiteCommitLock !== 'function') throw deploymentOperationError('SITE_POLICY_LOCKED');
+    const commitLeaseApplication = createDeploymentCommitLeaseApplication(store, env, trace);
     const routeActivationApplication = createDeploymentRouteActivationApplication(store, env, trace);
     const routeSnapshotApplication = createDeploymentRouteSnapshotCommitApplication(
       store,
@@ -967,14 +963,9 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
       trace,
       'write_route_snapshot'
     );
-    route = await store.withSiteCommitLock(
-      config.environment,
-      siteId,
+    const commitResult = await commitLeaseApplication.run(
+      { environment: config.environment, siteId },
       async (activationLease) => {
-        if (routePolicyLockStage) {
-          await finishDeploymentStage(routePolicyLockStage, { status: 'succeeded' });
-          routePolicyLockStage = null;
-        }
         const routeBeforeActivation = previousRoute;
         const latestRoute = await store.getRouteBySiteId(siteId, config.environment);
         if (!latestRoute) throw deploymentOperationError('ROUTE_ACTIVATION_CONFLICT');
@@ -1156,20 +1147,17 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
           return null;
         }
         return activatedRoute;
-      },
-      { lockId: nextId(env, 'deploylock'), bestEffortRelease: true }
+      }
     );
-  } catch (error) {
-    const routePolicyLockFailed = Boolean(routePolicyLockStage);
-    if (routePolicyLockStage) {
-      await finishDeploymentStage(routePolicyLockStage, {
-        status: 'failed',
-        errorCode: error?.code || 'SITE_POLICY_LOCKED',
-        errorMessage: error?.message || 'Site policy lock could not be acquired.',
-        diagnostics: { causeClass: 'site_policy_lock_error' },
-      });
-      routePolicyLockStage = null;
+    if (!commitResult.ok) {
+      routePolicyLockFailed = true;
+      if (commitResult.error.reason === 'capability_unavailable') {
+        throw deploymentOperationError(commitResult.error.code);
+      }
+      throw commitResult.error.cause;
     }
+    route = commitResult.value;
+  } catch (error) {
     await cleanupUploadedWorkerAndRecord(trace, provider, uploaded, {
       originalFailure: error?.deploymentStateOperation
         ? { stage: 'deployment_state_persist', code: 'DEPLOYMENT_STATE_WRITE_FAILED' }
@@ -3103,6 +3091,37 @@ function createRollbackOfficeNetVerificationApplication({ store, provider }) {
     versions: createRollbackOfficeNetVersionsPort(store),
     officeNet: {
       ensure: (command) => ensurePublicWorkerOfficeNetAbsent(provider, { store, ...command }),
+    },
+  });
+}
+
+function createDeploymentCommitLeaseApplication(store, env, trace) {
+  return createDeploymentCommitLease({
+    leases: createDeploymentCommitLeasePort({
+      store,
+      ids: { next: (prefix) => nextId(env, prefix) },
+    }),
+    telemetry: {
+      start: () =>
+        trace
+          ? startDeploymentStage(trace, {
+              stage: 'route_policy_lock',
+              operation: 'acquire_site_commit_lock',
+            })
+          : null,
+      finish: (stage, outcome) =>
+        stage
+          ? finishDeploymentStage(stage, {
+              status: outcome.status,
+              ...(outcome.status === 'failed'
+                ? {
+                    errorCode: outcome.cause?.code || 'SITE_POLICY_LOCKED',
+                    errorMessage: outcome.cause?.message || 'Site policy lock could not be acquired.',
+                    diagnostics: { causeClass: 'site_policy_lock_error' },
+                  }
+                : {}),
+            })
+          : undefined,
     },
   });
 }
