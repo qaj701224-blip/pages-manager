@@ -319,7 +319,7 @@ node --test apps/pages-api/src/store-contract.test.js apps/pages-api/src/route-s
 
 - [x] dashboard/deployment trace/audit projections；
 - [x] public exposure mutation；
-- [ ] WFP orphan inventory/backfill；
+- [x] WFP orphan inventory/backfill；
 - [ ] ordinary Worker inventory/retirement；
 - [ ] v1 inventory/retirement；
 - [ ] admin site/team/user mutations。
