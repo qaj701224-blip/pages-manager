@@ -15,6 +15,7 @@ import { createDeploymentRecord } from './application/deployments/deployment-rec
 import { createPublicWorkerOfficeNetGuard } from './application/deployments/ensure-public-office-net.js';
 import { createRollbackOfficeNetVerification } from './application/deployments/ensure-rollback-office-net.js';
 import { createDeploymentProviderOperations } from './application/deployments/provider-operations.js';
+import { createRollbackRouteStateRead } from './application/deployments/read-rollback-route-state.js';
 import { createDeploymentRouteSnapshotRecovery } from './application/deployments/recover-route-snapshot.js';
 import { createRollbackRouteSnapshotRecovery } from './application/deployments/recover-rollback-route-snapshot.js';
 import { createDeploySiteResolution } from './application/deployments/resolve-deploy-site.js';
@@ -32,6 +33,7 @@ import { createDeploymentRoutesPort } from './application/ports/deployment-route
 import { createDeploymentVersionsPort } from './application/ports/deployment-versions.js';
 import { createDeploymentWebhookTeamsPort } from './application/ports/deployment-webhooks.js';
 import { createRollbackOfficeNetVersionsPort } from './application/ports/rollback-office-net-versions.js';
+import { createRollbackRouteStatePort } from './application/ports/rollback-route-state.js';
 import { createRollbackSiteResolutionPort } from './application/ports/rollback-site-resolution.js';
 import {
   createDeploymentRuntimeConfigMutationPort,
@@ -1713,10 +1715,11 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
     rollbackPolicyStage = null;
   }
   const rollbackRouteBeforeActivation = currentRoute;
-  let rollbackLatestRoute;
-  try {
-    rollbackLatestRoute = await store.getRouteBySiteId(site.id, config.environment);
-  } catch {
+  const rollbackRouteState = await createRollbackRouteStateReadApplication(store).read({
+    siteId: site.id,
+    environment: config.environment,
+  });
+  if (!rollbackRouteState.ok && rollbackRouteState.error.reason === 'route_read_failed') {
     await recordDeploymentStage(trace, {
       stage: 'route_activate',
       operation: 'rollback_route_state_read',
@@ -1741,7 +1744,7 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
       'Retry the rollback with a new Idempotency-Key.'
     );
   }
-  if (!rollbackLatestRoute) {
+  if (!rollbackRouteState.ok) {
     await recordDeploymentStage(trace, {
       stage: 'route_activate',
       operation: 'rollback_route_activate',
@@ -1761,6 +1764,7 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
     );
     return jsonError('ROUTE_ACTIVATION_CONFLICT', 'Route changed while rollback was activating.', 409, 'Retry the rollback.');
   }
+  const rollbackLatestRoute = rollbackRouteState.route;
   currentRoute = rollbackLatestRoute;
   let route;
   let rollbackProvider;
@@ -3144,6 +3148,12 @@ function createRollbackOfficeNetVerificationApplication({ store, provider }) {
     officeNet: {
       ensure: (command) => ensurePublicWorkerOfficeNetAbsent(provider, { store, ...command }),
     },
+  });
+}
+
+function createRollbackRouteStateReadApplication(store) {
+  return createRollbackRouteStateRead({
+    routes: createRollbackRouteStatePort(store),
   });
 }
 
