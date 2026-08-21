@@ -1444,29 +1444,10 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
   return jsonOk(await deploymentEnvelope(store, completed, { version, route, decision, ownerTransfer }), 201);
 }
 
-async function emitDeploymentFailedWebhook({ application, actor, site, deployment, environment, trace, ctx }) {
-  const stage = trace
-    ? startDeploymentStage(trace, {
-        stage: 'webhook_delivery',
-        operation: 'site_failed',
-      })
-    : null;
-  const delivery = Promise.resolve()
-    .then(async () => {
-      const outcome = await application.deliver({ actor, site, deployment, environment });
-      if (!stage) return;
-      await finishDeploymentStage(stage, {
-        status: outcome.status,
-        ...(outcome.status === 'failed'
-          ? {
-              errorCode: 'WEBHOOK_DELIVERY_FAILED',
-              errorMessage: 'Webhook delivery failed.',
-              diagnostics: { causeClass: outcome.causeClass },
-            }
-          : {}),
-      });
-    })
-    .catch(() => undefined);
+async function emitDeploymentFailedWebhook({ application, actor, site, deployment, environment, ctx }) {
+  const delivery = Promise.resolve(application.deliver({ actor, site, deployment, environment })).catch(
+    () => undefined
+  );
   if (ctx && typeof ctx.waitUntil === 'function') {
     try {
       ctx.waitUntil(delivery);
@@ -2876,7 +2857,7 @@ function createDeploymentCompletionApplication({ store, env, trace, stageHandle 
 }
 
 function createDeploymentFailureCompletionApplication({ store, env, config, ctx, trace }) {
-  const failedWebhook = createDeploymentFailedWebhookApplication({ store, env, config });
+  const failedWebhook = createDeploymentFailedWebhookApplication({ store, env, config, trace });
   const recoveryMarkers = createDeploymentFailureRecoveryMarkersInfrastructure(env, config);
   return createDeploymentFailureCompletion({
     deployments: createDeploymentFailurePort(store),
@@ -2924,7 +2905,6 @@ function createDeploymentFailureCompletionApplication({ store, env, config, ctx,
           site,
           deployment,
           environment: config.environment,
-          trace,
           ctx,
         }),
     },
@@ -3109,10 +3089,32 @@ function createDeploymentSucceededWebhookApplication({ store, env, config, trace
   });
 }
 
-function createDeploymentFailedWebhookApplication({ store, env, config }) {
+function createDeploymentFailedWebhookApplication({ store, env, config, trace }) {
   return createDeploymentFailedWebhook({
     teams: createDeploymentWebhookTeamsPort(store),
     webhooks: createDeploymentWebhookDispatcher({ store, env, config }),
+    telemetry: {
+      start: () =>
+        trace
+          ? startDeploymentStage(trace, {
+              stage: 'webhook_delivery',
+              operation: 'site_failed',
+            })
+          : null,
+      finish: (stage, outcome) =>
+        stage
+          ? finishDeploymentStage(stage, {
+              status: outcome.status,
+              ...(outcome.status === 'failed'
+                ? {
+                    errorCode: 'WEBHOOK_DELIVERY_FAILED',
+                    errorMessage: 'Webhook delivery failed.',
+                    diagnostics: { causeClass: outcome.causeClass },
+                  }
+                : {}),
+            })
+          : undefined,
+    },
     clock: { now: () => readNow(env) },
     ids: { next: (prefix) => nextId(env, prefix) },
   });

@@ -35,6 +35,7 @@ function createApplication(overrides = {}) {
   return createDeploymentFailedWebhook({
     teams: { get: null },
     webhooks: { deliver: async () => [] },
+    telemetry: { start: () => null, finish: async () => null },
     clock: { now: () => '2026-08-21T00:02:00.000Z' },
     ids: { next: () => 'evt_1' },
     ...overrides,
@@ -170,9 +171,62 @@ test('failed deployment webhook keeps the actor optional', async () => {
   assert.equal(delivered.actor, undefined);
 });
 
+test('failed deployment webhook starts telemetry before deferring delivery and preserves its outcome', async () => {
+  const calls = [];
+  const stage = { operation: 'site_failed' };
+  const application = createApplication({
+    webhooks: {
+      async deliver() {
+        calls.push(['deliver']);
+        return [{ deliveryStatus: 'succeeded' }];
+      },
+    },
+    telemetry: {
+      start() {
+        calls.push(['start']);
+        return stage;
+      },
+      async finish(receivedStage, outcome) {
+        calls.push(['finish', receivedStage, outcome]);
+      },
+    },
+  });
+
+  const delivery = application.deliver(command);
+  assert.deepEqual(calls, [['start']]);
+  assert.deepEqual(await delivery, { status: 'succeeded' });
+  assert.deepEqual(calls, [
+    ['start'],
+    ['deliver'],
+    ['finish', stage, { status: 'succeeded' }],
+  ]);
+});
+
+test('failed deployment webhook leaves telemetry start failures outside best-effort delivery isolation', () => {
+  const startError = new Error('invalid trace');
+  const application = createApplication({
+    webhooks: { deliver: async () => assert.fail('delivery must not run') },
+    telemetry: {
+      start() {
+        throw startError;
+      },
+      finish: async () => assert.fail('finish must not run'),
+    },
+  });
+
+  assert.throws(() => application.deliver(command), (error) => error === startError);
+});
+
 test('failed deployment webhook requires only its narrow capabilities', () => {
   assert.throws(
-    () => createDeploymentFailedWebhook({ teams: {}, webhooks: {}, clock: { now() {} }, ids: { next() {} } }),
+    () =>
+      createDeploymentFailedWebhook({
+        teams: {},
+        webhooks: {},
+        telemetry: {},
+        clock: { now() {} },
+        ids: { next() {} },
+      }),
     /webhooks\.deliver is required/
   );
 });

@@ -1,23 +1,33 @@
-export function createDeploymentFailedWebhook({ teams, webhooks, clock, ids }) {
+export function createDeploymentFailedWebhook({ teams, webhooks, telemetry, clock, ids }) {
   if (typeof webhooks?.deliver !== 'function') throw new TypeError('webhooks.deliver is required');
+  if (typeof telemetry?.start !== 'function') throw new TypeError('telemetry.start is required');
+  if (typeof telemetry?.finish !== 'function') throw new TypeError('telemetry.finish is required');
   if (typeof clock?.now !== 'function') throw new TypeError('clock.now is required');
   if (typeof ids?.next !== 'function') throw new TypeError('ids.next is required');
 
   return { deliver };
 
-  async function deliver(command) {
+  function deliver(command) {
+    const stage = telemetry.start();
+    return Promise.resolve().then(() => deliverAfterStart(command, stage));
+  }
+
+  async function deliverAfterStart(command, stage) {
+    let outcome;
     try {
       const team = await resolveTeam(teams, command.site);
       const deliveries = await webhooks.deliver(buildEvent(command, team, clock, ids), {
         now: () => command.deployment.completedAt || clock.now(),
       });
-      if (!Array.isArray(deliveries)) return failedOutcome();
-      if (deliveries.length === 0) return { status: 'skipped' };
-      if (deliveries.some((delivery) => delivery?.deliveryStatus === 'failed')) return failedOutcome();
-      return { status: 'succeeded' };
+      if (!Array.isArray(deliveries)) outcome = failedOutcome();
+      else if (deliveries.length === 0) outcome = { status: 'skipped' };
+      else if (deliveries.some((delivery) => delivery?.deliveryStatus === 'failed')) outcome = failedOutcome();
+      else outcome = { status: 'succeeded' };
     } catch {
-      return failedOutcome();
+      outcome = failedOutcome();
     }
+    await telemetry.finish(stage, outcome);
+    return outcome;
   }
 }
 
