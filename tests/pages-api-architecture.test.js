@@ -7,10 +7,7 @@ import { fileURLToPath } from 'node:url';
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const APPS_ROOT = path.join(REPO_ROOT, 'apps');
 const PAGES_API_SRC = path.join(APPS_ROOT, 'pages-api', 'src');
-const KNOWN_CROSS_APP_IMPORTS = new Set([
-  'apps/pages-auth/src/oauth-endpoints.js -> apps/pages-api/src/department-hydration.js',
-  'apps/pages-auth/src/oauth-endpoints.js -> apps/pages-api/src/store.js',
-]);
+const KNOWN_CROSS_APP_IMPORTS = new Set();
 
 test('pages-api production imports follow the declared layer direction', () => {
   const violations = [];
@@ -26,7 +23,7 @@ test('pages-api production imports follow the declared layer direction', () => {
   assert.deepEqual(violations, []);
 });
 
-test('production cross-app source imports stay limited to the metadata migration exception', () => {
+test('production apps do not import another app source tree', () => {
   const imports = new Set();
   for (const source of productionJavaScriptFiles(APPS_ROOT)) {
     for (const specifier of moduleSpecifiers(readFileSync(source, 'utf8'))) {
@@ -111,10 +108,7 @@ function productionJavaScriptFiles(root) {
 
 function moduleSpecifiers(source) {
   const values = [];
-  const patterns = [
-    /\b(?:import|export)\s+(?:[^'";]*?\s+from\s+)?['"]([^'"]+)['"]/g,
-    /\bimport\(\s*['"]([^'"]+)['"]\s*\)/g,
-  ];
+  const patterns = [/\b(?:import|export)\s+(?:[^'";]*?\s+from\s+)?['"]([^'"]+)['"]/g, /\bimport\(\s*['"]([^'"]+)['"]\s*\)/g];
   for (const pattern of patterns) {
     for (const match of source.matchAll(pattern)) values.push(match[1]);
   }

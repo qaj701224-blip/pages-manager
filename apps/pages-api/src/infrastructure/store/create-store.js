@@ -1,3 +1,5 @@
+import { pagesMetadataMethods } from '@xd/pages-metadata';
+
 import { readSiteSecretStoreConfig } from '../config/runtime-config.js';
 import { accessKeysRepositoryMethods } from './repositories/access-keys-repository.js';
 import { auditRepositoryMethods } from './repositories/audit-repository.js';
@@ -9,13 +11,13 @@ import { sitesRepositoryMethods } from './repositories/sites-repository.js';
 import { teamsRepositoryMethods } from './repositories/teams-repository.js';
 import { webhooksRepositoryMethods } from './repositories/webhooks-repository.js';
 import { workerSlotsRepositoryMethods } from './repositories/worker-slots-repository.js';
-import { departmentMetadataMethods } from './transactions/department-metadata.js';
 import { routeActivationMethods } from './transactions/route-activation.js';
 import { runtimeConfigMutationMethods } from './transactions/runtime-config-mutation.js';
 import { siteLifecycleMethods } from './transactions/site-lifecycle.js';
 import { sitePolicyMethods } from './transactions/site-policy.js';
 
 const storeMethodCollections = [
+  pagesMetadataMethods,
   identityRepositoryMethods,
   webhooksRepositoryMethods,
   governanceRepositoryMethods,
@@ -27,7 +29,6 @@ const storeMethodCollections = [
   workerSlotsRepositoryMethods,
   accessKeysRepositoryMethods,
   deploymentsRepositoryMethods,
-  departmentMetadataMethods,
   siteLifecycleMethods,
   sitePolicyMethods,
   routeActivationMethods,

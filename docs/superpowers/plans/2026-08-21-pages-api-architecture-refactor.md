@@ -190,9 +190,9 @@ node --test apps/pages-api/src/store.test.js apps/pages-api/src/store-contract.t
 
 **Steps**
 
-- [ ] 仅提取 user identity、SSO merge/session version、department path/team identity/hydration 和必要的命名 transaction。
-- [ ] package 不依赖任何 app，不暴露完整 Pages Store，不包含 site/deployment/provider/HTTP。
-- [ ] pages-api identity adapter 组合该 package，保持现有 facade 行为。
+- [x] 仅提取 user identity、SSO merge/session version、department path/team identity/hydration 和必要的命名 transaction。
+- [x] package 不依赖任何 app，不暴露完整 Pages Store，不包含 site/deployment/provider/HTTP。
+- [x] pages-api identity adapter 组合该 package，保持现有 facade 行为。
 
 ### Task 3.2：迁移 pages-auth
 
@@ -206,9 +206,9 @@ node --test apps/pages-api/src/store.test.js apps/pages-api/src/store-contract.t
 
 **Steps**
 
-- [ ] `pages-auth` 只从 `@xd/pages-metadata` 显式 exports import。
-- [ ] 删除两处 `eslint-disable no-restricted-imports` 和已知例外清单。
-- [ ] 确认两个 Worker 仍使用各自现有 `PAGES_METADATA` / `XD_OFFICE_NET` bindings。
+- [x] `pages-auth` 只从 `@xd/pages-metadata` 显式 exports import。
+- [x] 删除两处 `eslint-disable no-restricted-imports` 和已知例外清单。
+- [x] 确认两个 Worker 仍使用各自现有 `PAGES_METADATA` / `XD_OFFICE_NET` bindings。
 
 **Phase verify**
 

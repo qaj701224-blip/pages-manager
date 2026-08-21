@@ -73,9 +73,15 @@ importers:
 
   apps/pages-api:
     dependencies:
+      '@xd/org-directory':
+        specifier: workspace:*
+        version: link:../../packages/org-directory
       '@xd/pages-access-policy':
         specifier: workspace:*
         version: link:../../packages/pages-access-policy
+      '@xd/pages-metadata':
+        specifier: workspace:*
+        version: link:../../packages/pages-metadata
       '@xd/pages-runtime-protocol':
         specifier: workspace:*
         version: link:../../packages/pages-runtime-protocol
@@ -104,6 +110,12 @@ importers:
       '@xd/browser-pages':
         specifier: workspace:*
         version: link:../../packages/browser-pages
+      '@xd/org-directory':
+        specifier: workspace:*
+        version: link:../../packages/org-directory
+      '@xd/pages-metadata':
+        specifier: workspace:*
+        version: link:../../packages/pages-metadata
       '@xd/pages-runtime-protocol':
         specifier: workspace:*
         version: link:../../packages/pages-runtime-protocol
@@ -114,9 +126,6 @@ importers:
         specifier: workspace:*
         version: link:../../packages/worker-kit
     devDependencies:
-      '@xd/pages-api':
-        specifier: workspace:*
-        version: link:../pages-api
       wrangler:
         specifier: 'catalog:'
         version: 4.91.0
@@ -276,7 +285,15 @@ importers:
 
   packages/ip-guard: {}
 
+  packages/org-directory:
+    dependencies:
+      '@xd/pages-metadata':
+        specifier: workspace:*
+        version: link:../pages-metadata
+
   packages/pages-access-policy: {}
+
+  packages/pages-metadata: {}
 
   packages/pages-runtime-protocol: {}
 

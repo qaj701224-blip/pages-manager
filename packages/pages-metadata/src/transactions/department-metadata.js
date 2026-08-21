@@ -9,7 +9,7 @@ import {
   normalizeDepartmentPath,
   normalizeNullableString,
   randomStoreId,
-} from '../store-support.js';
+} from '../support/index.js';
 
 export const departmentMetadataMethods = {
   async previewDepartmentTeamMerge({ sourceTeamId, targetTeamId, environment }) {

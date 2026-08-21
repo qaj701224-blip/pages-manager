@@ -1,22 +1,9 @@
 import { browserPageResponse, wantsHtml } from '@xd/browser-pages';
-import {
-  AUTH_SESSION_COOKIE,
-  buildAuthSessionCookie,
-  readCookie,
-  signSessionJwt,
-  verifySessionJwt,
-} from '@xd/session-kit';
+import { fetchOrgUsersByEmail } from '@xd/org-directory';
+import { createPagesMetadataStore, hydrateUserDepartment, shouldHydrateUserDepartment } from '@xd/pages-metadata';
+import { AUTH_SESSION_COOKIE, buildAuthSessionCookie, readCookie, signSessionJwt, verifySessionJwt } from '@xd/session-kit';
 import { createOpaqueToken } from './id.js';
 import { jsonError, jsonOk, readJsonBody, safeRedirect } from './http.js';
-// 已知跨 app 依赖：pages-auth 与 pages-api 共享同一 D1 数据层，解除需 service binding 或抽出共享 store 包，另行处理。
-// eslint-disable-next-line no-restricted-imports
-import {
-  hydrateUserDepartmentFromDirectory,
-  shouldHydrateUserDepartment,
-} from '../../pages-api/src/department-hydration.js';
-// 已知跨 app 依赖：pages-auth 与 pages-api 共享同一 D1 数据层，解除需 service binding 或抽出共享 store 包，另行处理。
-// eslint-disable-next-line no-restricted-imports
-import { createPagesStore } from '../../pages-api/src/store.js';
 
 const AUTH_SESSION_AUDIENCE = 'pages-auth';
 const CLI_LOGIN_CONFIRM_AUDIENCE = 'pages-cli-login-confirm';
@@ -560,7 +547,7 @@ async function syncSsoUserProfile(env, profile, now) {
   if (typeof env?.syncSsoUserProfile === 'function') return env.syncSsoUserProfile(profile, { now });
 
   const timestamp = new Date(now * 1000).toISOString();
-  return createPagesStore(env).upsertUserFromSso({
+  return readPagesMetadataStore(env).upsertUserFromSso({
     userId: profile.userId,
     email: profile.email,
     realname: profile.realname,
@@ -575,6 +562,11 @@ async function syncSsoUserProfile(env, profile, now) {
   });
 }
 
+function readPagesMetadataStore(env) {
+  if (env?.PAGES_STORE) return env.PAGES_STORE;
+  return createPagesMetadataStore(env?.PAGES_METADATA);
+}
+
 async function hydrateDepartmentAfterSso(env, config, profile) {
   if (typeof env?.hydrateDepartmentAfterSso === 'function') {
     try {
@@ -585,18 +577,36 @@ async function hydrateDepartmentAfterSso(env, config, profile) {
   }
 
   try {
-    return await hydrateUserDepartmentFromDirectory({
-      env,
-      store: createPagesStore(env),
+    return await hydrateUserDepartment({
+      store: readPagesMetadataStore(env),
       environment: config.environment,
       user: {
         id: profile?.userId,
         email: profile?.email,
       },
+      directory: createOrgDirectory(env),
+      clock: env,
     });
   } catch {
     return null;
   }
+}
+
+function createOrgDirectory(env) {
+  const token = typeof env?.XDS_OPENAI_TOKEN === 'string' ? env.XDS_OPENAI_TOKEN.trim() : '';
+  const fetchImpl = resolveOrgDirectoryFetch(env);
+  if (!token || !fetchImpl) return null;
+  return {
+    findUsersByEmail: (emails) => fetchOrgUsersByEmail({ emails, token, fetchImpl }),
+  };
+}
+
+function resolveOrgDirectoryFetch(env) {
+  if (typeof env?.XDS_FETCH === 'function') return env.XDS_FETCH;
+  if (env?.XD_OFFICE_NET && typeof env.XD_OFFICE_NET.fetch === 'function') {
+    return env.XD_OFFICE_NET.fetch.bind(env.XD_OFFICE_NET);
+  }
+  return null;
 }
 
 async function readAuthSessionUserProfile(request, env, config, now) {
@@ -635,7 +645,7 @@ async function readAuthSessionUserProfile(request, env, config, now) {
     user =
       typeof env?.getUserForAuthSession === 'function'
         ? await env.getUserForAuthSession(userId)
-        : await createPagesStore(env).getUser(userId);
+        : await readPagesMetadataStore(env).getUser(userId);
   } catch {
     return null;
   }
