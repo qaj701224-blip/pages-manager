@@ -3,7 +3,6 @@ import { handleConsoleAdminApi } from './console/admin-handler.js';
 import { handleConsoleApi } from '../console.js';
 import { handleConsoleUsersApi } from '../console-users.js';
 import { createDeploymentTraceContext, recordDeploymentStage, withDeploymentTraceHeader } from '../deployment-trace.js';
-import { handleDeploymentsApi, handleVersionsApi } from '../deployments.js';
 import { jsonError, jsonOk } from '../http.js';
 import { handleInternalApi } from '../internal.js';
 import { buildReadme, buildSkill, markdownResponse } from '../public-docs.js';
@@ -12,6 +11,7 @@ import { handleConsoleTeamsApi, handleTeamsApi } from '../teams.js';
 import { handleWhoamiApi } from '../whoami.js';
 
 import { createRequestContext } from './shared/request-context.js';
+import { handleDeploymentsApi, handleVersionsApi } from './public/deployments-handler.js';
 
 export function createPagesApiRouter({ createStore }) {
   if (typeof createStore !== 'function') throw new TypeError('createStore is required');
