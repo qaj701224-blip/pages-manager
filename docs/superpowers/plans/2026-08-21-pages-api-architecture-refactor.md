@@ -28,12 +28,12 @@
 
 **Steps**
 
-- [ ] 为 `domain/**` 禁止 application、transport、infrastructure、Cloudflare adapter imports。
-- [ ] 为 `application/**` 禁止 transport、infrastructure、HTTP handler 和完整 runtime `env` adapter imports。
-- [ ] 为 `infrastructure/**` 禁止 transport imports。
-- [ ] 为 `transport/public|console|internal/**` 禁止互相 import；允许 `transport/shared`。
-- [ ] architecture test 扫描 production ESM import specifier，覆盖 ESLint glob 容易漏掉的相对路径绕行。
-- [ ] 保留现有 app 跨源码 import 临时例外的可见失败清单，只允许已知的 `pages-auth` 两处，阶段 3 删除清单与例外。
+- [x] 为 `domain/**` 禁止 application、transport、infrastructure、Cloudflare adapter imports。
+- [x] 为 `application/**` 禁止 transport、infrastructure、HTTP handler 和完整 runtime `env` adapter imports。
+- [x] 为 `infrastructure/**` 禁止 transport imports。
+- [x] 为 `transport/public|console|internal/**` 禁止互相 import；允许 `transport/shared`。
+- [x] architecture test 扫描 production ESM import specifier，覆盖 ESLint glob 容易漏掉的相对路径绕行。
+- [x] 保留现有 app 跨源码 import 临时例外的可见失败清单，只允许已知的 `pages-auth` 两处，阶段 3 删除清单与例外。
 
 **Verify**
 
@@ -53,9 +53,9 @@ pnpm exec eslint eslint.config.js tests/pages-api-architecture.test.js apps/page
 
 **Steps**
 
-- [ ] 解析两套 Wrangler template，断言 binding 名称、DO migrations、Cron、routes 的结构对称且物理资源标识不相同。
-- [ ] 记录 production runtime 读取的 env key，并按 required / capability optional / binding 分类。
-- [ ] 断言本重构没有新增 binding、resource、Cron 或自动 production deploy trigger。
+- [x] 解析两套 Wrangler template，断言 binding 名称、DO migrations、Cron、routes 的结构对称且物理资源标识不相同。
+- [x] 记录 production runtime 读取的 env key，并按 required / capability optional / binding 分类。
+- [x] 断言本重构没有新增 binding、resource、Cron 或自动 production deploy trigger。
 
 **Verify**
 
@@ -71,8 +71,8 @@ node --test apps/pages-api/src/config-inventory.test.js
 
 **Steps**
 
-- [ ] 区分历史计划记录与当前真相源，不改写 `docs/superpowers/**` 历史文档。
-- [ ] 当前架构/API/运维文档只保留真实 binding 与 secret 名称。
+- [x] 区分历史计划记录与当前真相源，不改写 `docs/superpowers/**` 历史文档。
+- [x] 当前架构/API/运维文档只保留真实 binding 与 secret 名称。
 
 **Verify**
 

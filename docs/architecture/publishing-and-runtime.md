@@ -167,15 +167,15 @@ CLI 只适配 XD Cell v2 控制面，即固定的 `api.pages.xd.team` / `auth.pa
 
 当前 CLI 落地为 `apps/pages-cli` workspace package，npm 包名为 `@xd-cell/cli`，bin 名称为 `xd-cell`。CLI 只负责本地 UX、凭据读取、显式配置读取、artifact hash 和调用 API/Auth；不会直连 Cloudflare，也不会绕过 `pages-api` 的权限判断。
 
-CLI 使用 XD Cell 平台签发的 token，不直接持有心动 SSO `access_token`：
+CLI 使用 XD Cell 平台签发的 access key，不直接持有心动 SSO `access_token`：
 
 - `xd-cell login` 打开浏览器，完成 SSO 后 CLI 轮询登录结果。
 - 普通用户 CLI 默认登录 production；staging 入口只存在于维护者受控流程，不进入普通 help / skill / README。
 - `xd-cell login --token <token>` 先调用 `/.xd-pages/api/auth/whoami` 验证该 access key 有效，再保存到本地 secret store。
 - 其它需要访问 API 的命令支持全局 `--token <token>`；它只用于本次命令，不保存、不读取本地登录态。
-- CLI token 支持过期、scope、吊销和本地安全存储。
+- 浏览器登录最终换发 `issued_source=cli_login` 的 access key，支持过期、吊销和本地安全存储；不再签发或接受历史 CLI JWT。
 - CI 默认使用 `access key`，不使用个人浏览器 session。`service token` 只有在后续需要组织级机器人身份时再单独设计，不混入 MVP。
-- CLI token、access key 和本地 profile 必须由服务端绑定目标 environment，staging token 不能调用 production API。
+- CLI login access key、其它 access key 和本地 profile 必须绑定目标 environment，staging key 不能调用 production API。
 - CLI 用户侧不暴露 `env` 心智；公开入口只展示 production 的 `api.pages.xd.team`、`auth.pages.xd.team` 和当前 v2 site suffix `*.workers.xd.team`。`custom` 作为隐藏开发保留项，只允许 loopback endpoint；`local` 不进入用户侧 CLI 环境列表。
 - CLI 不得静默调用 `api.workers.xd.team`，也不得绕过 v2 hostname claim 去抢占 v1 exact route。
 
@@ -185,7 +185,7 @@ CLI 使用 XD Cell 平台签发的 token，不直接持有心动 SSO `access_tok
 | --------------- | ---------------- | --------------------------------- | ---------------------------------- |
 | `auth_session`  | 浏览器平台登录   | auth host HttpOnly cookie         | 用户登录态，不直接用于 CLI deploy  |
 | `site_session`  | 浏览器访问子站   | 子站 host HttpOnly cookie         | 子站访问，不用于管理 API           |
-| `CLI token`     | 本地 CLI         | OS secret store                   | 用户身份 + scope + env             |
+| `CLI login access key` | 本地 CLI  | OS secret store                   | 用户身份 + `*` scope + env         |
 | `access key`    | CI / agent       | CI secret 或用户显式保存的 secret | PAT / TAT + 权限 + 作用范围 + expiry |
 | `service token` | 未来机器人身份   | 组织级 secret store / CI secret   | 暂不进入 MVP                       |
 | `internal JWT`  | router -> Worker | 请求内短期 header                 | 请求身份 envelope，不是 capability |
@@ -194,7 +194,7 @@ CLI 本地状态分三层：
 
 ```text
 Secret store:
-  CLI token、refresh token、用户明确保存的 access key。
+  CLI login access key、用户明确保存的 access key。
 
 Global config:
   active env、最近登录时间、credentialType 和开发保留项等非敏感 profile 元数据。
@@ -249,8 +249,8 @@ Team Access Token（TAT）；`site-scoped` 只是 Token 的作用范围，不是
 - deploy 可以复合站点归属变更：当已有站点 owner 与请求目标 owner 不一致时，API 必须校验 actor 对
   源 owner 和目标 owner 都具备站点管理权限，通过后才允许先转移归属再发布，并写审计。
 
-普通 `POST /.xd-pages/api/sites` 建站 API 仍只接受用户 CLI token 或受控 console session，不对
-access key 开放。access key 的权限、作用范围、owner 归属、过期时间和 environment 仍以 `pages-api`
+普通 `POST /.xd-pages/api/sites` 建站 API 仍只接受 `cli_login` 用户 access key 或受控 console session，不对
+普通 PAT/TAT 开放。access key 的权限、作用范围、owner 归属、过期时间和 environment 仍以 `pages-api`
 权威记录为准。
 
 Cindy connection 断言不产生任何持久化 key:它按请求验签,权限形态等同一把 scope 为 `deploy:site`、
@@ -288,7 +288,7 @@ Windows: %APPDATA%\.xd-pages\profile.json
 }
 ```
 
-profile 只用于本地显示和用户体验，服务端不能信任。真实权限只看 CLI token、access key 和服务端存储。profile 禁止出现 token、access key、cookie、Cloudflare id、SSO secret 或 capability。
+profile 只用于本地显示和用户体验，服务端不能信任。`credentialType: "cli_token"` 是现有 CLI 为兼容本地存储格式保留的标签，其值实际是服务端签发的 `cli_login` access key，不表示仍接受历史 JWT。真实权限只看 access key 和服务端存储。profile 禁止出现 token、access key、cookie、Cloudflare id、SSO secret 或 capability。
 
 普通 help、skill 和用户文档主路径不展示环境切换；维护者验证可以使用隐藏固定环境入口，且只接受 `production` / `staging`。`custom` 不作为 CLI 用户入口；本机开发如需连接本地 Worker，应通过测试 harness 或受控开发配置显式启用。production 是普通发布默认环境，不能被公开文档里的用户配置覆盖。本机开发自定义 endpoint 只允许指向 loopback：
 
@@ -388,7 +388,7 @@ API 设计必须保持这些架构约束：
   Team Access Token、团队设置和团队删除等 admin 操作仍只允许 Console 登录态。
 - v2 pages-api 不公开 `/openapi.json`；v1 `apps/server` 的 `/openapi.json` 只属于旧 `workers.xd.team` 链路。
 
-`/.xd-pages/internal/consume-site-code` 和 `/.xd-pages/internal/verify-cli-token` 不是公开 API。它们只能通过 Worker service binding 访问，并要求请求 host 为 `pages-auth.internal`；即使路径相同，公网 `auth.pages.xd.team` / `auth-staging.pages.xd.team` 访问也必须返回 404。`pages-api` 只能通过 `PAGES_AUTH` binding 校验 CLI token，不能持有签发或验签用的私密 signing secret。SSO callback 的用户同步由 `pages-auth` 直接写共享 D1 `users` 表，避免 auth/api 双向 service binding；如后续保留 `pages-api.internal/.xd-pages/internal/users/upsert`，也只能作为内部维护入口，不能暴露公网。
+`pages-auth` 的 `/.xd-pages/internal/consume-site-code` 不是公开 API，只能通过 Worker service binding 访问，并要求请求 host 为 `pages-auth.internal`；公网 `auth.pages.xd.team` / `auth-staging.pages.xd.team` 的同路径必须返回 404。CLI login poll 通过单向 `PAGES_API` binding 调用 `pages-api.internal/.xd-pages/internal/cli-access-keys` 换发 access key；历史 CLI JWT 已停止验证，`pages-api` 不再持有反向 `PAGES_AUTH` binding。`pages-api` 的 users、department hydration、CLI access key 和 hostname claim internal endpoints 同样只接受 `pages-api.internal` host，不能暴露公网。SSO callback 目前仍由 `pages-auth` 直接写共享 D1 身份元数据。
 
 统一错误响应：
 
@@ -442,14 +442,14 @@ xd-cell login
   -> 用户通过心动 SSO 登录
   -> 浏览器确认页要求用户手动输入终端短码
   -> CLI 带 login_secret 轮询 /.xd-pages/cli/login/poll
-  -> 获取 xd-cell CLI token
+  -> 获取 cli_login access key（poll 字段名为兼容旧 CLI 保持不变）
 
 xd-cell deploy ./dist foo --visibility org
   -> CLI 调 pages-api /.xd-pages/api/deployments
   -> CLI 计算 artifact hash
      custom Worker: JSON 发送 artifactBundle，读取入口模块内容
      static / SPA: multipart 发送 assetManifest 和 file-* 文件，filename 保留相对路径
-  -> pages-api 校验 CLI token 和发布权限
+  -> pages-api 校验 access key 和发布权限
   -> pages-api 规范化发布 artifact
      custom Worker: 校验 artifactBundle kind/mainModule/modules
      static / SPA: 校验 assetManifest、路径安全和文件集合
@@ -633,7 +633,7 @@ xd-cell deploy ./dist foo
   -> worker-with-assets 部署用户 Worker + ASSETS binding，并启用 worker-first routing
 ```
 
-custom Worker 发布时，CLI 读取用户指定的 `.js` / `.mjs` 文件内容作为 module，通过 multipart worker module 上传。`.ts` 入口第一版不直接上传；在接入 bundler / transpile 前，CLI 必须给出 `WORKER_TYPESCRIPT_UNSUPPORTED` 这类明确错误，避免把 TypeScript 当作 JavaScript module 部署。multipart metadata 和文件内容不能包含本地绝对路径、CLI token、access key、Cloudflare 资源 id 或 `--config` 文件内容。
+custom Worker 发布时，CLI 读取用户指定的 `.js` / `.mjs` 文件内容作为 module，通过 multipart worker module 上传。`.ts` 入口第一版不直接上传；在接入 bundler / transpile 前，CLI 必须给出 `WORKER_TYPESCRIPT_UNSUPPORTED` 这类明确错误，避免把 TypeScript 当作 JavaScript module 部署。multipart metadata 和文件内容不能包含本地绝对路径、access key、Cloudflare 资源 id 或 `--config` 文件内容。
 
 `pages-api` 不从用户环境读取文件，也不把 Cloudflare 凭证下发给 CLI。worker artifact 的 JSON body 上限是 1 MiB；static / SPA 的 CLI 侧第一版限制为原始文件总量不超过 50 MiB、文件数不超过 5000。超限时 CLI 提前失败。DR 0003 讨论的 R2 + D1 artifact store 是长期候选能力；当前发布链路仍以 provider materialization 和 D1 版本索引为准，用户命令保持 `xd-cell deploy ./dist foo`。
 
