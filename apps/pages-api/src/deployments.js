@@ -3,6 +3,7 @@ import { validateSiteSlug } from '@xd/pages-runtime-protocol';
 import { isManagedWfpWorkerName } from './admin-resource-governance.js';
 import { createRollbackLeaseAcquisition } from './application/deployments/acquire-rollback-lease.js';
 import { createDeploymentRouteActivation } from './application/deployments/activate-route.js';
+import { createDeploymentRouteCutover } from './application/deployments/activate-route-cutover.js';
 import { createDeploymentCompletion } from './application/deployments/complete-deployment.js';
 import { createDeploymentFailureCompletion } from './application/deployments/complete-failed-deployment.js';
 import { createDeploymentPreviousResourceCleanup } from './application/deployments/cleanup-previous-resources.js';
@@ -850,7 +851,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
     );
     const commitLeaseApplication = createDeploymentCommitLeaseApplication(store, env, trace);
     const routeActivationPreparation = createDeploymentRouteActivationPreparationApplication(store, env);
-    const routeActivationApplication = createDeploymentRouteActivationApplication(store, env, trace);
+    const routeCutoverApplication = createDeploymentRouteCutoverApplication({ store, env, trace, provider });
     const routeSnapshotApplication = createDeploymentRouteSnapshotCommitApplication(
       store,
       env,
@@ -880,27 +881,17 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
             : deploymentOperationError(activationPreparation.error.code);
         }
         const activation = activationPreparation.activation;
-        const activationExposure = activation.exposure;
-        assertCommitLeaseHealthy(activationLease);
-        await ensurePublicWorkerOfficeNetAbsent(provider, {
-          store,
-          trace,
+        const activationResult = await routeCutoverApplication.activate({
           environment: config.environment,
           siteId,
-          workerName: version.workerName,
-          executionProvider: version.executionProvider,
-          deploymentShape: decision.deploymentShape,
-          exposure: activationExposure,
-          signal: activationLease.signal,
-        });
-        assertCommitLeaseHealthy(activationLease);
-        const activationResult = await routeActivationApplication.activate({
-          siteId,
-          environment: config.environment,
           version,
           lease: activationLease,
           activation,
+          deploymentShape: decision.deploymentShape,
         });
+        if (!activationResult.ok && activationResult.kind === 'office_net_failed') {
+          throw publicOfficeNetOperationError(activationResult.error);
+        }
         const activatedRoute = activationResult.ok ? activationResult.route : null;
         if (!activatedRoute) return null;
         const snapshotResult = await routeSnapshotApplication.commit({
@@ -3228,6 +3219,17 @@ function createDeploymentRouteActivationPreparationApplication(store, env) {
     routeSnapshots: {
       assertConverged: ({ route, environment }) => assertRouteSnapshotConverged(env, store, route, environment),
     },
+  });
+}
+
+function createDeploymentRouteCutoverApplication({ store, env, trace, provider }) {
+  const officeNet = createPublicWorkerOfficeNetGuardApplication(store, trace);
+  return createDeploymentRouteCutover({
+    leases: { assertHealthy: assertCommitLeaseHealthy },
+    officeNet: {
+      ensure: (command) => officeNet.ensure({ ...command, provider }),
+    },
+    routes: createDeploymentRouteActivationApplication(store, env, trace),
   });
 }
 
