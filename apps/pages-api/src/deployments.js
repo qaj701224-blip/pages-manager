@@ -20,6 +20,7 @@ import { createPublicWorkerOfficeNetGuard } from './application/deployments/ensu
 import { createRollbackOfficeNetVerification } from './application/deployments/ensure-rollback-office-net.js';
 import { createDeploymentProviderOperations } from './application/deployments/provider-operations.js';
 import { createDeploymentRouteActivationPreparation } from './application/deployments/prepare-route-activation.js';
+import { createRollbackActivationPreparation } from './application/deployments/prepare-rollback-activation.js';
 import { createRollbackRouteStateRead } from './application/deployments/read-rollback-route-state.js';
 import { createCommittedDeploymentReconciliation } from './application/deployments/reconcile-committed-deployment.js';
 import { createDeploymentActivationFailureRecovery } from './application/deployments/recover-activation-failure.js';
@@ -1422,11 +1423,12 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
       trace,
     });
 
-  const rollbackLeaseResult = await createRollbackLeaseAcquisitionApplication(store, env, trace).acquire({
+  const rollbackPreparation = await createRollbackActivationPreparationApplication(store, env, trace).prepare({
     environment: config.environment,
     siteId: site.id,
+    currentRoute,
   });
-  if (!rollbackLeaseResult.ok && rollbackLeaseResult.error.reason === 'acquire_failed') {
+  if (!rollbackPreparation.ok && rollbackPreparation.error.reason === 'acquire_failed') {
     await finalizeFailedRollback(
       rollbackActivationFailurePatch(version, currentRoute, {
         errorCode: 'SITE_POLICY_LOCKED',
@@ -1442,7 +1444,7 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
       'Refresh the site status and retry the rollback.'
     );
   }
-  if (!rollbackLeaseResult.ok) {
+  if (!rollbackPreparation.ok && rollbackPreparation.error.reason === 'lease_unavailable') {
     await finalizeFailedRollback(
       rollbackActivationFailurePatch(version, currentRoute, {
         errorCode: 'SITE_POLICY_CONFLICT',
@@ -1459,14 +1461,7 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
       'Refresh the site status and retry the rollback.'
     );
   }
-  const rollbackLease = rollbackLeaseResult.lease;
-  const rollbackRouteBeforeActivation = currentRoute;
-  const rollbackRouteState = await createRollbackRouteStateReadApplication(store, trace).read({
-    siteId: site.id,
-    environment: config.environment,
-  });
-  if (!rollbackRouteState.ok && rollbackRouteState.error.reason === 'route_read_failed') {
-    await releaseSiteCommitLeaseBestEffort(rollbackLease);
+  if (!rollbackPreparation.ok && rollbackPreparation.error.reason === 'route_read_failed') {
     await finalizeFailedRollback(
       rollbackActivationFailurePatch(version, currentRoute, {
         errorCode: 'ROLLBACK_ACTIVATION_FAILED',
@@ -1482,8 +1477,7 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
       'Retry the rollback with a new Idempotency-Key.'
     );
   }
-  if (!rollbackRouteState.ok) {
-    await releaseSiteCommitLeaseBestEffort(rollbackLease);
+  if (!rollbackPreparation.ok) {
     await finalizeFailedRollback(
       rollbackActivationFailurePatch(version, currentRoute, {
         errorCode: 'ROUTE_ACTIVATION_CONFLICT',
@@ -1494,7 +1488,9 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
     );
     return jsonError('ROUTE_ACTIVATION_CONFLICT', 'Route changed while rollback was activating.', 409, 'Retry the rollback.');
   }
-  const rollbackLatestRoute = rollbackRouteState.route;
+  const rollbackLease = rollbackPreparation.lease;
+  const rollbackRouteBeforeActivation = rollbackPreparation.routeBeforeActivation;
+  const rollbackLatestRoute = rollbackPreparation.route;
   currentRoute = rollbackLatestRoute;
   let route;
   let rollbackProvider;
@@ -3096,6 +3092,20 @@ function createRollbackLeaseAcquisitionApplication(store, env, trace) {
         }
         return finishDeploymentStage(stage, { status: outcome.status });
       },
+    },
+  });
+}
+
+function createRollbackActivationPreparationApplication(store, env, trace) {
+  const leaseAcquisition = createRollbackLeaseAcquisitionApplication(store, env, trace);
+  const routeState = createRollbackRouteStateReadApplication(store, trace);
+  return createRollbackActivationPreparation({
+    leases: {
+      acquire: (command) => leaseAcquisition.acquire(command),
+      release: releaseSiteCommitLeaseBestEffort,
+    },
+    routes: {
+      read: (command) => routeState.read(command),
     },
   });
 }
