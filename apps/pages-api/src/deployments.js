@@ -7,6 +7,7 @@ import { createDeploymentRouteCutover } from './application/deployments/activate
 import { createDeploymentCompletion } from './application/deployments/complete-deployment.js';
 import { createDeploymentFailureCompletion } from './application/deployments/complete-failed-deployment.js';
 import { createDeploymentPreviousResourceCleanup } from './application/deployments/cleanup-previous-resources.js';
+import { createUploadedWorkerCompensation } from './application/deployments/cleanup-uploaded-worker.js';
 import { createDeploymentRouteSnapshotCommit } from './application/deployments/commit-route-snapshot.js';
 import { createDeploymentRuntimeConfigCommit } from './application/deployments/commit-runtime-config.js';
 import { createDeploymentVersionCreation } from './application/deployments/create-version.js';
@@ -586,7 +587,8 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
       errorMessage: postUploadRuntimeSnapshotError.message,
       diagnostics: { causeClass: 'runtime_config_changed' },
     });
-    await cleanupUploadedWorkerAndRecord(trace, provider, uploaded, {
+    await createUploadedWorkerCompensationApplication({ store, provider, trace }).cleanup({
+      uploaded,
       originalFailure: { stage: 'runtime_config', code: postUploadRuntimeSnapshotError.code },
       trafficImpact: 'old_version_retained',
     });
@@ -625,7 +627,8 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
       operation: 'persist_uploaded_deployment',
       cause: error,
     });
-    await cleanupUploadedWorkerAndRecord(trace, provider, uploaded, {
+    await createUploadedWorkerCompensationApplication({ store, provider, trace }).cleanup({
+      uploaded,
       originalFailure: { stage: 'deployment_state_persist', code: 'DEPLOYMENT_STATE_WRITE_FAILED' },
       trafficImpact: 'old_version_retained',
     });
@@ -659,7 +662,8 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
     const code = publicProviderErrorCode(null, 'verify');
     const executionProvider = uploaded.executionProvider || provider.executionProvider || 'wfp';
     const disposition = providerFailureDisposition(error, 'verify');
-    await cleanupUploadedWorkerAndRecord(trace, provider, uploaded, {
+    await createUploadedWorkerCompensationApplication({ store, provider, trace }).cleanup({
+      uploaded,
       originalFailure: { stage: 'provider_verify', code },
       trafficImpact: 'old_version_retained',
     });
@@ -698,7 +702,8 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
   });
   if (!runtimeConfigCommitResult.ok && runtimeConfigCommitResult.error.reason === 'snapshot_validation_failed') {
     const preCommitRuntimeSnapshotError = runtimeConfigSnapshotFailure(runtimeConfigCommitResult.error);
-    await cleanupUploadedWorkerAndRecord(trace, provider, uploaded, {
+    await createUploadedWorkerCompensationApplication({ store, provider, trace }).cleanup({
+      uploaded,
       originalFailure: { stage: 'runtime_config_commit', code: preCommitRuntimeSnapshotError.code },
       trafficImpact: 'old_version_retained',
     });
@@ -728,7 +733,8 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
     );
   }
   if (!runtimeConfigCommitResult.ok) {
-    await cleanupUploadedWorkerAndRecord(trace, provider, uploaded, {
+    await createUploadedWorkerCompensationApplication({ store, provider, trace }).cleanup({
+      uploaded,
       originalFailure: { stage: 'runtime_config_commit', code: 'RUNTIME_CONFIG_UNSUPPORTED' },
       trafficImpact: 'old_version_retained',
     });
@@ -760,7 +766,8 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
         })
       : null;
     if (preActivationRuntimeSnapshotError) {
-      await cleanupUploadedWorkerAndRecord(trace, provider, uploaded, {
+      await createUploadedWorkerCompensationApplication({ store, provider, trace }).cleanup({
+        uploaded,
         originalFailure: { stage: 'runtime_config', code: preActivationRuntimeSnapshotError.code },
         trafficImpact: 'old_version_retained',
       });
@@ -801,7 +808,8 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
       ownerTransferRollbackSite = site;
       const transferResult = await applyPendingDeployOwnerTransfer(store, actor, config, env, site, site.pendingOwnerTransfer);
       if (transferResult instanceof Response) {
-        await cleanupUploadedWorkerAndRecord(trace, provider, uploaded, {
+        await createUploadedWorkerCompensationApplication({ store, provider, trace }).cleanup({
+          uploaded,
           originalFailure: { stage: 'auth_and_site_resolution', code: 'SITE_TRANSFER_FAILED' },
           trafficImpact: 'old_version_retained',
         });
@@ -927,19 +935,14 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
           site = recovery.site;
           const { restoredRoute, restoredSnapshotWritten, routePointerCleared, repairRequired } = recovery;
           if (restoredSnapshotWritten) {
-            await cleanupUploadedWorkerIfInactiveAndRecord(
-              trace,
-              store,
-              provider,
+            await createUploadedWorkerCompensationApplication({ store, provider, trace }).cleanupIfInactive({
               uploaded,
               siteId,
-              version.id,
-              config.environment,
-              {
-                originalFailure: { stage: 'route_snapshot', code: 'ROUTE_SNAPSHOT_WRITE_FAILED' },
-                trafficImpact: repairRequired ? 'public_route_state_unknown' : 'old_version_retained',
-              }
-            );
+              versionId: version.id,
+              environment: config.environment,
+              originalFailure: { stage: 'route_snapshot', code: 'ROUTE_SNAPSHOT_WRITE_FAILED' },
+              trafficImpact: repairRequired ? 'public_route_state_unknown' : 'old_version_retained',
+            });
           }
           await finalizeFailedDeployment({
             versionId: version.id,
@@ -989,7 +992,8 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
     }
     route = commitResult.value;
   } catch (error) {
-    await cleanupUploadedWorkerAndRecord(trace, provider, uploaded, {
+    await createUploadedWorkerCompensationApplication({ store, provider, trace }).cleanup({
+      uploaded,
       originalFailure: error?.deploymentStateOperation
         ? { stage: 'deployment_state_persist', code: 'DEPLOYMENT_STATE_WRITE_FAILED' }
         : isPublicOfficeNetFailure(error)
@@ -1108,7 +1112,8 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
       latestRoute.activeVersionId === previousRoute.activeVersionId &&
       (latestRoute.runtimeConfigGeneration || 0) !== (previousRoute.runtimeConfigGeneration || 0);
     if (runtimeConfigChanged) {
-      await cleanupUploadedWorkerAndRecord(trace, provider, uploaded, {
+      await createUploadedWorkerCompensationApplication({ store, provider, trace }).cleanup({
+        uploaded,
         originalFailure: { stage: 'runtime_config', code: 'RUNTIME_CONFIG_CHANGED' },
         trafficImpact: 'old_version_retained',
       });
@@ -1154,7 +1159,8 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
         'Retry the deployment with a new Idempotency-Key.'
       );
     }
-    await cleanupUploadedWorkerAndRecord(trace, provider, uploaded, {
+    await createUploadedWorkerCompensationApplication({ store, provider, trace }).cleanup({
+      uploaded,
       originalFailure: { stage: 'route_activate', code: 'ROUTE_ACTIVATION_CONFLICT' },
       trafficImpact: 'old_version_retained',
     });
@@ -1841,52 +1847,6 @@ function inactiveRouteVersion(route) {
   };
 }
 
-async function cleanupUploadedWorker(provider, uploaded) {
-  const operation = 'worker_delete';
-  if (!uploaded || typeof provider?.delete !== 'function') {
-    return cleanupOutcome('not_needed', operation, { causeClass: 'cleanup_not_needed' });
-  }
-  try {
-    await provider.delete(uploaded);
-    return cleanupOutcome('succeeded', operation, { causeClass: 'cleanup_succeeded' });
-  } catch (error) {
-    return cleanupOutcome('failed', error?.operation || operation, { error });
-  }
-}
-
-async function cleanupUploadedWorkerIfInactive(store, provider, uploaded, siteId, versionId, environment) {
-  let route;
-  try {
-    route = await store.getRouteBySiteId(siteId, environment);
-  } catch {
-    return cleanupOutcome('failed', 'worker_delete', { causeClass: 'cleanup_state_read_error' });
-  }
-  if (routeReferencesUploadedWorker(route, uploaded, versionId)) {
-    return cleanupOutcome('not_needed', 'worker_delete', { causeClass: 'cleanup_not_needed' });
-  }
-  return cleanupUploadedWorker(provider, uploaded);
-}
-
-function routeReferencesUploadedWorker(route, uploaded, versionId) {
-  if (!route || !uploaded) return false;
-  return (
-    route.activeVersionId === versionId ||
-    (uploaded.workerName && route.workerName === uploaded.workerName) ||
-    (uploaded.slotId && route.slotId === uploaded.slotId)
-  );
-}
-
-function cleanupOutcome(status, operation, { cleanupTaskId, error, causeClass } = {}) {
-  const provider = error ? providerDiagnosticsFromError(error) : undefined;
-  return omitUndefined({
-    status,
-    operation,
-    cleanupTaskId,
-    causeClass: causeClass || provider?.causeClass || (status === 'failed' ? 'cleanup_error' : 'cleanup_succeeded'),
-    provider,
-  });
-}
-
 async function recordCleanupOutcome(trace, outcome, { originalFailure, trafficImpact } = {}) {
   if (!trace || !outcome) return outcome;
   const provider = outcome.provider || (outcome.error ? providerDiagnosticsFromError(outcome.error) : undefined);
@@ -1916,25 +1876,6 @@ async function recordCleanupOutcome(trace, outcome, { originalFailure, trafficIm
     },
   });
   return outcome;
-}
-
-async function cleanupUploadedWorkerAndRecord(trace, provider, uploaded, context) {
-  const outcome = await cleanupUploadedWorker(provider, uploaded);
-  return recordCleanupOutcome(trace, outcome, context);
-}
-
-async function cleanupUploadedWorkerIfInactiveAndRecord(
-  trace,
-  store,
-  provider,
-  uploaded,
-  siteId,
-  versionId,
-  environment,
-  context
-) {
-  const outcome = await cleanupUploadedWorkerIfInactive(store, provider, uploaded, siteId, versionId, environment);
-  return recordCleanupOutcome(trace, outcome, context);
 }
 
 async function reconcileCommittedDeployment(store, deployment, environment, env, trace = null) {
@@ -2693,6 +2634,21 @@ function createDeploymentPreviousResourceCleanupApplication({ store, env, provid
     },
     config: {
       cleanupDrainSeconds: env?.WFP_WORKER_CLEANUP_DRAIN_SECONDS || env?.WFP_CLEANUP_DRAIN_SECONDS || 300,
+    },
+  });
+}
+
+function createUploadedWorkerCompensationApplication({ store, provider, trace }) {
+  return createUploadedWorkerCompensation({
+    routes: {
+      get: (siteId, environment) => store.getRouteBySiteId(siteId, environment),
+    },
+    workers: {
+      delete: typeof provider?.delete === 'function' ? provider.delete.bind(provider) : null,
+    },
+    diagnostics: { fromError: providerDiagnosticsFromError },
+    telemetry: {
+      record: (outcome, context) => recordCleanupOutcome(trace, outcome, context),
     },
   });
 }
