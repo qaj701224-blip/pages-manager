@@ -14,6 +14,7 @@ import { createDeploymentSucceededWebhook } from './application/deployments/deli
 import { createDeploymentRecord } from './application/deployments/deployment-record.js';
 import { createPublicWorkerOfficeNetGuard } from './application/deployments/ensure-public-office-net.js';
 import { createDeploymentProviderOperations } from './application/deployments/provider-operations.js';
+import { createDeploymentRouteSnapshotRecovery } from './application/deployments/recover-route-snapshot.js';
 import { createDeploySiteResolution } from './application/deployments/resolve-deploy-site.js';
 import { createRollbackSiteResolution } from './application/deployments/resolve-rollback-site.js';
 import { createDeploymentRuntimeConfigResolution } from './application/deployments/resolve-runtime-config.js';
@@ -23,6 +24,7 @@ import { createDeploySiteResolutionPort } from './application/ports/deploy-site-
 import { createDeploymentCleanupTasksPort } from './application/ports/deployment-cleanup.js';
 import { createDeploymentCompletionPort } from './application/ports/deployment-completion.js';
 import { createDeploymentProviderPort } from './application/ports/deployment-provider.js';
+import { createDeploymentRecoveryPort } from './application/ports/deployment-recovery.js';
 import { createDeploymentRecordsPort } from './application/ports/deployment-records.js';
 import { createDeploymentRoutesPort } from './application/ports/deployment-routes.js';
 import { createDeploymentVersionsPort } from './application/ports/deployment-versions.js';
@@ -53,6 +55,7 @@ import { nextId } from './id.js';
 import { createSiteRouteSnapshots } from './infrastructure/route-snapshots/site-route-snapshots.js';
 import { createPublicOfficeNetSettings } from './infrastructure/providers/public-office-net-settings.js';
 import { createDeploymentWebhookDispatcher } from './infrastructure/integrations/webhooks/deployment-webhook-dispatcher.js';
+import { createDeploymentRouteSnapshotRecoveryAdapter } from './infrastructure/route-snapshots/deployment-recovery.js';
 import {
   buildRouteSnapshot,
   clearRoutePointerIfCurrent,
@@ -1079,49 +1082,27 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
               diagnostics: { causeClass: 'route_snapshot_store_error' },
             });
           }
-          let restoredRoute = null;
-          let restorationError = null;
-          try {
-            restoredRoute = await restoreSiteRouteAfterSnapshotFailure(
-              store,
-              siteId,
-              previousRoute,
-              activatedRoute,
-              config.environment
-            );
-          } catch (error) {
-            restorationError = error;
-          }
-          try {
-            await restoreDeploymentRuntimeConfigAfterFailure(store, env, {
+          const recovery = await createDeploymentRouteSnapshotRecoveryApplication({ store, env }).recover({
+            siteId,
+            environment: config.environment,
+            site,
+            previousRoute,
+            failedRoute: activatedRoute,
+            runtimeConfig: {
               environment: config.environment,
               siteId,
               restoreVars: originalRuntimeVarRecords,
               expectedVars: committedRuntimeVarRecords,
               actorId: actor.userId,
               enabled: workerRuntimeVarsProvided,
-            });
-          } catch (error) {
-            restorationError ||= error;
-          }
-          try {
-            site =
-              (await restoreDeployOwnerTransferAfterFailure(store, {
-                siteId,
-                previousSite: ownerTransferRollbackSite,
-                environment: config.environment,
-                enabled: ownerTransferApplied,
-              })) || site;
-          } catch (error) {
-            restorationError ||= error;
-          }
-          const restoredSnapshotWritten = restorationError
-            ? false
-            : await writeRestoredRouteSnapshotAfterFailure(env, store, site, restoredRoute, config.environment);
-          const routePointerCleared = restoredSnapshotWritten
-            ? false
-            : await clearRoutePointerAfterSnapshotFailure(env, restoredRoute || activatedRoute);
-          const repairRequired = Boolean(restorationError || !restoredSnapshotWritten);
+            },
+            ownerTransfer: {
+              previousSite: ownerTransferRollbackSite,
+              enabled: ownerTransferApplied,
+            },
+          });
+          site = recovery.site;
+          const { restoredRoute, restoredSnapshotWritten, routePointerCleared, repairRequired } = recovery;
           await recordDeploymentStage(trace, {
             stage: 'cleanup_or_compensation',
             operation: 'restore_route_after_snapshot_failure',
@@ -3167,6 +3148,18 @@ function createDeploymentPreviousResourceCleanupApplication({ store, env, provid
     config: {
       cleanupDrainSeconds: env?.WFP_WORKER_CLEANUP_DRAIN_SECONDS || env?.WFP_CLEANUP_DRAIN_SECONDS || 300,
     },
+  });
+}
+
+function createDeploymentRouteSnapshotRecoveryApplication({ store, env }) {
+  return createDeploymentRouteSnapshotRecovery({
+    routes: createDeploymentRecoveryPort(store),
+    runtimeConfig: createDeploymentRuntimeConfigRestorationApplication(store, env),
+    routeSnapshots: createDeploymentRouteSnapshotRecoveryAdapter({
+      store,
+      routeSnapshots: createDeploymentRouteSnapshotInfrastructure(store, env),
+      routePointers: { clearIfCurrent: (pointer) => clearRoutePointerIfCurrent(env, pointer) },
+    }),
   });
 }
 
