@@ -81,6 +81,7 @@ const DEPLOYMENT_TRACE_IMPACT_LABELS = {
 const DEPLOYMENT_TRACE_ACTION_LABELS = {
   retry_deploy: '重新部署',
   retry_rollback: '重新回滚',
+  fix_worker_source: '修复 Worker 源码',
   manual_cleanup: '人工清理',
   wait_drain: '等待 drain',
 };

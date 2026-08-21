@@ -509,6 +509,7 @@ function deploymentTrafficImpactLabel(value) {
 
 function deploymentOperatorActionLabel(value) {
   if (value === 'retry_deploy') return '重新部署';
+  if (value === 'fix_worker_source') return '修复 Worker 源码';
   if (value === 'manual_cleanup') return '人工清理';
   if (value === 'wait_drain') return '等待 drain';
   return value || '';

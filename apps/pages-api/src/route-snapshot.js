@@ -1,5 +1,8 @@
 import { accessModeFromVisibility, normalizeExposure, visibilityFromAccessMode } from '@xd/pages-access-policy';
 
+const DEPLOYMENT_FAILURE_RECOVERY_STORAGE_PREFIX = 'deployment_failure_recovery:';
+const DEPLOYMENT_FAILURE_RECOVERY_VALUE_MAX_BYTES = 32 * 1024;
+
 export function buildRouteSnapshot({ site, route, version, aclEntries = [] }) {
   const accessMode = accessModeFromVisibility(route.visibility);
   if (!accessMode) throw new Error('SITE_POLICY_INVALID');
@@ -111,6 +114,49 @@ export async function clearRoutePointerIfCurrent(target, expectedPointer) {
   return !(await routeSnapshots.get(pointerKey));
 }
 
+export async function writeDeploymentFailureRecoveryRecord(target, input) {
+  const stub = deploymentFailureRecoveryStub(target, input);
+  if (!stub) return false;
+  const response = await stub.fetch(
+    new Request('https://route-pointer-do/deployment-failure-recovery/write', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deploymentId: input.deploymentId, value: input.value }),
+    })
+  );
+  if (!response.ok) throw new Error('DEPLOYMENT_FAILURE_RECOVERY_WRITE_FAILED');
+  return true;
+}
+
+export async function listDeploymentFailureRecoveryRecords(target, input) {
+  const stub = deploymentFailureRecoveryStub(target, input);
+  if (!stub) return [];
+  const response = await stub.fetch(
+    new Request('https://route-pointer-do/deployment-failure-recovery/list', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    })
+  );
+  if (!response.ok) throw new Error('DEPLOYMENT_FAILURE_RECOVERY_LIST_FAILED');
+  const payload = await response.json();
+  return Array.isArray(payload?.records) ? payload.records : [];
+}
+
+export async function deleteDeploymentFailureRecoveryRecord(target, input) {
+  const stub = deploymentFailureRecoveryStub(target, input);
+  if (!stub) return false;
+  const response = await stub.fetch(
+    new Request('https://route-pointer-do/deployment-failure-recovery/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deploymentId: input.deploymentId }),
+    })
+  );
+  if (!response.ok) throw new Error('DEPLOYMENT_FAILURE_RECOVERY_DELETE_FAILED');
+  return true;
+}
+
 export async function writeRouteSnapshotUnlocked(routeSnapshots, snapshot) {
   if (!routeSnapshots || typeof routeSnapshots.put !== 'function') throw new Error('Route snapshot store is required');
 
@@ -173,7 +219,8 @@ export async function readRouteSnapshotState(target, snapshot) {
     return { state: 'exact', pointer, snapshot: currentSnapshot, snapshotKey: expectedKey };
   }
   return {
-    state: pointer.routeGeneration < snapshot.routeGeneration || pointer.policyVersion < snapshot.policyVersion ? 'lower' : 'missing',
+    state:
+      pointer.routeGeneration < snapshot.routeGeneration || pointer.policyVersion < snapshot.policyVersion ? 'lower' : 'missing',
     pointer,
     snapshot: currentSnapshot,
     snapshotKey: expectedKey,
@@ -218,7 +265,10 @@ export class RoutePointerDO {
   async fetch(request) {
     if (request.method !== 'POST') return jsonResponse({ error: 'METHOD_NOT_ALLOWED' }, 405);
     const pathname = new URL(request.url).pathname;
-    if (pathname !== '/write' && pathname !== '/clear') return jsonResponse({ error: 'NOT_FOUND' }, 404);
+    const deploymentRecoveryOperation = deploymentFailureRecoveryOperation(pathname);
+    if (pathname !== '/write' && pathname !== '/clear' && !deploymentRecoveryOperation) {
+      return jsonResponse({ error: 'NOT_FOUND' }, 404);
+    }
 
     let body;
     try {
@@ -228,6 +278,10 @@ export class RoutePointerDO {
     }
 
     try {
+      if (deploymentRecoveryOperation) {
+        const response = await handleDeploymentFailureRecoveryRequest(this.state.storage, deploymentRecoveryOperation, body);
+        return response;
+      }
       if (pathname === '/clear') {
         const expectedPointer = body?.pointer;
         assertRoutePointerShape(expectedPointer);
@@ -280,6 +334,60 @@ export class RoutePointerDO {
       return jsonResponse({ error: error instanceof Error ? error.message : 'ROUTE_POINTER_WRITE_FAILED' }, 409);
     }
   }
+}
+
+function deploymentFailureRecoveryStub(target, input) {
+  if (!target?.ROUTE_POINTER_LOCKS) return null;
+  assertSnapshotEnvironment(input?.environment);
+  if (typeof input?.hostname !== 'string' || !input.hostname) {
+    throw new Error('DEPLOYMENT_FAILURE_RECOVERY_SCOPE_INVALID');
+  }
+  const id = target.ROUTE_POINTER_LOCKS.idFromName(`${input.environment}:${input.hostname}`);
+  return target.ROUTE_POINTER_LOCKS.get(id);
+}
+
+function deploymentFailureRecoveryOperation(pathname) {
+  const prefix = '/deployment-failure-recovery/';
+  if (!pathname.startsWith(prefix)) return null;
+  const operation = pathname.slice(prefix.length);
+  return operation === 'write' || operation === 'list' || operation === 'delete' ? operation : null;
+}
+
+async function handleDeploymentFailureRecoveryRequest(storage, operation, body) {
+  if (operation === 'list') {
+    const records = await storage.list({ prefix: DEPLOYMENT_FAILURE_RECOVERY_STORAGE_PREFIX });
+    return jsonResponse(
+      {
+        records: [...records.entries()].map(([key, value]) => ({
+          deploymentId: key.slice(DEPLOYMENT_FAILURE_RECOVERY_STORAGE_PREFIX.length),
+          value,
+        })),
+      },
+      200
+    );
+  }
+
+  const storageKey = deploymentFailureRecoveryStorageKey(body?.deploymentId);
+  if (operation === 'delete') {
+    await storage.delete(storageKey);
+    return jsonResponse({ deleted: true }, 200);
+  }
+
+  if (
+    typeof body?.value !== 'string' ||
+    new globalThis.TextEncoder().encode(body.value).byteLength > DEPLOYMENT_FAILURE_RECOVERY_VALUE_MAX_BYTES
+  ) {
+    throw new Error('DEPLOYMENT_FAILURE_RECOVERY_VALUE_INVALID');
+  }
+  await storage.put(storageKey, body.value);
+  return jsonResponse({ stored: true }, 200);
+}
+
+function deploymentFailureRecoveryStorageKey(deploymentId) {
+  if (typeof deploymentId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(deploymentId)) {
+    throw new Error('DEPLOYMENT_FAILURE_RECOVERY_ID_INVALID');
+  }
+  return `${DEPLOYMENT_FAILURE_RECOVERY_STORAGE_PREFIX}${deploymentId}`;
 }
 
 async function pointedSnapshotIsPublic(routeSnapshots, pointer) {

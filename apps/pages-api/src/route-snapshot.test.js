@@ -4,9 +4,12 @@ import test from 'node:test';
 import {
   buildRouteSnapshot,
   clearRoutePointerIfCurrent,
+  deleteDeploymentFailureRecoveryRecord,
+  listDeploymentFailureRecoveryRecords,
   readRouteSnapshotState,
   repairRouteSnapshot,
   RoutePointerDO,
+  writeDeploymentFailureRecoveryRecord,
   writeRouteSnapshot,
 } from './route-snapshot.js';
 
@@ -554,6 +557,32 @@ test('RoutePointerDO reports durable pointer cleanup failure after KV pointer re
   assert.equal(repairResponse.status, 200);
 });
 
+test('RoutePointerDO stores deployment failure recovery records independently from route snapshot KV', async () => {
+  const durableObject = new RoutePointerDO(createDoState(), {
+    ROUTE_SNAPSHOTS: {
+      put: async () => {
+        throw new Error('route snapshot KV unavailable');
+      },
+    },
+  });
+  const target = {
+    ROUTE_POINTER_LOCKS: {
+      idFromName: () => 'docs-pointer',
+      get: () => ({ fetch: (request) => durableObject.fetch(request) }),
+    },
+  };
+  const scope = { environment: 'production', hostname: 'docs.pages.xd.team' };
+  const value = JSON.stringify({ schemaVersion: 1, deploymentId: 'dep_1' });
+
+  assert.equal(
+    await writeDeploymentFailureRecoveryRecord(target, { ...scope, deploymentId: 'dep_1', value }),
+    true
+  );
+  assert.deepEqual(await listDeploymentFailureRecoveryRecords(target, scope), [{ deploymentId: 'dep_1', value }]);
+  assert.equal(await deleteDeploymentFailureRecoveryRecord(target, { ...scope, deploymentId: 'dep_1' }), true);
+  assert.deepEqual(await listDeploymentFailureRecoveryRecords(target, scope), []);
+});
+
 function writeRequest(snapshot) {
   return new Request('https://route-pointer-do/write', {
     method: 'POST',
@@ -584,6 +613,9 @@ function createDoState({ failPut = false, failDelete = false } = {}) {
       async delete(key) {
         if (failDelete) throw new Error('durable state delete failed');
         return records.delete(key);
+      },
+      async list({ prefix = '' } = {}) {
+        return new Map([...records].filter(([key]) => typeof key === 'string' && key.startsWith(prefix)));
       },
     },
   };

@@ -7,7 +7,7 @@ import { WfpApiError } from '@xd/wfp-client';
 import worker from './index.js';
 import { createAccessKeyPlaintext, hashAccessKey } from './crypto.js';
 import { ensurePublicWorkerOfficeNetAbsent } from './deployments.js';
-import { buildRouteSnapshot, writeRouteSnapshot } from './route-snapshot.js';
+import { buildRouteSnapshot, RoutePointerDO, writeRouteSnapshot } from './route-snapshot.js';
 import { createTestPagesStore } from './test-store.js';
 import { seedLifecycleWebhook, TEST_WEBHOOK_URL_ENCRYPTION_KEY } from './lifecycle-webhook-test-fixtures.js';
 
@@ -71,6 +71,7 @@ test('creates deployment, immutable version, active route, and route snapshot', 
   assert.equal(body.deployment.id, 'dep_1');
   assert.equal(body.deployment.status, 'succeeded');
   assert.equal(body.deployment.versionId, 'ver_1');
+  assert.equal(body.deployment.previousVersionId, null);
   assertNoPublicExecutionDetails(body);
   assert.equal(body.route.routeGeneration, 1);
   assert.match((await store.getSiteVersion('ver_1')).contentHash, /^sha256:[a-f0-9]{64}$/);
@@ -81,6 +82,33 @@ test('creates deployment, immutable version, active route, and route snapshot', 
   assert.deepEqual(snapshots.read(pointer.snapshotKey).acl, [
     { effect: 'allow', subjectType: 'department', subjectValue: 'dept_design' },
   ]);
+});
+
+test('records the previously active version for each successful deployment', async () => {
+  const store = await createSeededStore();
+  const env = testEnv(store, createSnapshotStore());
+
+  const first = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'previous_version_first',
+    }),
+    env
+  );
+  const second = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ moduleContent: 'export default { fetch() { return new Response("v2"); } };' }),
+      { 'Idempotency-Key': 'previous_version_second' }
+    ),
+    env
+  );
+
+  assert.equal(first.status, 201, await first.clone().text());
+  assert.equal(second.status, 201, await second.clone().text());
+  assert.equal((await first.json()).deployment.previousVersionId, null);
+  assert.equal((await second.json()).deployment.previousVersionId, 'ver_1');
+  assert.equal((await store.getDeployment('dep_1')).previousVersionId, null);
+  assert.equal((await store.getDeployment('dep_2')).previousVersionId, 'ver_1');
 });
 
 test('POST deploy responses expose a server trace header and persist the trace on the deployment', async () => {
@@ -298,6 +326,215 @@ test('POST deploy keeps a traced response when unexpected failure terminal recov
   );
   assert.equal(repairLogs.at(-1)?.reason, 'deployment_failure_state_recovery_failed');
   assert.doesNotMatch(JSON.stringify({ body, stateWriteLogs, repairLogs }), /SQL|KV|token=|secret=/);
+});
+
+test('recovers a failed terminal write through RoutePointer durable state when D1 and KV writes both fail', async () => {
+  let d1Unavailable = true;
+  const store = await createSeededStore();
+  const originalUpdateDeployment = store.updateDeployment.bind(store);
+  store.updateDeployment = async (deploymentId, patch) => {
+    if (d1Unavailable && patch.status === 'failed') throw new Error('SQL terminal write unavailable');
+    return originalUpdateDeployment(deploymentId, patch);
+  };
+  const snapshots = createSnapshotStore();
+  const originalSnapshotPut = snapshots.put;
+  snapshots.put = async () => {
+    throw new Error('KV recovery marker unavailable');
+  };
+  const repairLogs = [];
+  const env = testEnv(store, snapshots, {
+    ROUTE_POINTER_LOCKS: createRoutePointerLocks(snapshots),
+    logDeploymentRepairRequired: (line) => repairLogs.push(JSON.parse(line)),
+  });
+  const originalNextId = env.nextId;
+  let failVersionId = true;
+  env.nextId = (prefix) => {
+    if (prefix === 'ver' && failVersionId) throw new Error('unexpected orchestration failure');
+    return originalNextId(prefix);
+  };
+
+  const failedResponse = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'durable_recovery_initial_failure',
+    }),
+    env
+  );
+
+  assert.equal(failedResponse.status, 500, await failedResponse.clone().text());
+  assert.equal((await failedResponse.json()).error.code, 'DEPLOYMENT_REQUEST_FAILED');
+  assert.equal((await store.getDeployment('dep_1')).status, 'pending');
+  assert.equal(repairLogs.at(-1)?.reason, 'deployment_failure_state_recovery_deferred');
+
+  d1Unavailable = false;
+  failVersionId = false;
+  snapshots.put = originalSnapshotPut;
+  const retry = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ moduleContent: 'export default { fetch() { return new Response("recovered"); } };' }),
+      { 'Idempotency-Key': 'durable_recovery_retry' }
+    ),
+    env
+  );
+
+  assert.equal(retry.status, 201, await retry.clone().text());
+  assert.equal((await store.getDeployment('dep_1')).status, 'failed');
+  assert.equal((await store.getDeployment('dep_1')).errorCode, 'DEPLOYMENT_REQUEST_FAILED');
+  assert.equal((await store.getDeployment('dep_2')).status, 'succeeded');
+});
+
+test('recovers a durable failure marker before fail-closing on unavailable KV marker listing', async () => {
+  let d1Unavailable = true;
+  const store = await createSeededStore();
+  const originalUpdateDeployment = store.updateDeployment.bind(store);
+  store.updateDeployment = async (deploymentId, patch) => {
+    if (d1Unavailable && patch.status === 'failed') throw new Error('SQL terminal write unavailable');
+    return originalUpdateDeployment(deploymentId, patch);
+  };
+  const snapshots = createSnapshotStore();
+  const originalSnapshotPut = snapshots.put;
+  const originalSnapshotList = snapshots.list;
+  snapshots.put = async () => {
+    throw new Error('KV recovery marker unavailable');
+  };
+  const env = testEnv(store, snapshots, {
+    ROUTE_POINTER_LOCKS: createRoutePointerLocks(snapshots),
+  });
+  const originalNextId = env.nextId;
+  let failVersionId = true;
+  env.nextId = (prefix) => {
+    if (prefix === 'ver' && failVersionId) throw new Error('unexpected orchestration failure');
+    return originalNextId(prefix);
+  };
+
+  const failedResponse = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'durable_recovery_kv_list_initial_failure',
+    }),
+    env
+  );
+
+  assert.equal(failedResponse.status, 500, await failedResponse.clone().text());
+  assert.equal((await store.getDeployment('dep_1')).status, 'pending');
+
+  d1Unavailable = false;
+  failVersionId = false;
+  snapshots.put = originalSnapshotPut;
+  snapshots.list = async () => {
+    throw new Error('KV marker listing unavailable');
+  };
+  const blockedRetry = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'durable_recovery_kv_list_blocked_retry',
+    }),
+    env
+  );
+
+  assert.equal(blockedRetry.status, 503, await blockedRetry.clone().text());
+  assert.equal((await blockedRetry.json()).error.code, 'DEPLOYMENT_STATE_WRITE_FAILED');
+  assert.equal((await store.getDeployment('dep_1')).status, 'failed');
+  assert.equal(await store.getDeployment('dep_2'), null);
+
+  snapshots.list = originalSnapshotList;
+  const successfulRetry = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ moduleContent: 'export default { fetch() { return new Response("recovered"); } };' }),
+      { 'Idempotency-Key': 'durable_recovery_kv_list_successful_retry' }
+    ),
+    env
+  );
+
+  assert.equal(successfulRetry.status, 201, await successfulRetry.clone().text());
+  assert.equal((await store.getDeployment('dep_2')).status, 'succeeded');
+});
+
+test('retains a newly created site hostname for durable failure recovery', async () => {
+  let d1Unavailable = true;
+  let providerUnavailable = true;
+  const store = await createSeededStore();
+  const ownerScopedKey = await seedAccessKey(store, 'ak_owner_recovery', ['deploy:site'], null);
+  const originalUpdateDeployment = store.updateDeployment.bind(store);
+  store.updateDeployment = async (deploymentId, patch) => {
+    if (d1Unavailable && patch.status === 'failed') throw new Error('SQL terminal write unavailable');
+    return originalUpdateDeployment(deploymentId, patch);
+  };
+  const snapshots = createSnapshotStore();
+  const originalSnapshotPut = snapshots.put;
+  snapshots.put = async () => {
+    throw new Error('KV recovery marker unavailable');
+  };
+  const repairLogs = [];
+  const durableScopeNames = [];
+  const routePointerLocks = createRoutePointerLocks(snapshots);
+  const env = testEnv(store, snapshots, {
+    ROUTE_POINTER_LOCKS: {
+      ...routePointerLocks,
+      idFromName: (name) => {
+        durableScopeNames.push(name);
+        return routePointerLocks.idFromName(name);
+      },
+    },
+    logDeploymentRepairRequired: (line) => repairLogs.push(JSON.parse(line)),
+    WFP_PROVIDER: {
+      upload: async ({ workerName }) => {
+        if (providerUnavailable) {
+          throw new WfpApiError({
+            code: 'WFP_NETWORK_ERROR',
+            message: 'provider unavailable',
+            operation: 'worker_put',
+          });
+        }
+        return { artifactRef: `wfp://test/${workerName}` };
+      },
+      verify: async () => ({ ok: true }),
+    },
+  });
+  const originalNextId = env.nextId;
+  env.nextId = (prefix) => {
+    if (prefix === 'site') return 'site_new_recovery';
+    if (prefix === 'route') return 'route_new_recovery';
+    return originalNextId(prefix);
+  };
+  const firstHeaders = {
+    Authorization: `Bearer ${ownerScopedKey}`,
+    'Idempotency-Key': 'new_site_durable_recovery_initial_failure',
+  };
+
+  const failedResponse = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ siteId: undefined, siteSlug: 'new-recovery', visibility: 'internal' }),
+      firstHeaders
+    ),
+    env
+  );
+
+  assert.equal(failedResponse.status, 503, await failedResponse.clone().text());
+  assert.equal((await failedResponse.json()).error.code, 'DEPLOYMENT_STATE_WRITE_FAILED');
+  assert.equal((await store.getDeployment('dep_1')).status, 'uploading');
+  assert.equal(repairLogs.at(-1)?.reason, 'deployment_failure_state_recovery_deferred');
+  assert.deepEqual(durableScopeNames, ['production:new-recovery.workers.xd.team']);
+  assert.equal((await store.findSiteBySlug('production', 'new-recovery')).id, 'site_new_recovery');
+
+  d1Unavailable = false;
+  providerUnavailable = false;
+  snapshots.put = originalSnapshotPut;
+  const retry = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ siteId: undefined, siteSlug: 'new-recovery', visibility: 'internal' }),
+      {
+        Authorization: `Bearer ${ownerScopedKey}`,
+        'Idempotency-Key': 'new_site_durable_recovery_retry',
+      }
+    ),
+    env
+  );
+
+  assert.equal(retry.status, 201, await retry.clone().text());
+  assert.equal((await store.getDeployment('dep_1')).status, 'failed');
+  assert.equal((await store.getDeployment('dep_2')).status, 'succeeded');
 });
 
 test('POST deploy returns the committed success when trailing trace work fails after terminal persistence', async () => {
@@ -3516,7 +3753,9 @@ test('access keys can deploy by slug only when the resolved site matches their s
 test('user owner-scoped access keys can create a new personal site during deploy', async () => {
   const store = await createSeededStore();
   const ownerScopedKey = await seedAccessKey(store, 'ak_owner_create', ['deploy:site'], null);
-  const env = testEnv(store, createSnapshotStore(), {
+  const snapshots = createSnapshotStore();
+  const env = testEnv(store, snapshots, {
+    ROUTE_POINTER_LOCKS: createRoutePointerLocks(snapshots),
     nextId: (prefix) => {
       if (prefix === 'site') return 'site_new_personal';
       if (prefix === 'route') return 'route_new_personal';
@@ -7555,6 +7794,80 @@ test('persists structured WFP provider diagnostics for upload failures', async (
   assert.equal('failureDiagnostics' in polledBody.deployment, false);
 });
 
+test('marks Cloudflare Worker source compilation failures as non-retryable', async () => {
+  const store = await createSeededStore();
+  const env = testEnv(store, createSnapshotStore(), {
+    WFP_PROVIDER: {
+      upload: async () => {
+        throw new WfpApiError({
+          status: 400,
+          code: 'WFP_API_ERROR',
+          message: 'Worker upload rejected',
+          operation: 'worker_put',
+          providerCode: 10021,
+          providerMessage: 'Uncaught SyntaxError: Unexpected end of input at bad-worker.js:5',
+          providerRequestId: 'source-error-ray-SIN',
+        });
+      },
+      verify: async () => {
+        throw new Error('verify should not run');
+      },
+    },
+  });
+
+  const response = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'wfp_worker_source_invalid',
+    }),
+    env
+  );
+  const body = await response.json();
+  const failed = await store.getDeployment('dep_1');
+
+  assert.equal(response.status, 400);
+  assert.equal(body.error.code, 'DEPLOYMENT_UPLOAD_FAILED');
+  assert.equal(body.error.message, 'Worker source compilation failed.');
+  assert.equal(
+    body.error.action,
+    'Fix the Worker source and deploy again: Uncaught SyntaxError: Unexpected end of input at bad-worker.js:5'
+  );
+  assert.equal(failed.failureDiagnostics.retryable, false);
+  assert.equal(failed.failureDiagnostics.operatorAction, 'fix_worker_source');
+  assert.equal(failed.failureDiagnostics.provider.providerCode, '10021');
+});
+
+test('keeps transient Provider upload failures retryable', async () => {
+  for (const failure of [
+    new WfpApiError({ code: 'WFP_NETWORK_ERROR', message: 'network failed', operation: 'worker_put' }),
+    new WfpApiError({ status: 429, code: 'WFP_API_ERROR', message: 'rate limited', operation: 'worker_put' }),
+    new WfpApiError({ status: 503, code: 'WFP_API_ERROR', message: 'provider unavailable', operation: 'worker_put' }),
+  ]) {
+    const store = await createSeededStore();
+    const env = testEnv(store, createSnapshotStore(), {
+      WFP_PROVIDER: {
+        upload: async () => {
+          throw failure;
+        },
+        verify: async () => {
+          throw new Error('verify should not run');
+        },
+      },
+    });
+
+    const response = await worker.fetch(
+      deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+        'Idempotency-Key': `wfp_transient_${failure.code}_${failure.status || 'network'}`,
+      }),
+      env
+    );
+    const failed = await store.getDeployment('dep_1');
+
+    assert.equal(response.status, 502);
+    assert.equal(failed.failureDiagnostics.retryable, true);
+    assert.equal(failed.failureDiagnostics.operatorAction, 'retry_deploy');
+  }
+});
+
 test('omits untrusted WFP provider diagnostic fields from upload failures', async () => {
   const store = await createSeededStore();
   const env = testEnv(store, createSnapshotStore(), {
@@ -8202,6 +8515,48 @@ test('reconciles deployment success when final status write fails after route co
     ),
     true
   );
+});
+
+test('preserves previousVersionId when a redeploy success is reconciled after its final state write fails', async () => {
+  const store = await createSeededStore();
+  const originalUpdateDeployment = store.updateDeployment.bind(store);
+  let failNextSucceededWrite = false;
+  store.updateDeployment = async (id, patch) => {
+    if (patch.status === 'succeeded' && failNextSucceededWrite) {
+      failNextSucceededWrite = false;
+      throw new Error('final deployment state unavailable');
+    }
+    return originalUpdateDeployment(id, patch);
+  };
+  const env = testEnv(store, createSnapshotStore());
+  await assertDeployOk(
+    await worker.fetch(
+      deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+        'Idempotency-Key': 'reconcile_previous_first',
+      }),
+      env
+    )
+  );
+  failNextSucceededWrite = true;
+
+  const response = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ moduleContent: 'export default { fetch() { return new Response("v2"); } };' }),
+      { 'Idempotency-Key': 'reconcile_previous_second' }
+    ),
+    env
+  );
+  const beforePoll = await store.getDeployment('dep_2');
+  const polled = await worker.fetch(authRequest('https://api.pages.xd.team/.xd-pages/api/deployments/dep_2'), env);
+
+  assert.equal(response.status, 201, await response.clone().text());
+  assert.equal((await response.json()).deployment.previousVersionId, 'ver_1');
+  assert.equal(beforePoll.status, 'activating');
+  assert.equal(beforePoll.previousVersionId, 'ver_1');
+  assert.equal(polled.status, 200, await polled.clone().text());
+  assert.equal((await polled.json()).deployment.previousVersionId, 'ver_1');
+  assert.equal((await store.getDeployment('dep_2')).previousVersionId, 'ver_1');
 });
 
 test('reconciles rollback success when final status write fails after route commit', async () => {
@@ -9069,6 +9424,29 @@ function createSnapshotStore() {
       list_complete: true,
     }),
     read: (key) => values.get(key),
+  };
+}
+
+function createRoutePointerLocks(routeSnapshots) {
+  const instances = new Map();
+  return {
+    idFromName: (name) => name,
+    get: (id) => {
+      if (!instances.has(id)) {
+        const records = new Map();
+        const state = {
+          storage: {
+            get: async (key) => records.get(key),
+            put: async (key, value) => records.set(key, value),
+            delete: async (key) => records.delete(key),
+            list: async ({ prefix = '' } = {}) =>
+              new Map([...records].filter(([key]) => typeof key === 'string' && key.startsWith(prefix))),
+          },
+        };
+        instances.set(id, new RoutePointerDO(state, { ROUTE_SNAPSHOTS: routeSnapshots }));
+      }
+      return { fetch: (request) => instances.get(id).fetch(request) };
+    },
   };
 }
 

@@ -181,6 +181,18 @@ test('deploymentTraceEventView labels unexpected rollback orchestration failures
   assert.equal(view.operatorAction, '重新回滚');
 });
 
+test('deploymentTraceEventView labels Worker source fixes as a code change', () => {
+  const view = siteDisplayModel.deploymentTraceEventView({
+    stage: 'provider_upload',
+    status: 'failed',
+    diagnostics: {
+      operatorAction: 'fix_worker_source',
+    },
+  });
+
+  assert.equal(view.operatorAction, '修复 Worker 源码');
+});
+
 test('deploymentTraceEventView preserves safe unknown values and empty fallbacks', () => {
   assert.equal(typeof siteDisplayModel.deploymentTraceEventView, 'function');
   assert.deepEqual(
