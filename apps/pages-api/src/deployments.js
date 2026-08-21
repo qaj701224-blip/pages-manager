@@ -848,7 +848,6 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
   let ownerTransferRollbackSite = null;
   let ownerTransferApplied = false;
   let activationSnapshotFailureResponse = null;
-  let versionCreateStage = null;
   let routePolicyLockStage = null;
   try {
     await persistIntermediateDeploymentState(store, deployment.id, { status: 'verified' }, 'persist_verified_deployment');
@@ -927,13 +926,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
       site = transferResult.site;
       ownerTransfer = transferResult.ownerTransfer;
     }
-    versionCreateStage = trace
-      ? startDeploymentStage(trace, {
-          stage: 'version_create',
-          operation: 'create_site_version',
-        })
-      : null;
-    const versionResult = await createDeploymentVersionCreationApplication(store, env).create({
+    const versionResult = await createDeploymentVersionCreationApplication(store, env, trace).create({
       versionId,
       siteId,
       deploymentId: deployment.id,
@@ -951,10 +944,6 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
     });
     if (!versionResult.ok) throw versionResult.error.cause;
     version = versionResult.version;
-    if (versionCreateStage) {
-      await finishDeploymentStage(versionCreateStage, { status: 'succeeded' });
-      versionCreateStage = null;
-    }
     await persistIntermediateDeploymentState(
       store,
       deployment.id,
@@ -1172,15 +1161,6 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
     );
   } catch (error) {
     const routePolicyLockFailed = Boolean(routePolicyLockStage);
-    if (versionCreateStage) {
-      await finishDeploymentStage(versionCreateStage, {
-        status: 'failed',
-        errorCode: 'DEPLOYMENT_STATE_WRITE_FAILED',
-        errorMessage: 'Deployment version could not be persisted.',
-        diagnostics: { causeClass: 'version_store_error' },
-      });
-      versionCreateStage = null;
-    }
     if (routePolicyLockStage) {
       await finishDeploymentStage(routePolicyLockStage, {
         status: 'failed',
@@ -3178,11 +3158,33 @@ function createRollbackRouteStateReadApplication(store) {
   });
 }
 
-function createDeploymentVersionCreationApplication(store, env) {
+function createDeploymentVersionCreationApplication(store, env, trace) {
   return createDeploymentVersionCreation({
     versions: createDeploymentVersionsPort(store),
     runtimeConfig: {
       snapshotSecrets: (secrets) => runtimeSecretSnapshotRecords(env, secrets),
+    },
+    telemetry: {
+      start: () =>
+        trace
+          ? startDeploymentStage(trace, {
+              stage: 'version_create',
+              operation: 'create_site_version',
+            })
+          : null,
+      finish: (stage, outcome) =>
+        stage
+          ? finishDeploymentStage(stage, {
+              status: outcome.status,
+              ...(outcome.reason === 'version_create_error'
+                ? {
+                    errorCode: 'DEPLOYMENT_STATE_WRITE_FAILED',
+                    errorMessage: 'Deployment version could not be persisted.',
+                    diagnostics: { causeClass: 'version_store_error' },
+                  }
+                : {}),
+            })
+          : undefined,
     },
   });
 }

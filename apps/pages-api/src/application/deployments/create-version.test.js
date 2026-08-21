@@ -36,6 +36,7 @@ const command = {
   runtimeSecrets: [{ name: 'API_TOKEN', value: 'secret', revision: 3 }],
   actorId: 'usr_1',
 };
+const telemetry = { start: () => null, finish: async () => null };
 
 test('deployment version creation persists the complete immutable version record through its narrow port', async () => {
   const records = [];
@@ -53,6 +54,7 @@ test('deployment version creation persists the complete immutable version record
         return [{ ...secrets[0], valueHash: 'hashed-secret' }];
       },
     },
+    telemetry,
   });
 
   assert.deepEqual(await application.create(command), { ok: true, version });
@@ -100,6 +102,7 @@ test('deployment version creation preserves WFP defaults and nullable artifact f
       },
     },
     runtimeConfig: { snapshotSecrets: async () => [] },
+    telemetry,
   });
 
   const result = await application.create({
@@ -139,6 +142,7 @@ test('deployment version creation maps hash and repository failures to a typed r
         throw hashCause;
       },
     },
+    telemetry,
   });
   assert.deepEqual(await hashFailure.create(command), {
     ok: false,
@@ -153,6 +157,7 @@ test('deployment version creation maps hash and repository failures to a typed r
       },
     },
     runtimeConfig: { snapshotSecrets: async () => [] },
+    telemetry,
   });
   assert.deepEqual(await storeFailure.create(command), {
     ok: false,
@@ -160,9 +165,62 @@ test('deployment version creation maps hash and repository failures to a typed r
   });
 });
 
+test('deployment version creation traces around hashing and persistence', async () => {
+  const calls = [];
+  const stage = { operation: 'create_site_version' };
+  const version = { id: 'ver_1' };
+  const application = createDeploymentVersionCreation({
+    versions: {
+      async create() {
+        calls.push(['version']);
+        return version;
+      },
+    },
+    runtimeConfig: {
+      async snapshotSecrets() {
+        calls.push(['snapshot_secrets']);
+        return [];
+      },
+    },
+    telemetry: {
+      start() {
+        calls.push(['start']);
+        return stage;
+      },
+      async finish(receivedStage, outcome) {
+        calls.push(['finish', receivedStage, outcome]);
+      },
+    },
+  });
+
+  assert.deepEqual(await application.create(command), { ok: true, version });
+  assert.deepEqual(calls, [
+    ['start'],
+    ['snapshot_secrets'],
+    ['version'],
+    ['finish', stage, { status: 'succeeded' }],
+  ]);
+});
+
+test('deployment version creation starts telemetry synchronously', () => {
+  const startError = new Error('invalid trace');
+  const application = createDeploymentVersionCreation({
+    versions: { create: async () => assert.fail('version persistence must not run') },
+    runtimeConfig: { snapshotSecrets: async () => assert.fail('secret hashing must not run') },
+    telemetry: {
+      start() {
+        throw startError;
+      },
+      finish: async () => assert.fail('finish must not run'),
+    },
+  });
+
+  assert.throws(() => application.create(command), (error) => error === startError);
+});
+
 test('deployment version creation requires its hash capability', () => {
   assert.throws(
-    () => createDeploymentVersionCreation({ versions: {}, runtimeConfig: {} }),
+    () => createDeploymentVersionCreation({ versions: {}, runtimeConfig: {}, telemetry }),
     /runtimeConfig\.snapshotSecrets is required/
   );
 });

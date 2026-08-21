@@ -1,13 +1,20 @@
 import { runtimeConfigSnapshot } from '../../domain/runtime-config/rules.js';
 
-export function createDeploymentVersionCreation({ versions, runtimeConfig }) {
+export function createDeploymentVersionCreation({ versions, runtimeConfig, telemetry }) {
   if (typeof runtimeConfig?.snapshotSecrets !== 'function') {
     throw new TypeError('runtimeConfig.snapshotSecrets is required');
   }
+  if (typeof telemetry?.start !== 'function') throw new TypeError('telemetry.start is required');
+  if (typeof telemetry?.finish !== 'function') throw new TypeError('telemetry.finish is required');
 
   return { create };
 
-  async function create(command) {
+  function create(command) {
+    const stage = telemetry.start();
+    return createAfterStart(command, stage);
+  }
+
+  async function createAfterStart(command, stage) {
     try {
       const version = await versions.create({
         id: command.versionId,
@@ -39,8 +46,10 @@ export function createDeploymentVersionCreation({ versions, runtimeConfig }) {
         artifactAvailability: 'active',
         createdBy: command.actorId,
       });
+      await telemetry.finish(stage, { status: 'succeeded' });
       return { ok: true, version };
     } catch (cause) {
+      await telemetry.finish(stage, { status: 'failed', reason: 'version_create_error', cause });
       return { ok: false, error: { code: 'DEPLOYMENT_VERSION_CREATE_FAILED', cause } };
     }
   }
