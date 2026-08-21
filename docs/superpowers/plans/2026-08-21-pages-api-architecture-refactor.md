@@ -322,7 +322,7 @@ node --test apps/pages-api/src/store-contract.test.js apps/pages-api/src/route-s
 - [x] WFP orphan inventory/backfill；
 - [x] ordinary Worker inventory/retirement；
 - [x] v1 inventory/retirement；
-- [ ] admin site/team/user mutations。
+- [x] admin site/team/user mutations。
 
 ### Task 6.2：统一 cleanup use case
 
