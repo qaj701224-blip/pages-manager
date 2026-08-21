@@ -1,14 +1,21 @@
-export function createRollbackLeaseAcquisition({ leases }) {
+export function createRollbackLeaseAcquisition({ leases, telemetry }) {
   if (typeof leases?.acquire !== 'function') throw new TypeError('leases.acquire is required');
+  if (typeof telemetry?.start !== 'function') throw new TypeError('telemetry.start is required');
+  if (typeof telemetry?.finish !== 'function') throw new TypeError('telemetry.finish is required');
 
   return { acquire };
 
-  async function acquire(command) {
+  function acquire(command) {
+    const stage = telemetry.start();
+    return acquireAfterStart(command, stage);
+  }
+
+  async function acquireAfterStart(command, stage) {
     let lease;
     try {
       lease = await leases.acquire(command);
     } catch (cause) {
-      return {
+      const result = {
         ok: false,
         error: {
           code: 'SITE_POLICY_LOCKED',
@@ -16,8 +23,10 @@ export function createRollbackLeaseAcquisition({ leases }) {
           cause,
         },
       };
+      await telemetry.finish(stage, { status: 'failed', reason: 'acquire_failed', cause });
+      return result;
     }
-    return lease
+    const result = lease
       ? { ok: true, lease }
       : {
           ok: false,
@@ -26,5 +35,10 @@ export function createRollbackLeaseAcquisition({ leases }) {
             reason: 'lease_unavailable',
           },
         };
+    await telemetry.finish(
+      stage,
+      result.ok ? { status: 'succeeded' } : { status: 'failed', reason: 'lease_unavailable' }
+    );
+    return result;
   }
 }

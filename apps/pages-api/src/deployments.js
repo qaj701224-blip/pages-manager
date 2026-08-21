@@ -1606,26 +1606,11 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
       trace,
     });
 
-  let rollbackPolicyStage = trace
-    ? startDeploymentStage(trace, {
-        stage: 'route_policy_lock',
-        operation: 'rollback_policy_lock',
-      })
-    : null;
-  const rollbackLeaseResult = await createRollbackLeaseAcquisitionApplication(store, env).acquire({
+  const rollbackLeaseResult = await createRollbackLeaseAcquisitionApplication(store, env, trace).acquire({
     environment: config.environment,
     siteId: site.id,
   });
   if (!rollbackLeaseResult.ok && rollbackLeaseResult.error.reason === 'acquire_failed') {
-    if (rollbackPolicyStage) {
-      await finishDeploymentStage(rollbackPolicyStage, {
-        status: 'failed',
-        errorCode: 'SITE_POLICY_LOCKED',
-        errorMessage: 'Site policy lock could not be acquired.',
-        diagnostics: { causeClass: 'site_policy_lock_error' },
-      });
-      rollbackPolicyStage = null;
-    }
     await finalizeFailedRollback(
       rollbackActivationFailurePatch(version, currentRoute, {
         errorCode: 'SITE_POLICY_LOCKED',
@@ -1642,15 +1627,6 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
     );
   }
   if (!rollbackLeaseResult.ok) {
-    if (rollbackPolicyStage) {
-      await finishDeploymentStage(rollbackPolicyStage, {
-        status: 'failed',
-        errorCode: 'SITE_POLICY_CONFLICT',
-        errorMessage: 'Site policy changed while rollback was preparing.',
-        diagnostics: { causeClass: 'site_policy_conflict' },
-      });
-      rollbackPolicyStage = null;
-    }
     await finalizeFailedRollback(
       rollbackActivationFailurePatch(version, currentRoute, {
         errorCode: 'SITE_POLICY_CONFLICT',
@@ -1668,10 +1644,6 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
     );
   }
   const rollbackLease = rollbackLeaseResult.lease;
-  if (rollbackPolicyStage) {
-    await finishDeploymentStage(rollbackPolicyStage, { status: 'succeeded' });
-    rollbackPolicyStage = null;
-  }
   const rollbackRouteBeforeActivation = currentRoute;
   const rollbackRouteState = await createRollbackRouteStateReadApplication(store).read({
     siteId: site.id,
@@ -3163,7 +3135,7 @@ function createRollbackOfficeNetVerificationApplication({ store, provider }) {
   });
 }
 
-function createRollbackLeaseAcquisitionApplication(store, env) {
+function createRollbackLeaseAcquisitionApplication(store, env, trace) {
   return createRollbackLeaseAcquisition({
     leases: createRollbackLeasePort({
       store,
@@ -3176,6 +3148,35 @@ function createRollbackLeaseAcquisitionApplication(store, env) {
         ...(Number.isFinite(env?.SITE_COMMIT_LOCK_TIMEOUT_MS) ? { timeoutMs: env.SITE_COMMIT_LOCK_TIMEOUT_MS } : {}),
       },
     }),
+    telemetry: {
+      start: () =>
+        trace
+          ? startDeploymentStage(trace, {
+              stage: 'route_policy_lock',
+              operation: 'rollback_policy_lock',
+            })
+          : null,
+      finish: (stage, outcome) => {
+        if (!stage) return undefined;
+        if (outcome.reason === 'acquire_failed') {
+          return finishDeploymentStage(stage, {
+            status: 'failed',
+            errorCode: 'SITE_POLICY_LOCKED',
+            errorMessage: 'Site policy lock could not be acquired.',
+            diagnostics: { causeClass: 'site_policy_lock_error' },
+          });
+        }
+        if (outcome.reason === 'lease_unavailable') {
+          return finishDeploymentStage(stage, {
+            status: 'failed',
+            errorCode: 'SITE_POLICY_CONFLICT',
+            errorMessage: 'Site policy changed while rollback was preparing.',
+            diagnostics: { causeClass: 'site_policy_conflict' },
+          });
+        }
+        return finishDeploymentStage(stage, { status: outcome.status });
+      },
+    },
   });
 }
 
