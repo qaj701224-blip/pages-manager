@@ -481,6 +481,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
       requestHash,
       traceId: trace?.traceId || null,
       visibility: site.pendingOwnerTransfer?.visibility || site.defaultVisibility,
+      previousVersionId: site.route?.activeVersionId || null,
       status: 'pending',
     });
   } catch {

@@ -111,6 +111,102 @@ test('records the previously active version for each successful deployment', asy
   assert.equal((await store.getDeployment('dep_2')).previousVersionId, 'ver_1');
 });
 
+test('upload failure records the previous version for an existing active deployment', async () => {
+  const store = await createSeededStore();
+  const env = testEnv(store, createSnapshotStore());
+  const first = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'previous_version_upload_failure_first',
+    }),
+    env
+  );
+  assert.equal(first.status, 201, await first.clone().text());
+
+  env.WFP_PROVIDER = {
+    upload: async () => {
+      throw new Error('upload failed');
+    },
+    verify: async () => {
+      throw new Error('verify should not run');
+    },
+  };
+  const second = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ moduleContent: 'export default { fetch() { return new Response("v2"); } };' }),
+      { 'Idempotency-Key': 'previous_version_upload_failure_second' }
+    ),
+    env
+  );
+
+  assert.equal(second.status, 502, await second.clone().text());
+  const failed = await store.getDeployment('dep_2', 'production');
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.previousVersionId, 'ver_1');
+});
+
+test('first upload failure keeps the previous version empty', async () => {
+  const store = await createSeededStore();
+  const env = testEnv(store, createSnapshotStore(), {
+    WFP_PROVIDER: {
+      upload: async () => {
+        throw new Error('upload failed');
+      },
+      verify: async () => {
+        throw new Error('verify should not run');
+      },
+    },
+  });
+
+  const response = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'first_upload_failure_previous_version',
+    }),
+    env
+  );
+
+  assert.equal(response.status, 502, await response.clone().text());
+  const failed = await store.getDeployment('dep_1', 'production');
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.previousVersionId, null);
+});
+
+test('upload failure leaves the existing active route unchanged', async () => {
+  const store = await createSeededStore();
+  const env = testEnv(store, createSnapshotStore());
+  const first = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'active_route_upload_failure_first',
+    }),
+    env
+  );
+  assert.equal(first.status, 201, await first.clone().text());
+  const before = await store.getRouteBySiteId('site_1', 'production');
+
+  env.WFP_PROVIDER = {
+    upload: async () => {
+      throw new Error('upload failed');
+    },
+    verify: async () => {
+      throw new Error('verify should not run');
+    },
+  };
+  const second = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ moduleContent: 'export default { fetch() { return new Response("v2"); } };' }),
+      { 'Idempotency-Key': 'active_route_upload_failure_second' }
+    ),
+    env
+  );
+
+  assert.equal(second.status, 502, await second.clone().text());
+  const after = await store.getRouteBySiteId('site_1', 'production');
+  assert.equal(after.activeVersionId, before.activeVersionId);
+  assert.equal(after.workerName, before.workerName);
+  assert.equal(after.routeGeneration, before.routeGeneration);
+});
+
 test('POST deploy responses expose a server trace header and persist the trace on the deployment', async () => {
   const store = await createSeededStore();
   const request = deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
