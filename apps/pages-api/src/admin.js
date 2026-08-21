@@ -30,6 +30,7 @@ import {
 } from './transport/shared/site-ownership-application.js';
 import { createAdminDashboardQuery } from './application/governance/get-admin-dashboard.js';
 import { createDeploymentTraceQuery } from './application/governance/get-deployment-trace.js';
+import { createAuditEventsQuery } from './application/governance/list-audit-events.js';
 import { buildRouteSnapshot, clearRoutePointerIfCurrent, readRouteSnapshotState } from './route-snapshot.js';
 import { createDeploymentProvider } from './execution-provider.js';
 import { sanitizeDeploymentTraceDiagnostics } from './deployment-trace.js';
@@ -2952,40 +2953,15 @@ async function mergeDepartmentTeam(request, config, store, session, sourceTeamId
 }
 
 async function listAuditEvents(config, store) {
-  const events = await store.listAuditEvents({ environment: config.environment });
-  events.sort(compareAdminAuditEvents);
-  return jsonOk({ events: events.map(formatAuditEvent) });
+  const events = await createAuditEventsQueryApplication(store).list({ environment: config.environment });
+  return jsonOk({ events });
 }
 
-function compareAdminAuditEvents(left, right) {
-  const leftTime = Date.parse(left.createdAt || '');
-  const rightTime = Date.parse(right.createdAt || '');
-  if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) return rightTime - leftTime;
-
-  const leftOperationId = left.metadata?.operationId || '';
-  const rightOperationId = right.metadata?.operationId || '';
-  if (leftOperationId && leftOperationId === rightOperationId) {
-    const leftStage = adminExposureAuditStageOrder(left.metadata?.stage);
-    const rightStage = adminExposureAuditStageOrder(right.metadata?.stage);
-    if (leftStage !== rightStage) return rightStage - leftStage;
-  }
-  return String(right.id || '').localeCompare(String(left.id || ''));
-}
-
-function adminExposureAuditStageOrder(stage) {
-  return (
-    {
-      attempted: 10,
-      office_net_removed_verified: 20,
-      office_net_not_applicable: 20,
-      policy_committed: 30,
-      effective_success: 40,
-      compensated_failure: 80,
-      partial_failed: 85,
-      compensation_failed: 90,
-      failed: 100,
-    }[stage] || 0
-  );
+function createAuditEventsQueryApplication(store) {
+  return createAuditEventsQuery({
+    audits: { list: (query) => store.listAuditEvents(query) },
+    metadata: { sanitize: sanitizeAuditMetadata },
+  });
 }
 
 async function listPlatformAdmins(config, store) {
@@ -3219,29 +3195,6 @@ function formatAdminTeamMember(member) {
     removedAt: member.removedAt || null,
     createdAt: member.createdAt,
     updatedAt: member.updatedAt,
-  };
-}
-
-function formatAuditEvent(event) {
-  return {
-    id: event.id,
-    eventType: event.eventType,
-    traceId: event.traceId || null,
-    actorUserId: event.actorUserId || null,
-    actorType: event.actorType,
-    actor: {
-      type: event.actor?.type || event.actorType || null,
-      userId: event.actor?.userId || event.actorUserId || null,
-      displayName: event.actor?.displayName || null,
-      email: event.actor?.email || null,
-    },
-    siteId: event.siteId || null,
-    routeId: event.routeId || null,
-    versionId: event.versionId || null,
-    decision: event.decision,
-    statusCode: event.statusCode ?? null,
-    metadata: event.metadata == null ? null : sanitizeAuditMetadata(event.metadata),
-    createdAt: event.createdAt,
   };
 }
 
