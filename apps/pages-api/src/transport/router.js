@@ -1,5 +1,5 @@
 import { handleAccessKeysApi, handleConsoleAccessKeysApi } from '../access-keys.js';
-import { handleConsoleAdminApi } from '../admin.js';
+import { handleConsoleAdminApi } from './console/admin-handler.js';
 import { handleConsoleApi } from '../console.js';
 import { handleConsoleUsersApi } from '../console-users.js';
 import { createDeploymentTraceContext, recordDeploymentStage, withDeploymentTraceHeader } from '../deployment-trace.js';

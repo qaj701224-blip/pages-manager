@@ -1,5 +1,5 @@
-import { isConsoleBffRequest, requireConsoleUserSession } from './console-auth.js';
-import { sanitizeAuditMetadata } from './audit-sanitizer.js';
+import { isConsoleBffRequest, requireConsoleUserSession } from '../../console-auth.js';
+import { sanitizeAuditMetadata } from '../../audit-sanitizer.js';
 import { jsonResponse } from '@xd/worker-kit';
 import { accessModeFromVisibility } from '@xd/pages-access-policy';
 import {
@@ -11,32 +11,32 @@ import {
   putSiteVar,
   readSiteConfig,
   updateSiteAccess,
-} from './console.js';
-import { jsonError, jsonOk, readJsonBody } from './http.js';
-import { newId, nextId } from './id.js';
-import { handleConsoleAdminWebhooksApi } from './webhooks.js';
-import { buildSiteOwnerTransferAuditEvent } from './application/sites/build-owner-transfer-audit-event.js';
+} from '../../console.js';
+import { jsonError, jsonOk, readJsonBody } from '../../http.js';
+import { newId, nextId } from '../../id.js';
+import { handleConsoleAdminWebhooksApi } from '../../webhooks.js';
+import { buildSiteOwnerTransferAuditEvent } from '../../application/sites/build-owner-transfer-audit-event.js';
 import {
   refreshCurrentRouteSnapshot,
   restoreSiteVisibilityAfterSnapshotFailure,
-} from './transport/shared/site-route-snapshots.js';
+} from '../../transport/shared/site-route-snapshots.js';
 import {
   createSiteOwnershipApplication,
   siteTransferErrorResponse,
-} from './transport/shared/site-ownership-application.js';
-import { createAdminDashboardQuery } from './application/governance/get-admin-dashboard.js';
-import { createDeploymentTraceQuery } from './application/governance/get-deployment-trace.js';
-import { createAuditEventsQuery } from './application/governance/list-audit-events.js';
-import { createExposureUpdatePreparation } from './application/governance/prepare-exposure-update.js';
-import { createExposureOfficeNetVerification } from './application/governance/ensure-exposure-office-net.js';
-import { createExposureSnapshotFinalization } from './application/governance/finalize-exposure-snapshot.js';
-import { createSiteExposureUpdate } from './application/governance/update-site-exposure.js';
-import { createWorkerOrphanScan } from './application/governance/scan-worker-orphans.js';
-import { createWorkerOrphanBackfill } from './application/governance/backfill-worker-orphans.js';
-import { createNormalWorkersQuery } from './application/governance/list-normal-workers.js';
-import { createNormalWorkerRetirement } from './application/governance/retire-normal-workers.js';
-import { createV1SitesQuery } from './application/governance/list-v1-sites.js';
-import { createV1SiteRetirement } from './application/governance/retire-v1-sites.js';
+} from '../../transport/shared/site-ownership-application.js';
+import { createAdminDashboardQuery } from '../../application/governance/get-admin-dashboard.js';
+import { createDeploymentTraceQuery } from '../../application/governance/get-deployment-trace.js';
+import { createAuditEventsQuery } from '../../application/governance/list-audit-events.js';
+import { createExposureUpdatePreparation } from '../../application/governance/prepare-exposure-update.js';
+import { createExposureOfficeNetVerification } from '../../application/governance/ensure-exposure-office-net.js';
+import { createExposureSnapshotFinalization } from '../../application/governance/finalize-exposure-snapshot.js';
+import { createSiteExposureUpdate } from '../../application/governance/update-site-exposure.js';
+import { createWorkerOrphanScan } from '../../application/governance/scan-worker-orphans.js';
+import { createWorkerOrphanBackfill } from '../../application/governance/backfill-worker-orphans.js';
+import { createNormalWorkersQuery } from '../../application/governance/list-normal-workers.js';
+import { createNormalWorkerRetirement } from '../../application/governance/retire-normal-workers.js';
+import { createV1SitesQuery } from '../../application/governance/list-v1-sites.js';
+import { createV1SiteRetirement } from '../../application/governance/retire-v1-sites.js';
 import {
   createAdminSitesQuery,
   createAdminTeamsQuery,
@@ -44,24 +44,24 @@ import {
   projectAdminSiteDetail as formatAdminSiteDetail,
   projectAdminTeam as formatAdminTeam,
   projectAdminTeamMember as formatAdminTeamMember,
-} from './application/governance/list-admin-resources.js';
-import { createTeamMemberManagement } from './application/teams/manage-team-members.js';
-import { createTeamManagement } from './application/teams/manage-team.js';
-import { createDepartmentTeamMerge } from './application/teams/merge-department-teams.js';
-import { createPlatformAdminManagement } from './application/governance/manage-platform-admins.js';
+} from '../../application/governance/list-admin-resources.js';
+import { createTeamMemberManagement } from '../../application/teams/manage-team-members.js';
+import { createTeamManagement } from '../../application/teams/manage-team.js';
+import { createDepartmentTeamMerge } from '../../application/teams/merge-department-teams.js';
+import { createPlatformAdminManagement } from '../../application/governance/manage-platform-admins.js';
 import {
   canRunDeploymentCleanupTask,
   createDeploymentCleanupRunner,
-} from './application/governance/run-deployment-cleanups.js';
-import { createNormalWorkerAdminClient } from './infrastructure/providers/normal-worker-admin-client.js';
+} from '../../application/governance/run-deployment-cleanups.js';
+import { createNormalWorkerAdminClient } from '../../infrastructure/providers/normal-worker-admin-client.js';
 import {
   createV1SitesAdminClient as createInfrastructureV1SitesAdminClient,
-} from './infrastructure/integrations/legacy-v1/sites-admin-client.js';
-import { buildRouteSnapshot, clearRoutePointerIfCurrent, readRouteSnapshotState } from './route-snapshot.js';
-import { createDeploymentProvider } from './execution-provider.js';
-import { sanitizeDeploymentTraceDiagnostics } from './deployment-trace.js';
-import { ensurePublicWorkerOfficeNetAbsent } from './deployments.js';
-import { cleanupDeferredLegacyV1WorkerScript, resolveDeferredLegacyV1WorkerTarget } from './legacy-v1/deferred-worker-cleanup.js';
+} from '../../infrastructure/integrations/legacy-v1/sites-admin-client.js';
+import { buildRouteSnapshot, clearRoutePointerIfCurrent, readRouteSnapshotState } from '../../route-snapshot.js';
+import { createDeploymentProvider } from '../../execution-provider.js';
+import { sanitizeDeploymentTraceDiagnostics } from '../../deployment-trace.js';
+import { ensurePublicWorkerOfficeNetAbsent } from '../../deployments.js';
+import { cleanupDeferredLegacyV1WorkerScript, resolveDeferredLegacyV1WorkerTarget } from '../../legacy-v1/deferred-worker-cleanup.js';
 import { createWfpClient, readWfpConfig } from '@xd/wfp-client';
 import {
   buildWorkerOrphanScan,
@@ -70,7 +70,7 @@ import {
   isManagedWfpWorkerName,
   isWfpWorkerResource,
   readV1ReservedWorkerNames,
-} from './admin-resource-governance.js';
+} from '../../admin-resource-governance.js';
 
 const CONSOLE_PREFIX = '/.xd-pages/api/console';
 const TEAM_ROLES = new Set(['viewer', 'publisher', 'admin']);
