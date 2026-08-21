@@ -321,7 +321,7 @@ node --test apps/pages-api/src/store-contract.test.js apps/pages-api/src/route-s
 - [x] public exposure mutation；
 - [x] WFP orphan inventory/backfill；
 - [x] ordinary Worker inventory/retirement；
-- [ ] v1 inventory/retirement；
+- [x] v1 inventory/retirement；
 - [ ] admin site/team/user mutations。
 
 ### Task 6.2：统一 cleanup use case
