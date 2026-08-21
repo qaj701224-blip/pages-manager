@@ -15,6 +15,7 @@ import { createDeploymentRecord } from './application/deployments/deployment-rec
 import { createPublicWorkerOfficeNetGuard } from './application/deployments/ensure-public-office-net.js';
 import { createRollbackOfficeNetVerification } from './application/deployments/ensure-rollback-office-net.js';
 import { createDeploymentProviderOperations } from './application/deployments/provider-operations.js';
+import { createDeploymentRouteActivationPreparation } from './application/deployments/prepare-route-activation.js';
 import { createRollbackRouteStateRead } from './application/deployments/read-rollback-route-state.js';
 import { createCommittedDeploymentReconciliation } from './application/deployments/reconcile-committed-deployment.js';
 import { createFailedDeploymentsRecovery } from './application/deployments/recover-failed-deployments.js';
@@ -848,6 +849,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
       'persist_activating_deployment'
     );
     const commitLeaseApplication = createDeploymentCommitLeaseApplication(store, env, trace);
+    const routeActivationPreparation = createDeploymentRouteActivationPreparationApplication(store, env);
     const routeActivationApplication = createDeploymentRouteActivationApplication(store, env, trace);
     const routeSnapshotApplication = createDeploymentRouteSnapshotCommitApplication(
       store,
@@ -859,30 +861,25 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
       { environment: config.environment, siteId },
       async (activationLease) => {
         const routeBeforeActivation = previousRoute;
-        const latestRoute = await store.getRouteBySiteId(siteId, config.environment);
-        if (!latestRoute) throw deploymentOperationError('ROUTE_ACTIVATION_CONFLICT');
-        previousRoute = latestRoute;
-        await persistIntermediateDeploymentState(
-          store,
-          deployment.id,
-          { previousVersionId: latestRoute.activeVersionId || null },
-          'persist_previous_version_deployment'
-        );
-        await assertRouteSnapshotConverged(env, store, latestRoute, config.environment);
-        const activationResolution = routeActivationApplication.resolve({
+        const activationPreparation = await routeActivationPreparation.prepare({
+          deploymentId: deployment.id,
+          environment: config.environment,
+          siteId,
           site,
           routeBeforeActivation,
-          latestRoute,
           uploadExposure,
           ownerTransferApplied,
         });
-        if (!activationResolution.ok) {
-          throw deploymentOperationError('ROUTE_ACTIVATION_CONFLICT', {
-            message: 'Site exposure changed while deployment was uploading.',
-            action: 'Retry the deployment so Worker bindings match the latest site exposure.',
-          });
+        if (activationPreparation.latestRoute) previousRoute = activationPreparation.latestRoute;
+        if (!activationPreparation.ok) {
+          throw activationPreparation.error.reason === 'exposure_changed'
+            ? deploymentOperationError('ROUTE_ACTIVATION_CONFLICT', {
+                message: 'Site exposure changed while deployment was uploading.',
+                action: 'Retry the deployment so Worker bindings match the latest site exposure.',
+              })
+            : deploymentOperationError(activationPreparation.error.code);
         }
-        const activation = activationResolution.activation;
+        const activation = activationPreparation.activation;
         const activationExposure = activation.exposure;
         assertCommitLeaseHealthy(activationLease);
         await ensurePublicWorkerOfficeNetAbsent(provider, {
@@ -3221,6 +3218,16 @@ function createDeploymentRouteActivationApplication(store, env, trace = null, pr
       },
     },
     clock: { now: () => readNow(env) },
+  });
+}
+
+function createDeploymentRouteActivationPreparationApplication(store, env) {
+  return createDeploymentRouteActivationPreparation({
+    routes: createDeploymentRoutesPort(store),
+    deploymentState: createDeploymentCompletionPort(store),
+    routeSnapshots: {
+      assertConverged: ({ route, environment }) => assertRouteSnapshotConverged(env, store, route, environment),
+    },
   });
 }
 
