@@ -34,6 +34,7 @@ import { createDeploymentRuntimeConfigRestoration } from './application/deployme
 import { createDeploymentOwnerTransferRestoration } from './application/deployments/restore-owner-transfer.js';
 import { createDeploymentCommitLease } from './application/deployments/run-under-commit-lease.js';
 import { createDeploymentRuntimeConfigSnapshotValidation } from './application/deployments/validate-runtime-config-snapshot.js';
+import { createRollbackVersionValidation } from './application/deployments/validate-rollback-version.js';
 import { createDeploySiteResolutionPort } from './application/ports/deploy-site-resolution.js';
 import { createDeploymentCleanupTasksPort } from './application/ports/deployment-cleanup.js';
 import { createDeploymentCommitReconciliationPort } from './application/ports/deployment-commit-reconciliation.js';
@@ -1326,8 +1327,11 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
   await recoverFailedDeploymentsForSite({ store, env, config, ctx, actor, site });
 
   setRequestTraceStage(trace, 'payload_validation', 'rollback_validate');
-  const versionAvailabilityError = await validateRollbackVersion(store, version, config.environment);
-  if (versionAvailabilityError) return versionAvailabilityError;
+  const versionAvailability = await createRollbackVersionValidationApplication(store).validate({
+    version,
+    environment: config.environment,
+  });
+  if (!versionAvailability.ok) return rollbackVersionAvailabilityErrorResponse(versionAvailability.error);
   let currentRoute = await store.getRouteBySiteId(site.id, config.environment);
   const requestHash = await canonicalRequestHash({
     operation: 'rollback',
@@ -1751,8 +1755,8 @@ async function applyPendingDeploySiteCreation(env, config, store, actor, site) {
   }
 }
 
-async function validateRollbackVersion(store, version, environment) {
-  if (version.artifactAvailability !== 'active') {
+function rollbackVersionAvailabilityErrorResponse(error) {
+  if (error.reason === 'artifact_unavailable') {
     return jsonError(
       'ROLLBACK_VERSION_UNAVAILABLE',
       'Version is not available for rollback.',
@@ -1761,8 +1765,7 @@ async function validateRollbackVersion(store, version, environment) {
     );
   }
 
-  const deployment = await store.getDeployment(version.deploymentId, environment);
-  if (!deployment || deployment.status !== 'succeeded') {
+  if (error.reason === 'source_deployment_unavailable') {
     return jsonError(
       'ROLLBACK_VERSION_UNAVAILABLE',
       'Version is not available for rollback.',
@@ -1771,15 +1774,12 @@ async function validateRollbackVersion(store, version, environment) {
     );
   }
 
-  if (version.executionProvider === 'normal-worker-slot') {
-    return jsonError(
-      'ROLLBACK_VERSION_UNAVAILABLE',
-      'Version is not available for rollback.',
-      409,
-      'Normal Worker slot versions are legacy-only. Deploy a new WFP version instead.'
-    );
-  }
-  return null;
+  return jsonError(
+    'ROLLBACK_VERSION_UNAVAILABLE',
+    'Version is not available for rollback.',
+    409,
+    'Normal Worker slot versions are legacy-only. Deploy a new WFP version instead.'
+  );
 }
 
 async function deploymentEnvelope(store, deployment, preloaded = {}, environment) {
@@ -3293,6 +3293,14 @@ function createRollbackSiteResolutionApplication(store) {
     sites: createRollbackSiteResolutionPort(store),
   });
   return { resolve };
+}
+
+function createRollbackVersionValidationApplication(store) {
+  return createRollbackVersionValidation({
+    deployments: {
+      get: (deploymentId, environment) => store.getDeployment(deploymentId, environment),
+    },
+  });
 }
 
 function createDeploymentRuntimeConfigResolutionApplication(store, env, trace = null) {
