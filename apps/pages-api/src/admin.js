@@ -34,6 +34,7 @@ import { createAuditEventsQuery } from './application/governance/list-audit-even
 import { createExposureUpdatePreparation } from './application/governance/prepare-exposure-update.js';
 import { createExposureOfficeNetVerification } from './application/governance/ensure-exposure-office-net.js';
 import { createExposureSnapshotFinalization } from './application/governance/finalize-exposure-snapshot.js';
+import { createSiteExposureUpdate } from './application/governance/update-site-exposure.js';
 import { buildRouteSnapshot, clearRoutePointerIfCurrent, readRouteSnapshotState } from './route-snapshot.js';
 import { createDeploymentProvider } from './execution-provider.js';
 import { sanitizeDeploymentTraceDiagnostics } from './deployment-trace.js';
@@ -2267,14 +2268,23 @@ async function updateAdminSiteExposure(request, env, config, store, session, sit
     return jsonError('SITE_EXPOSURE_REASON_INVALID', 'Exposure reason is too long.', 400, 'Use at most 500 characters.');
   }
 
-  const preparation = await createExposureUpdatePreparationApplication({ store, env }).prepare({
+  const result = await createSiteExposureUpdateApplication({ store, env, config }).execute({
     environment: config.environment,
     actorUserId: session.userId,
     site,
     exposure,
     reason,
   });
-  if (!preparation.ok) {
+  if (result.ok) {
+    return jsonOk({
+      access: {
+        ...result.access,
+        aclEntries: result.access.aclEntries.map(formatAclEntry),
+      },
+      auditStatus: result.auditStatus,
+    });
+  }
+  if (result.reason === 'required_audit_failed') {
     return jsonError(
       'SITE_EXPOSURE_AUDIT_REQUIRED',
       'Exposure operation was not started because its required audit record could not be written.',
@@ -2282,160 +2292,64 @@ async function updateAdminSiteExposure(request, env, config, store, session, sit
       'Retry after checking the audit store.'
     );
   }
-  const { operationId, now, auditMetadata } = preparation.context;
-
-  try {
-    const result = await store.withSiteCommitLock(config.environment, site.id, async (lease) => {
-      const currentSite = await store.getAdminSiteById(site.id, config.environment);
-      const currentRoute = await store.getRouteBySiteId(site.id, config.environment);
-      if (!currentSite || !currentRoute) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
-
-      const currentExposure = currentRoute.exposure || currentSite.defaultExposure || 'internal';
-      const currentAccessMode = currentRoute.accessMode || accessModeFromVisibility(currentRoute.visibility);
-      const activeVersion = currentRoute.activeVersionId
-        ? await store.getSiteVersion(currentRoute.activeVersionId, config.environment)
-        : null;
-      if (exposure === 'public' && (!activeVersion || currentRoute.routeStatus !== 'active')) {
-        return jsonError(
-          'SITE_PUBLIC_ROUTE_INACTIVE',
-          'The site has no active route to expose publicly.',
-          409,
-          'Deploy an active version before enabling public exposure.'
-        );
-      }
-
-      if (exposure === 'public') {
-        await createExposureOfficeNetVerificationApplication({ env, config, store, site: currentSite }).ensure({
-          environment: config.environment,
-          actorUserId: session.userId,
-          site: currentSite,
-          route: currentRoute,
-          version: activeVersion,
-          lease,
-          exposure,
-          previousExposure: currentExposure,
-          operation: { operationId, now, auditMetadata },
-        });
-      }
-
-      const mutation = await store.updateSiteAccessPolicy({
-        environment: config.environment,
-        siteId: currentSite.id,
-        exposure,
-        accessMode: currentAccessMode,
-        expected: {
-          policyVersion: currentRoute.policyVersion,
-          routeGeneration: currentRoute.routeGeneration,
-          activeVersionId: currentRoute.activeVersionId,
-          runtimeConfigGeneration: currentRoute.runtimeConfigGeneration,
-        },
-        lease,
-        actorUserId: session.userId,
-        updatedAt: now,
-        auditEvent: {
-          id: `${operationId}:policy_committed`,
-          environment: config.environment,
-          traceId: operationId,
-          eventType: 'admin.site.exposure',
-          actorUserId: session.userId,
-          actorType: 'platform_admin',
-          siteId: currentSite.id,
-          routeId: currentRoute.id,
-          decision: 'allow',
-          statusCode: 200,
-          metadata: {
-            ...auditMetadata,
-            previousExposure: currentExposure,
-            authorityExposure: exposure,
-            accessMode: currentAccessMode,
-            activationState: 'pending_activation',
-            stage: 'policy_committed',
-          },
-          createdAt: now,
-        },
-      });
-
-      const finalization = await createExposureSnapshotFinalizationApplication({ store, env }).finalize({
-        environment: config.environment,
-        actorUserId: session.userId,
-        currentSite,
-        currentRoute,
-        currentExposure,
-        mutation,
-        operation: { operationId, now, auditMetadata },
-      });
-      if (!finalization.ok) {
-        const error = new Error('ROUTE_POLICY_REPAIR_REQUIRED');
-        error.code = 'ROUTE_POLICY_REPAIR_REQUIRED';
-        error.exposureAuditRecorded = true;
-        error.cause = finalization.error.cause;
-        throw error;
-      }
-      const committedSite = finalization.site;
-      const committedRoute = finalization.route;
-
-      let auditStatus = 'confirmed';
-      try {
-        await store.recordAuditEvent({
-          id: `${operationId}:effective_success`,
-          environment: config.environment,
-          traceId: operationId,
-          eventType: 'admin.site.exposure',
-          actorUserId: session.userId,
-          actorType: 'platform_admin',
-          siteId: committedSite.id,
-          routeId: committedRoute.id,
-          decision: 'allow',
-          statusCode: 200,
-          metadata: {
-            ...auditMetadata,
-            previousExposure: currentExposure,
-            authorityExposure: exposure,
-            effectiveExposure: exposure,
-            accessMode: currentAccessMode,
-            pointerConfirmed: false,
-            pointerWriteCommitted: true,
-            stage: 'effective_success',
-          },
-          createdAt: now,
-        });
-      } catch (cause) {
-        auditStatus = 'unconfirmed';
-        globalThis.console?.warn?.(
-          'SITE_EXPOSURE_AUDIT_UNCONFIRMED',
-          JSON.stringify({
-            operationId,
-            siteId: committedSite.id,
-            environment: config.environment,
-            errorCode: safeAdminExposureAuditWarningCode(cause),
-          })
-        );
-      }
-      return {
-        access: {
-          exposure: committedRoute.exposure,
-          accessMode: committedRoute.accessMode,
-          visibility: committedRoute.visibility,
-          aclEntries: (mutation.aclEntries || []).map(formatAclEntry),
-          exposureReason: committedRoute.exposure === 'public' && reason ? { text: reason, changedAt: now } : null,
-        },
-        auditStatus,
-      };
-    });
-    if (result instanceof Response) return result;
-    return jsonOk(result);
-  } catch (error) {
-    if (!error?.exposureAuditRecorded) {
-      await recordAdminExposureFailureAudit(store, env, config, session, site, operationId, auditMetadata, error);
-    }
-    return adminExposureErrorResponse(error);
+  if (result.reason === 'site_not_found') {
+    return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
   }
+  if (result.reason === 'public_route_inactive') {
+    return jsonError(
+      'SITE_PUBLIC_ROUTE_INACTIVE',
+      'The site has no active route to expose publicly.',
+      409,
+      'Deploy an active version before enabling public exposure.'
+    );
+  }
+  if (result.reason === 'repair_required') {
+    return adminExposureErrorResponse(Object.assign(new Error('ROUTE_POLICY_REPAIR_REQUIRED'), {
+      code: 'ROUTE_POLICY_REPAIR_REQUIRED',
+      cause: result.error,
+    }));
+  }
+  return adminExposureErrorResponse(result.error);
 }
 
 function createExposureUpdatePreparationApplication({ store, env }) {
   return createExposureUpdatePreparation({
     audits: { record: (event) => store.recordAuditEvent(event) },
     ids: { next: newId },
+    clock: { now: () => readNow(env) },
+  });
+}
+
+function createSiteExposureUpdateApplication({ store, env, config }) {
+  return createSiteExposureUpdate({
+    preparation: createExposureUpdatePreparationApplication({ store, env }),
+    leases: {
+      run: ({ environment, siteId }, work) => store.withSiteCommitLock(environment, siteId, work),
+    },
+    sites: { get: (siteId, environment) => store.getAdminSiteById(siteId, environment) },
+    routes: { get: (siteId, environment) => store.getRouteBySiteId(siteId, environment) },
+    versions: { get: (versionId, environment) => store.getSiteVersion(versionId, environment) },
+    officeNet: {
+      ensure: (command) =>
+        createExposureOfficeNetVerificationApplication({ env, config, store, site: command.site }).ensure(command),
+    },
+    policies: { update: (command) => store.updateSiteAccessPolicy(command) },
+    snapshots: {
+      finalize: (command) => createExposureSnapshotFinalizationApplication({ store, env }).finalize(command),
+    },
+    audits: { record: (event) => store.recordAuditEvent(event) },
+    telemetry: {
+      auditUnconfirmed: ({ operationId, siteId, environment, cause }) =>
+        globalThis.console?.warn?.(
+          'SITE_EXPOSURE_AUDIT_UNCONFIRMED',
+          JSON.stringify({
+            operationId,
+            siteId,
+            environment,
+            errorCode: safeAdminExposureAuditWarningCode(cause),
+          })
+        ),
+    },
     clock: { now: () => readNow(env) },
   });
 }
@@ -2512,51 +2426,6 @@ async function writeAdminExposureSnapshot(env, store, site, route, environment) 
   }
 
   return { committed: true };
-}
-
-async function recordAdminExposureFailureAudit(store, env, config, session, site, operationId, auditMetadata, error) {
-  const code = safeAdminExposureFailureCode(error);
-  const pointerConfirmed = error?.pointerConfirmed === true;
-  try {
-    const currentRoute = await store.getRouteBySiteId(site.id, config.environment);
-    await store.recordAuditEvent({
-      id: `${operationId}:failed`,
-      environment: config.environment,
-      traceId: operationId,
-      eventType: 'admin.site.exposure',
-      actorUserId: session.userId,
-      actorType: 'platform_admin',
-      siteId: site.id,
-      routeId: currentRoute?.id || site.route?.id || null,
-      decision: 'deny',
-      statusCode: 503,
-      metadata: {
-        ...auditMetadata,
-        authorityExposure: currentRoute?.exposure || null,
-        effectiveExposure: pointerConfirmed ? error.effectiveExposure || null : null,
-        pointerConfirmed,
-        failureCode: code,
-        stage: pointerConfirmed ? 'partial_failed' : 'failed',
-      },
-      createdAt: readNow(env),
-    });
-  } catch {
-    // Failure audit is best-effort and must never mask the operational error.
-  }
-}
-
-function safeAdminExposureFailureCode(error) {
-  const code = error?.code || error?.message;
-  const allowed = new Set([
-    'SITE_POLICY_LOCKED',
-    'SITE_POLICY_CONFLICT',
-    'SITE_PUBLIC_OFFICE_NET_REMOVE_FAILED',
-    'SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED',
-    'SITE_EXPOSURE_AUDIT_FAILED',
-    'ROUTE_POLICY_REPAIR_REQUIRED',
-    'ROUTE_SNAPSHOT_WRITE_FAILED',
-  ]);
-  return allowed.has(code) ? code : 'SITE_EXPOSURE_UPDATE_FAILED';
 }
 
 function safeAdminExposureAuditWarningCode(error) {
