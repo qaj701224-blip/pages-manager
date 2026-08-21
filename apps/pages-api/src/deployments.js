@@ -1,6 +1,7 @@
 import { validateSiteSlug } from '@xd/pages-runtime-protocol';
 
 import { isManagedWfpWorkerName } from './admin-resource-governance.js';
+import { createDeploymentRouteActivation } from './application/deployments/activate-route.js';
 import { createDeploymentRuntimeConfigCommit } from './application/deployments/commit-runtime-config.js';
 import { createDeploymentVersionCreation } from './application/deployments/create-version.js';
 import { createDeploymentRecord } from './application/deployments/deployment-record.js';
@@ -13,6 +14,7 @@ import { createDeploymentRuntimeConfigSnapshotValidation } from './application/d
 import { createDeploySiteResolutionPort } from './application/ports/deploy-site-resolution.js';
 import { createDeploymentProviderPort } from './application/ports/deployment-provider.js';
 import { createDeploymentRecordsPort } from './application/ports/deployment-records.js';
+import { createDeploymentRoutesPort } from './application/ports/deployment-routes.js';
 import { createDeploymentVersionsPort } from './application/ports/deployment-versions.js';
 import { createRollbackSiteResolutionPort } from './application/ports/rollback-site-resolution.js';
 import {
@@ -930,6 +932,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
         })
       : null;
     if (typeof store.withSiteCommitLock !== 'function') throw deploymentOperationError('SITE_POLICY_LOCKED');
+    const routeActivationApplication = createDeploymentRouteActivationApplication(store, env);
     route = await store.withSiteCommitLock(
       config.environment,
       siteId,
@@ -949,18 +952,21 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
           'persist_previous_version_deployment'
         );
         await assertRouteSnapshotConverged(env, store, latestRoute, config.environment);
-        const activationExposure = normalizeExposureForDeployment(latestRoute.exposure);
-        if (activationExposure !== uploadExposure) {
+        const activationResolution = routeActivationApplication.resolve({
+          site,
+          routeBeforeActivation,
+          latestRoute,
+          uploadExposure,
+          ownerTransferApplied,
+        });
+        if (!activationResolution.ok) {
           throw deploymentOperationError('ROUTE_ACTIVATION_CONFLICT', {
             message: 'Site exposure changed while deployment was uploading.',
             action: 'Retry the deployment so Worker bindings match the latest site exposure.',
           });
         }
-        const activationVisibility = ownerTransferApplied
-          ? site.defaultVisibility
-          : latestRoute.visibility === routeBeforeActivation?.visibility
-            ? site.defaultVisibility
-            : latestRoute.visibility;
+        const activation = activationResolution.activation;
+        const activationExposure = activation.exposure;
         assertCommitLeaseHealthy(activationLease);
         const officeNetStage = trace
           ? startDeploymentStage(trace, {
@@ -1005,23 +1011,14 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
           : null;
         let activatedRoute;
         try {
-          activatedRoute = await store.activateSiteVersion(
+          const activationResult = await routeActivationApplication.activate({
             siteId,
-            {
-              activeVersionId: version.id,
-              workerName: version.workerName,
-              runtime: version.runtime,
-              executionProvider: version.executionProvider,
-              dispatchType: version.dispatchType,
-              dispatchBindingName: version.dispatchBindingName,
-              slotId: version.slotId,
-              visibility: activationVisibility,
-              lease: activationLease,
-              updatedAt: readNow(env),
-            },
-            config.environment,
-            { ...latestRoute, exposure: activationExposure }
-          );
+            environment: config.environment,
+            version,
+            lease: activationLease,
+            activation,
+          });
+          activatedRoute = activationResult.ok ? activationResult.route : null;
           if (routeActivateStage) {
             await finishDeploymentStage(routeActivateStage, {
               status: activatedRoute ? 'succeeded' : 'failed',
@@ -3369,6 +3366,13 @@ function createDeploymentVersionCreationApplication(store, env) {
     runtimeConfig: {
       snapshotSecrets: (secrets) => runtimeSecretSnapshotRecords(env, secrets),
     },
+  });
+}
+
+function createDeploymentRouteActivationApplication(store, env) {
+  return createDeploymentRouteActivation({
+    routes: createDeploymentRoutesPort(store),
+    clock: { now: () => readNow(env) },
   });
 }
 
