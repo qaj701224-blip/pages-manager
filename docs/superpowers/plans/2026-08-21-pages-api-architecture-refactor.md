@@ -284,6 +284,8 @@ node --test apps/pages-api/src/route-snapshot.test.js apps/pages-api/src/runtime
 - [x] multipart/intake 与 response mapping；
 - [x] auth/site resolution/idempotency；
 - [ ] runtime config snapshot；
+  - [x] 初始 vars/secrets resolution、quota/hash validation 与 Provider binding DTO；
+  - [ ] Provider 前后及 activation 前 snapshot fence、commit 与补偿；
 - [ ] Provider upload/verify；
 - [ ] version create / route commit；
 - [ ] route snapshot / terminal persistence；

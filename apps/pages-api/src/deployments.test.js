@@ -2735,8 +2735,28 @@ test('deployment fails closed when runtime config hash pepper is unavailable', a
   );
 
   assert.equal(response.status, 503, await response.clone().text());
-  assert.equal((await response.json()).error.code, 'RUNTIME_CONFIG_UNSUPPORTED');
+  const body = await response.json();
+  assert.equal(body.error.code, 'RUNTIME_CONFIG_UNSUPPORTED');
+  assert.equal(body.error.action, 'Check runtime configuration and retry with a new Idempotency-Key.');
   assert.deepEqual(uploads, []);
+  assert.equal(await store.getSiteVersion('ver_1'), null);
+});
+
+test('deployment reports retry-later when runtime config Store capabilities are unavailable', async () => {
+  const store = await createSeededStore();
+  store.listEnabledSiteVars = undefined;
+  const response = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'runtime_config_store_capability_missing',
+    }),
+    testEnv(store, createSnapshotStore())
+  );
+
+  assert.equal(response.status, 503, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.error.code, 'RUNTIME_CONFIG_UNSUPPORTED');
+  assert.equal(body.error.action, 'Retry later.');
+  assert.equal((await store.getDeployment('dep_1')).status, 'failed');
   assert.equal(await store.getSiteVersion('ver_1'), null);
 });
 

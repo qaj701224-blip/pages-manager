@@ -4,9 +4,11 @@ import { isManagedWfpWorkerName } from './admin-resource-governance.js';
 import { createDeploymentRecord } from './application/deployments/deployment-record.js';
 import { createDeploySiteResolution } from './application/deployments/resolve-deploy-site.js';
 import { createRollbackSiteResolution } from './application/deployments/resolve-rollback-site.js';
+import { createDeploymentRuntimeConfigResolution } from './application/deployments/resolve-runtime-config.js';
 import { createDeploySiteResolutionPort } from './application/ports/deploy-site-resolution.js';
 import { createDeploymentRecordsPort } from './application/ports/deployment-records.js';
 import { createRollbackSiteResolutionPort } from './application/ports/rollback-site-resolution.js';
+import { createDeploymentRuntimeConfigResolutionPort } from './application/ports/runtime-config.js';
 import { canonicalRequestHash } from './crypto.js';
 import {
   assertRuntimeConfigSnapshotUnchanged,
@@ -14,7 +16,6 @@ import {
   runtimeConfigHashInput,
   runtimeSecretSnapshotRecords,
   runtimeVarsFromRecords,
-  siteVarRecordsFromObject,
 } from './deployment-runtime-config.js';
 import { canonicalDeploymentContentHash, decisionRequiresAssets, decisionRequiresWorker } from './deployment-plan.js';
 import {
@@ -41,7 +42,7 @@ import {
   writeRouteSnapshot,
 } from './route-snapshot.js';
 import { createDeploymentProvider, normalizeWorkerBundle } from './execution-provider.js';
-import { runtimeConfigSnapshot, validateRuntimeBindingQuotas } from './runtime-config.js';
+import { runtimeConfigSnapshot } from './runtime-config.js';
 import { notifyDeploymentCapacityExhausted } from './slack-alerts.js';
 import { buildSiteOwnerTransferAuditEvent, rejectUserExposureMutation } from './sites.js';
 import { deliverWebhookEventToSubscriptions } from './webhooks.js';
@@ -351,151 +352,39 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
   }
   let runtimeSecrets = [];
   let originalRuntimeVarRecords = [];
-  if (decisionRequiresWorker(decision)) {
-    if (typeof store.listEnabledSiteSecrets !== 'function' || typeof store.listEnabledSiteVars !== 'function') {
-      if (runtimeConfigStage) {
-        await finishDeploymentStage(runtimeConfigStage, {
-          status: 'failed',
-          errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
-          errorMessage: 'Runtime configuration is unavailable.',
-          diagnostics: { causeClass: 'runtime_config_error' },
-        });
-      }
-      await finalizeFailedDeployment(runtimeConfigFailurePatch());
-      return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime configuration is unavailable.', 503, 'Retry later.');
-    }
-    try {
-      originalRuntimeVarRecords = await store.listEnabledSiteVars(config.environment, siteId);
-      runtimeVarRecords = workerRuntimeVarsProvided ? siteVarRecordsFromObject(requestedRuntimeVars) : originalRuntimeVarRecords;
-      runtimeVars = runtimeVarsFromRecords(runtimeVarRecords);
-      runtimeSecrets = await store.listEnabledSiteSecrets(config.environment, siteId);
-    } catch {
-      if (runtimeConfigStage) {
-        await finishDeploymentStage(runtimeConfigStage, {
-          status: 'failed',
-          errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
-          errorMessage: 'Runtime configuration is unavailable.',
-          diagnostics: { causeClass: 'runtime_config_error' },
-        });
-      }
-      await finalizeFailedDeployment(runtimeConfigFailurePatch());
-      return jsonError(
-        'RUNTIME_CONFIG_UNSUPPORTED',
-        'Runtime configuration is unavailable.',
-        503,
-        'Check runtime configuration and retry with a new Idempotency-Key.'
-      );
-    }
-  }
-  try {
-    validateRuntimeBindingQuotas(runtimeVars, runtimeSecrets);
-  } catch (error) {
+  const runtimeConfigResult = await createDeploymentRuntimeConfigResolutionApplication(store, env).resolve({
+    environment: config.environment,
+    siteId,
+    workerRequired: decisionRequiresWorker(decision),
+    varsProvided: workerRuntimeVarsProvided,
+    requestedVars: requestedRuntimeVars,
+  });
+  if (!runtimeConfigResult.ok) {
+    const errorCode = runtimeConfigResult.error.code;
+    const errorMessage =
+      errorCode === 'RUNTIME_CONFIG_UNSUPPORTED' ? 'Runtime configuration is unavailable.' : 'Runtime bindings are invalid.';
     if (runtimeConfigStage) {
       await finishDeploymentStage(runtimeConfigStage, {
         status: 'failed',
-        errorCode:
-          error?.message === 'RUNTIME_BINDING_NAME_CONFLICT'
-            ? 'RUNTIME_BINDING_NAME_CONFLICT'
-            : 'RUNTIME_BINDINGS_LIMIT_EXCEEDED',
-        errorMessage: 'Runtime bindings are invalid.',
+        errorCode,
+        errorMessage,
         diagnostics: { causeClass: 'runtime_config_error' },
       });
     }
-    await finalizeFailedDeployment(
-      runtimeConfigFailurePatch({
-        errorCode:
-          error?.message === 'RUNTIME_BINDING_NAME_CONFLICT'
-            ? 'RUNTIME_BINDING_NAME_CONFLICT'
-            : 'RUNTIME_BINDINGS_LIMIT_EXCEEDED',
-        errorMessage: 'Runtime bindings are invalid.',
-      })
-    );
-    if (error?.message === 'RUNTIME_BINDING_NAME_CONFLICT') {
-      return jsonError(
-        'RUNTIME_BINDING_NAME_CONFLICT',
-        'Runtime binding names conflict.',
-        400,
-        'Use unique names for vars and site secrets.'
-      );
-    }
-    return jsonError(
-      'RUNTIME_BINDINGS_LIMIT_EXCEEDED',
-      'Runtime bindings exceed platform limits.',
-      400,
-      'Reduce vars or site secrets and retry.'
-    );
+    await finalizeFailedDeployment(runtimeConfigFailurePatch({ errorCode, errorMessage }));
+    return initialRuntimeConfigResolutionFailure(runtimeConfigResult.error);
   }
-  try {
-    await runtimeConfigHashInput(env, runtimeVars, runtimeSecrets);
-  } catch {
-    if (runtimeConfigStage) {
-      await finishDeploymentStage(runtimeConfigStage, {
-        status: 'failed',
-        errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
-        errorMessage: 'Runtime configuration is unavailable.',
-        diagnostics: { causeClass: 'runtime_config_error' },
-      });
-    }
-    await finalizeFailedDeployment(runtimeConfigFailurePatch());
-    return jsonError(
-      'RUNTIME_CONFIG_UNSUPPORTED',
-      'Runtime configuration is unavailable.',
-      503,
-      'Check runtime configuration and retry with a new Idempotency-Key.'
-    );
-  }
-  const versionId = nextId(env, 'ver');
-  const plannedWorkerName = workerNameFor(site, versionId, config.environment);
-  try {
-    validateRuntimeBindingQuotas(runtimeVars, runtimeSecrets);
-  } catch (error) {
-    if (runtimeConfigStage) {
-      await finishDeploymentStage(runtimeConfigStage, {
-        status: 'failed',
-        errorCode:
-          error?.message === 'RUNTIME_BINDING_NAME_CONFLICT'
-            ? 'RUNTIME_BINDING_NAME_CONFLICT'
-            : 'RUNTIME_BINDINGS_LIMIT_EXCEEDED',
-        errorMessage: 'Runtime bindings are invalid.',
-        diagnostics: { causeClass: 'runtime_config_error' },
-      });
-    }
-    await finalizeFailedDeployment(
-      runtimeConfigFailurePatch({
-        errorCode:
-          error?.message === 'RUNTIME_BINDING_NAME_CONFLICT'
-            ? 'RUNTIME_BINDING_NAME_CONFLICT'
-            : 'RUNTIME_BINDINGS_LIMIT_EXCEEDED',
-        errorMessage: 'Runtime bindings are invalid.',
-      })
-    );
-    if (error?.message === 'RUNTIME_BINDING_NAME_CONFLICT') {
-      return jsonError(
-        'RUNTIME_BINDING_NAME_CONFLICT',
-        'Runtime binding names conflict.',
-        400,
-        'Use unique names for vars and site secrets.'
-      );
-    }
-    return jsonError(
-      'RUNTIME_BINDINGS_LIMIT_EXCEEDED',
-      'Runtime bindings exceed platform limits.',
-      400,
-      'Reduce vars or site secrets and retry.'
-    );
-  }
-  const runtimeBindings = {
-    vars: runtimeVars,
-    secrets: runtimeSecrets.map((secret) => ({
-      name: secret.name,
-      value: secret.value,
-      revision: secret.revision,
-    })),
-  };
+  runtimeVars = runtimeConfigResult.runtimeVars;
+  runtimeVarRecords = runtimeConfigResult.runtimeVarRecords;
+  originalRuntimeVarRecords = runtimeConfigResult.originalRuntimeVarRecords;
+  runtimeSecrets = runtimeConfigResult.runtimeSecrets;
+  const runtimeBindings = runtimeConfigResult.runtimeBindings;
   if (runtimeConfigStage) {
     await finishDeploymentStage(runtimeConfigStage, { status: 'succeeded' });
     runtimeConfigStage = null;
   }
+  const versionId = nextId(env, 'ver');
+  const plannedWorkerName = workerNameFor(site, versionId, config.environment);
   let provider;
   try {
     provider = createDeploymentProvider(env, config, store, site);
@@ -3277,6 +3166,33 @@ function runtimeConfigUnavailable() {
   );
 }
 
+function initialRuntimeConfigResolutionFailure(error) {
+  if (error.code === 'RUNTIME_BINDING_NAME_CONFLICT') {
+    return jsonError(
+      'RUNTIME_BINDING_NAME_CONFLICT',
+      'Runtime binding names conflict.',
+      400,
+      'Use unique names for vars and site secrets.'
+    );
+  }
+  if (error.code === 'RUNTIME_BINDINGS_LIMIT_EXCEEDED') {
+    return jsonError(
+      'RUNTIME_BINDINGS_LIMIT_EXCEEDED',
+      'Runtime bindings exceed platform limits.',
+      400,
+      'Reduce vars or site secrets and retry.'
+    );
+  }
+  return jsonError(
+    'RUNTIME_CONFIG_UNSUPPORTED',
+    'Runtime configuration is unavailable.',
+    503,
+    error.reason === 'capability_unavailable'
+      ? 'Retry later.'
+      : 'Check runtime configuration and retry with a new Idempotency-Key.'
+  );
+}
+
 function normalizeExposureForDeployment(value) {
   return value === 'public' ? 'public' : 'internal';
 }
@@ -3481,6 +3397,14 @@ function createRollbackSiteResolutionApplication(store) {
     sites: createRollbackSiteResolutionPort(store),
   });
   return { resolve };
+}
+
+function createDeploymentRuntimeConfigResolutionApplication(store, env) {
+  return createDeploymentRuntimeConfigResolution({
+    runtimeConfig: createDeploymentRuntimeConfigResolutionPort(store, {
+      hashInput: (vars, secrets) => runtimeConfigHashInput(env, vars, secrets),
+    }),
+  });
 }
 
 function normalizeOptionalString(value) {
