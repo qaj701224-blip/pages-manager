@@ -1,5 +1,7 @@
-export function createDeploymentCompletion({ deployments }) {
+export function createDeploymentCompletion({ deployments, telemetry }) {
   if (typeof deployments?.update !== 'function') throw new TypeError('deployments.update is required');
+  if (typeof telemetry?.persistSucceeded !== 'function') throw new TypeError('telemetry.persistSucceeded is required');
+  if (typeof telemetry?.persistFailed !== 'function') throw new TypeError('telemetry.persistFailed is required');
 
   return { complete };
 
@@ -11,16 +13,16 @@ export function createDeploymentCompletion({ deployments }) {
       completedAt: command.completedAt,
     };
     try {
-      return {
-        ok: true,
-        deployment: await deployments.update(command.deployment.id, patch),
-      };
+      const completed = await deployments.update(command.deployment.id, patch);
+      await telemetry.persistSucceeded();
+      return completed;
     } catch (cause) {
-      return {
-        ok: false,
-        deployment: synthesizeSucceededDeployment(command.deployment, patch),
-        error: { code: 'DEPLOYMENT_STATE_WRITE_FAILED', cause },
-      };
+      await telemetry.persistFailed({
+        deploymentId: command.deployment.id,
+        operation: 'persist_succeeded_deployment',
+        cause,
+      });
+      return synthesizeSucceededDeployment(command.deployment, patch);
     }
   }
 }

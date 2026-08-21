@@ -3,10 +3,7 @@ import { validateSiteSlug } from '@xd/pages-runtime-protocol';
 import { isManagedWfpWorkerName } from './admin-resource-governance.js';
 import { createRollbackLeaseAcquisition } from './application/deployments/acquire-rollback-lease.js';
 import { createDeploymentRouteActivation } from './application/deployments/activate-route.js';
-import {
-  createDeploymentCompletion,
-  synthesizeSucceededDeployment,
-} from './application/deployments/complete-deployment.js';
+import { createDeploymentCompletion } from './application/deployments/complete-deployment.js';
 import { createDeploymentFailureCompletion } from './application/deployments/complete-failed-deployment.js';
 import { createDeploymentPreviousResourceCleanup } from './application/deployments/cleanup-previous-resources.js';
 import { createDeploymentRouteSnapshotCommit } from './application/deployments/commit-route-snapshot.js';
@@ -2966,9 +2963,14 @@ function createCommittedDeploymentReconciliationApplication({ store, env }) {
   });
 }
 
-function createDeploymentCompletionApplication(store) {
+function createDeploymentCompletionApplication({ store, env, trace, stageHandle }) {
   return createDeploymentCompletion({
     deployments: createDeploymentCompletionPort(store),
+    telemetry: {
+      persistSucceeded: () =>
+        stageHandle ? finishDeploymentStage(stageHandle, { status: 'succeeded' }) : undefined,
+      persistFailed: (input) => recordDeploymentStatePersistFailure({ ...input, trace, env, stageHandle }),
+    },
   });
 }
 
@@ -3204,41 +3206,12 @@ async function completeCommittedDeployment({
   stageHandle,
 }) {
   const command = { deployment, versionId, previousVersionId, completedAt };
-  let result;
-  try {
-    result = await createDeploymentCompletionApplication(store).complete(command);
-  } catch (cause) {
-    await recordCompletedDeploymentPersistFailure({ trace, env, deployment, stageHandle, cause });
-    return synthesizeSucceededDeployment(deployment, { versionId, previousVersionId, completedAt });
-  }
-  if (result.ok) {
-    try {
-      if (stageHandle) await finishDeploymentStage(stageHandle, { status: 'succeeded' });
-      return result.deployment;
-    } catch (cause) {
-      await recordCompletedDeploymentPersistFailure({ trace, env, deployment, stageHandle, cause });
-      return synthesizeSucceededDeployment(deployment, { versionId, previousVersionId, completedAt });
-    }
-  }
-  await recordCompletedDeploymentPersistFailure({
+  return createDeploymentCompletionApplication({
+    store,
     trace,
     env,
-    deployment,
     stageHandle,
-    cause: result.error.cause,
-  });
-  return result.deployment;
-}
-
-function recordCompletedDeploymentPersistFailure({ trace, env, deployment, stageHandle, cause }) {
-  return recordDeploymentStatePersistFailure({
-    trace,
-    env,
-    deploymentId: deployment.id,
-    operation: 'persist_succeeded_deployment',
-    stageHandle,
-    cause,
-  });
+  }).complete(command);
 }
 
 function createDeploymentProviderApplication({ env, config, store }) {
