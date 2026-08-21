@@ -267,8 +267,8 @@ node --test apps/pages-api/src/route-snapshot.test.js apps/pages-api/src/runtime
 
 **Steps**
 
-- [ ] 为 deploy/rollback 的 success 与每个 failure injection 点记录 Provider、D1、route pointer、trace、webhook、cleanup 的调用/落库顺序。
-- [ ] 覆盖 idempotency replay/conflict、lease/CAS loss、snapshot pointer failure、compensation failure 和 terminal persistence failure。
+- [x] 为 deploy/rollback 的 success 与每个 failure injection 点记录 Provider、D1、route pointer、trace、webhook、cleanup 的调用/落库顺序。
+- [x] 覆盖 idempotency replay/conflict、lease/CAS loss、snapshot pointer failure、compensation failure 和 terminal persistence failure。
 
 ### Task 5.2：机械拆出 transport 与 application stages
 

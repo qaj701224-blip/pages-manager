@@ -1,7 +1,6 @@
 import { validateSiteSlug } from '@xd/pages-runtime-protocol';
 
 import { isManagedWfpWorkerName } from './admin-resource-governance.js';
-import { authenticateApiRequest } from './auth.js';
 import { canonicalRequestHash } from './crypto.js';
 import {
   assertRuntimeConfigSnapshotUnchanged,
@@ -13,7 +12,6 @@ import {
 } from './deployment-runtime-config.js';
 import { canonicalDeploymentContentHash, decisionRequiresAssets, decisionRequiresWorker } from './deployment-plan.js';
 import {
-  attachDeploymentTraceStore,
   bindDeploymentTrace,
   createDeploymentTraceContext,
   finishDeploymentStage,
@@ -46,6 +44,11 @@ import {
   createSiteCreationApplication,
   siteCreateErrorResponse,
 } from './transport/shared/site-creation-application.js';
+import { createDeploymentsHttpHandlers } from './transport/public/deployments-handler.js';
+import {
+  deploymentRequestFailed,
+  deploymentStateWriteFailed,
+} from './transport/shared/deployment-responses.js';
 
 const encoder = new globalThis.TextEncoder();
 const PROVIDER_DIAGNOSTIC_CLIENT_CODES = new Set(['WFP_API_ERROR', 'WFP_API_INVALID_JSON', 'WFP_NETWORK_ERROR']);
@@ -55,147 +58,26 @@ const DEPLOYMENT_FAILURE_RECOVERY_KEY_PART = 'deployment_failure_recovery';
 const RESERVED_SITE_SLUG_ACTION = '该站点名是 XD Cell 平台保留项，请换一个业务站点名。';
 const deploymentRequestTraceStates = new WeakMap();
 
-export async function handleDeploymentsApi(request, env, config, store, ctx) {
-  const url = new URL(request.url);
-  const trace =
-    url.pathname === '/.xd-pages/api/deployments' && request.method === 'POST'
-      ? createDeploymentTraceContext(request, env, {
-          environment: config.environment,
-          operation: 'deploy',
-          deferPersistence: true,
-          now: env?.now,
-        })
-      : null;
-  if (trace) queueRequestTraceSuccess(trace, 'intake', 'accept_request');
-  const authStage = trace
-    ? startDeploymentStage(trace, { stage: 'auth_and_site_resolution', operation: 'authenticate_request' })
-    : null;
-  let auth;
-  try {
-    auth = await authenticateApiRequest(request, env, store, config, readNow(env));
-  } catch (error) {
-    if (!trace) throw error;
-    await finishRequestAuthStage(authStage, {
-      status: 'failed',
-      errorCode: 'DEPLOYMENT_REQUEST_FAILED',
-      errorMessage: 'Deployment request could not be processed.',
-      diagnostics: { causeClass: 'authentication_error' },
-    });
-    return withRequestTraceHeader(deploymentRequestFailed(), trace);
-  }
-  if (!auth.ok) {
-    await finishRequestAuthStage(authStage, {
-      status: 'failed',
-      errorCode: auth.error.code,
-      errorMessage: auth.error.message,
-      diagnostics: { causeClass: 'authentication_error' },
-    });
-    return withRequestTraceHeader(authErrorResponse(auth.error), trace);
-  }
-  if (trace) attachDeploymentTraceStore(trace, store);
+const deploymentHttpHandlers = createDeploymentsHttpHandlers({
+  deploy: createDeployment,
+  readDeployment: getDeployment,
+  rollback: rollbackVersion,
+  requestLifecycle: {
+    ensureFailureTraced: ensureRequestFailureTraced,
+    finishAuthStage: finishRequestAuthStage,
+    queueTraceSuccess: queueRequestTraceSuccess,
+    recoverUnexpected: recoverUnexpectedRequestFailure,
+    unexpectedResponse: unexpectedRequestResponse,
+    withTraceHeader: withRequestTraceHeader,
+  },
+});
 
-  if (url.pathname === '/.xd-pages/api/deployments') {
-    if (request.method === 'POST') {
-      let response;
-      try {
-        response = await createDeployment(request, env, config, store, auth.actor, ctx, trace, authStage);
-      } catch (error) {
-        if (error?.code === 'DEPLOYMENT_STATE_WRITE_FAILED') response = deploymentStateWriteFailed();
-        else {
-          await finishRequestAuthStage(authStage, { status: 'succeeded' });
-          const recoveredDeployment = await recoverUnexpectedRequestFailure({
-            trace,
-            store,
-            env,
-            config,
-            ctx,
-            actor: auth.actor,
-            fallbackOperation: 'orchestrate_deployment_request',
-          });
-          response = await unexpectedRequestResponse(store, recoveredDeployment, config.environment);
-        }
-      }
-      await finishRequestAuthStage(authStage, { status: 'succeeded' });
-      response = await ensureRequestFailureTraced(trace, response);
-      return withRequestTraceHeader(response, trace);
-    }
-    return methodNotAllowed();
-  }
-
-  const deploymentId = matchDeploymentId(url.pathname);
-  if (deploymentId && request.method === 'GET') return getDeployment(store, auth.actor, deploymentId, config.environment, env);
-  if (deploymentId) return methodNotAllowed();
-
-  return null;
+export function handleDeploymentsApi(request, env, config, store, ctx) {
+  return deploymentHttpHandlers.handleDeploymentsApi(request, env, config, store, ctx);
 }
 
-export async function handleVersionsApi(request, env, config, store, ctx) {
-  const url = new URL(request.url);
-  const versionId = matchRollbackVersionId(url.pathname);
-  const trace =
-    versionId && request.method === 'POST'
-      ? createDeploymentTraceContext(request, env, {
-          environment: config.environment,
-          operation: 'rollback',
-          deferPersistence: true,
-          now: env?.now,
-        })
-      : null;
-  if (trace) queueRequestTraceSuccess(trace, 'intake', 'accept_request');
-  const authStage = trace
-    ? startDeploymentStage(trace, { stage: 'auth_and_site_resolution', operation: 'authenticate_request' })
-    : null;
-  let auth;
-  try {
-    auth = await authenticateApiRequest(request, env, store, config, readNow(env));
-  } catch (error) {
-    if (!trace) throw error;
-    await finishRequestAuthStage(authStage, {
-      status: 'failed',
-      errorCode: 'DEPLOYMENT_REQUEST_FAILED',
-      errorMessage: 'Deployment request could not be processed.',
-      diagnostics: { causeClass: 'authentication_error' },
-    });
-    return withRequestTraceHeader(deploymentRequestFailed(), trace);
-  }
-  if (!auth.ok) {
-    await finishRequestAuthStage(authStage, {
-      status: 'failed',
-      errorCode: auth.error.code,
-      errorMessage: auth.error.message,
-      diagnostics: { causeClass: 'authentication_error' },
-    });
-    return withRequestTraceHeader(authErrorResponse(auth.error), trace);
-  }
-  if (trace) attachDeploymentTraceStore(trace, store);
-
-  if (versionId && request.method === 'POST') {
-    let response;
-    try {
-      response = await rollbackVersion(request, env, config, store, auth.actor, versionId, ctx, trace, authStage);
-    } catch (error) {
-      if (error?.code === 'DEPLOYMENT_STATE_WRITE_FAILED') response = deploymentStateWriteFailed();
-      else {
-        await finishRequestAuthStage(authStage, { status: 'succeeded' });
-        const recoveredDeployment = await recoverUnexpectedRequestFailure({
-          trace,
-          store,
-          env,
-          config,
-          ctx,
-          actor: auth.actor,
-          fallbackOperation: 'orchestrate_rollback_request',
-        });
-        response = await unexpectedRequestResponse(store, recoveredDeployment, config.environment);
-      }
-    }
-    await finishRequestAuthStage(authStage, { status: 'succeeded' });
-    response = await ensureRequestFailureTraced(trace, response);
-    return withRequestTraceHeader(response, trace);
-  }
-  if (versionId) return methodNotAllowed();
-
-  return null;
+export function handleVersionsApi(request, env, config, store, ctx) {
+  return deploymentHttpHandlers.handleVersionsApi(request, env, config, store, ctx);
 }
 
 async function createDeployment(request, env, config, store, actor, ctx, trace, authStage) {
@@ -3711,15 +3593,6 @@ async function updateDeploymentToFailedAndNotify({
   return updated;
 }
 
-function deploymentStateWriteFailed() {
-  return jsonError(
-    'DEPLOYMENT_STATE_WRITE_FAILED',
-    'Deployment state could not be persisted.',
-    503,
-    'Retry the deployment with a new Idempotency-Key.'
-  );
-}
-
 function runtimeConfigUnavailable() {
   return jsonError(
     'RUNTIME_CONFIG_UNSUPPORTED',
@@ -3918,16 +3791,6 @@ function readIdempotencyKey(request) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
-function matchDeploymentId(pathname) {
-  const match = pathname.match(/^\/\.xd-pages\/api\/deployments\/([^/]+)$/);
-  return match ? match[1] : null;
-}
-
-function matchRollbackVersionId(pathname) {
-  const match = pathname.match(/^\/\.xd-pages\/api\/versions\/([^/]+)\/rollback$/);
-  return match ? match[1] : null;
-}
-
 function normalizeOptionalString(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
@@ -3971,10 +3834,6 @@ async function readOptionalJsonBody(request, { maxBytes }) {
   const parsed = JSON.parse(text);
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('JSON object is required');
   return parsed;
-}
-
-function authErrorResponse(error) {
-  return jsonError(error.code, error.message, error.status, error.action);
 }
 
 async function finishRequestAuthStage(handle, input) {
@@ -4572,15 +4431,6 @@ async function unexpectedRequestResponse(store, deployment, environment) {
   return deploymentRequestFailed();
 }
 
-function deploymentRequestFailed() {
-  return jsonError(
-    'DEPLOYMENT_REQUEST_FAILED',
-    'Deployment request could not be processed.',
-    500,
-    'Check deployment status using the trace id. Retry with a new Idempotency-Key only when no terminal deployment exists.'
-  );
-}
-
 function idempotencyConflict() {
   return jsonError(
     'IDEMPOTENCY_CONFLICT',
@@ -4597,8 +4447,4 @@ function cliUploadProtocolRequired() {
     400,
     'Run `xd-cell deploy` or `xd-cell deploy --dry-run --json` and retry.'
   );
-}
-
-function methodNotAllowed() {
-  return jsonError('METHOD_NOT_ALLOWED', 'Method not allowed.', 405, 'Use a supported HTTP method.');
 }
