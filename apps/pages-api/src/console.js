@@ -7,16 +7,13 @@ import {
 import { departmentTeamDisplayName } from './department-path.js';
 import { isSiteVisibility } from './domain/sites/access-policy.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
-import { newHexId, nextId } from './id.js';
 import { MAX_SITE_SECRET_VALUE_BYTES, normalizeRuntimeSecretName, normalizeRuntimeVars } from './runtime-config.js';
 import { logRuntimeConfigFailure, readRuntimeConfigErrorDiagnostic } from './runtime-config-diagnostics.js';
 import {
-  hostnameForSlug,
   normalizeSlug,
   normalizeAclEntries,
   rejectUserExposureMutation,
   buildSiteOwnerTransferAuditEvent,
-  siteCreateErrorResponse,
   validateSlug,
 } from './sites.js';
 import {
@@ -32,6 +29,10 @@ import {
   createSiteLifecycleApplication,
   siteDeleteErrorResponse,
 } from './transport/shared/site-lifecycle-application.js';
+import {
+  createSiteCreationApplication,
+  siteCreateErrorResponse,
+} from './transport/shared/site-creation-application.js';
 import { emitSiteDisabledWebhook } from './lifecycle-webhooks.js';
 
 const CONSOLE_PREFIX = '/.xd-pages/api/console';
@@ -210,18 +211,18 @@ async function createConsoleSite(request, env, config, store, session) {
 
   let site;
   try {
-    site = await store.createSite({
-      id: nextId(env, 'site'),
+    const result = await createSiteCreationApplication({ store, env, config }).create({
+      environment: config.environment,
       slug,
       ownerType,
       ownerId,
       ownerUserId: session.userId,
-      siteUuid: nextSiteUuid(env),
-      defaultVisibility: visibility,
-      environment: config.environment,
-      routeId: nextId(env, 'route'),
-      hostname: hostnameForSlug(slug, config),
+      visibility,
+      actor: { type: 'user', userId: session.userId },
+      allowLegacyV1Takeover: false,
+      includeRoute: false,
     });
+    site = result.site;
   } catch (error) {
     const response = siteCreateErrorResponse(error);
     if (response) return response;
@@ -960,14 +961,6 @@ function teamOwnerVisibilityUnsupported() {
     400,
     '团队站点请使用 internal、org、acl 或 disabled。'
   );
-}
-
-function nextSiteUuid(env) {
-  if (typeof env?.nextSiteUuid === 'function') {
-    const id = env.nextSiteUuid();
-    if (id) return id;
-  }
-  return newHexId();
 }
 
 function consoleActor(session) {

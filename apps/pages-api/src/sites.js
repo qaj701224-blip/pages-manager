@@ -4,7 +4,7 @@ import { authenticateApiRequest } from './auth.js';
 import { isSiteVisibility } from './domain/sites/access-policy.js';
 import { actorCanManageSite, actorHasPublishScope } from './domain/sites/authorization.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
-import { newHexId, nextId } from './id.js';
+import { nextId } from './id.js';
 import {
   MAX_SITE_SECRET_VALUE_BYTES,
   normalizeRuntimeSecretName,
@@ -13,7 +13,6 @@ import {
 import { logRuntimeConfigFailure, readRuntimeConfigErrorDiagnostic } from './runtime-config-diagnostics.js';
 import { createRuntimeConfigSync } from './infrastructure/providers/runtime-config-sync.js';
 import { createDeploymentProvider as createWfpDeploymentProvider } from './wfp-provider.js';
-import { createSiteWithLegacyV1Takeover } from './legacy-v1/takeover.js';
 import { emitSiteDisabledWebhook } from './lifecycle-webhooks.js';
 import {
   createRuntimeConfigApplication,
@@ -28,6 +27,10 @@ import {
   createSiteLifecycleApplication,
   siteDeleteErrorResponse,
 } from './transport/shared/site-lifecycle-application.js';
+import {
+  createSiteCreationApplication,
+  siteCreateErrorResponse,
+} from './transport/shared/site-creation-application.js';
 
 export { actorCanManageSite };
 
@@ -751,38 +754,28 @@ async function createSite(request, env, config, store, actor) {
     ownerId = teamOwner.ownerId;
   }
 
-  const siteId = nextId(env, 'site');
-  const routeId = nextId(env, 'route');
-  const siteUuid = nextSiteUuid(env);
-  const hostname = hostnameForSlug(slug, config);
-
   let site;
+  let route;
   try {
-    site = await createSiteWithLegacyV1Takeover({
-      env,
-      config,
-      store,
+    const result = await createSiteCreationApplication({ store, env, config }).create({
+      environment: config.environment,
+      slug,
+      ownerType,
+      ownerId,
+      ownerUserId: actor.userId,
+      visibility,
       actor,
-      siteInput: {
-        id: siteId,
-        slug,
-        ownerType,
-        ownerId,
-        ownerUserId: actor.userId,
-        siteUuid,
-        defaultVisibility: visibility,
-        environment: config.environment,
-        routeId,
-        hostname,
-      },
+      allowLegacyV1Takeover: true,
+      includeRoute: true,
     });
+    site = result.site;
+    route = result.route;
   } catch (error) {
     const response = siteCreateErrorResponse(error);
     if (response) return response;
     throw error;
   }
 
-  const route = await store.getRouteBySiteId(site.id, config.environment);
   return jsonOk({ site: formatSite({ ...site, route }) }, 201);
 }
 
@@ -799,34 +792,6 @@ async function resolveTeamPublishOwner(store, userId, teamIdValue, environment) 
     return jsonError('TEAM_PUBLISHER_REQUIRED', 'Team publisher role required.', 403, 'Ask a team publisher to create the site.');
   }
   return { ownerId: team.id };
-}
-
-export function siteCreateErrorResponse(error) {
-  const message = error instanceof Error ? error.message : '';
-  const code = error?.code || message;
-  if (/SITE_SLUG_CONFLICT/.test(message)) {
-    return jsonError('SITE_SLUG_CONFLICT', 'Site slug already exists.', 409, 'Choose a different site slug.');
-  }
-  if (code === 'V1_TAKEOVER_STATE_CHANGED') {
-    return jsonError('HOSTNAME_CLAIM_CONFLICT', 'Site hostname is already claimed.', 409, '请检查站点状态后重试。');
-  }
-  if (/HOSTNAME_CLAIM_CONFLICT/.test(message)) {
-    return jsonError(
-      'HOSTNAME_CLAIM_CONFLICT',
-      'Site hostname is already claimed.',
-      409,
-      '请换一个站点名，或使用原站点 owner 继续部署。'
-    );
-  }
-  if (code === 'V1_TAKEOVER_CONFIG_UNAVAILABLE' || code === 'V1_TAKEOVER_CLEANUP_FAILED') {
-    return jsonError(
-      'SITE_CREATE_UNAVAILABLE',
-      'Site could not be created right now.',
-      503,
-      'Retry later with the same site name.'
-    );
-  }
-  return null;
 }
 
 export function validateSlug(slug, environment) {
@@ -871,11 +836,6 @@ function formatSite(site) {
     updatedAt: site.updatedAt,
     deletedAt: site.deletedAt || null,
   };
-}
-
-export function hostnameForSlug(slug, config) {
-  if (config.environment === 'staging') return `${slug}-staging.${config.siteDomainSuffix}`;
-  return `${slug}.${config.siteDomainSuffix}`;
 }
 
 function actorCanReadSite(actor, siteId) {
@@ -1207,14 +1167,6 @@ function matchSiteTransfer(pathname) {
 function matchSiteId(pathname) {
   const match = pathname.match(/^\/\.xd-pages\/api\/sites\/([^/]+)$/);
   return match ? match[1] : null;
-}
-
-function nextSiteUuid(env) {
-  if (typeof env?.nextSiteUuid === 'function') {
-    const id = env.nextSiteUuid();
-    if (id) return id;
-  }
-  return newHexId();
 }
 
 function readNow(env) {

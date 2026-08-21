@@ -25,7 +25,7 @@ import {
 import { isMultipartRequest, readMultipartDeploymentBody, validateAssetFiles } from './deployment-upload.js';
 import { isSiteVisibility } from './domain/sites/access-policy.js';
 import { jsonError, jsonOk } from './http.js';
-import { newHexId, nextId } from './id.js';
+import { nextId } from './id.js';
 import {
   buildRouteSnapshot,
   clearRoutePointerIfCurrent,
@@ -41,13 +41,14 @@ import { notifyDeploymentCapacityExhausted } from './slack-alerts.js';
 import {
   actorCanManageSite,
   buildSiteOwnerTransferAuditEvent,
-  hostnameForSlug,
   rejectUserExposureMutation,
-  siteCreateErrorResponse,
 } from './sites.js';
 import { deliverWebhookEventToSubscriptions } from './webhooks.js';
 import { emitSiteDisabledWebhook, emitSiteFailedWebhook } from './lifecycle-webhooks.js';
-import { createSiteWithLegacyV1Takeover } from './legacy-v1/takeover.js';
+import {
+  createSiteCreationApplication,
+  siteCreateErrorResponse,
+} from './transport/shared/site-creation-application.js';
 
 const encoder = new globalThis.TextEncoder();
 const PROVIDER_DIAGNOSTIC_CLIENT_CODES = new Set(['WFP_API_ERROR', 'WFP_API_INVALID_JSON', 'WFP_NETWORK_ERROR']);
@@ -2764,7 +2765,7 @@ async function createTeamSiteFromUserDeploy(store, actor, config, env, { siteSlu
   if (visibility === 'owner') return teamOwnerVisibilityUnsupported();
   const teamOwner = await resolveTeamDeployOwner(store, actor.userId, teamId, config.environment);
   if (teamOwner instanceof Response) return teamOwner;
-  return pendingDeploySiteCreation(config, env, {
+  return pendingDeploySiteCreation(store, config, env, {
     siteSlug,
     ownerType: 'team',
     ownerId: teamOwner.ownerId,
@@ -2800,7 +2801,7 @@ async function createSiteFromOwnerScopedAccessKeyDeploy(store, actor, config, en
   }
   if (ownerType === 'team' && visibility === 'owner') return teamOwnerVisibilityUnsupported();
 
-  return pendingDeploySiteCreation(config, env, {
+  return pendingDeploySiteCreation(store, config, env, {
     siteSlug,
     ownerType,
     ownerId,
@@ -2818,47 +2819,43 @@ function teamOwnerVisibilityUnsupported() {
   );
 }
 
-function pendingDeploySiteCreation(config, env, { siteSlug, ownerType, ownerId, ownerUserId, visibility, managementRole }) {
-  const site = {
-    id: nextId(env, 'site'),
+function pendingDeploySiteCreation(
+  store,
+  config,
+  env,
+  { siteSlug, ownerType, ownerId, ownerUserId, visibility, managementRole }
+) {
+  const pendingSiteCreation = createSiteCreationApplication({ store, env, config }).prepare({
+    environment: config.environment,
     slug: siteSlug,
     ownerType,
     ownerId,
     ownerUserId,
-    siteUuid: nextSiteUuid(env),
-    defaultVisibility: visibility,
-    environment: config.environment,
+    visibility,
+  });
+  const site = {
+    id: pendingSiteCreation.id,
+    slug: pendingSiteCreation.slug,
+    ownerType: pendingSiteCreation.ownerType,
+    ownerId: pendingSiteCreation.ownerId,
+    ownerUserId: pendingSiteCreation.ownerUserId,
+    siteUuid: pendingSiteCreation.siteUuid,
+    defaultVisibility: pendingSiteCreation.defaultVisibility,
+    environment: pendingSiteCreation.environment,
     managementRole: managementRole || null,
   };
   return {
     ...site,
-    pendingSiteCreation: {
-      ...site,
-      routeId: nextId(env, 'route'),
-      hostname: hostnameForSlug(siteSlug, config),
-    },
+    pendingSiteCreation,
   };
 }
 
 async function applyPendingDeploySiteCreation(env, config, store, actor, site) {
   try {
-    const created = await createSiteWithLegacyV1Takeover({
-      env,
-      config,
-      store,
+    const created = await createSiteCreationApplication({ store, env, config }).commit({
       actor,
-      siteInput: {
-        id: site.pendingSiteCreation.id,
-        slug: site.pendingSiteCreation.slug,
-        ownerType: site.pendingSiteCreation.ownerType,
-        ownerId: site.pendingSiteCreation.ownerId,
-        ownerUserId: site.pendingSiteCreation.ownerUserId,
-        siteUuid: site.pendingSiteCreation.siteUuid,
-        defaultVisibility: site.pendingSiteCreation.defaultVisibility,
-        environment: site.pendingSiteCreation.environment,
-        routeId: site.pendingSiteCreation.routeId,
-        hostname: site.pendingSiteCreation.hostname,
-      },
+      siteInput: site.pendingSiteCreation,
+      allowLegacyV1Takeover: true,
     });
     return {
       site: {
@@ -3993,14 +3990,6 @@ function validateDeployableSiteSlug(siteSlug, environment) {
 
 function siteNotFound(action) {
   return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, action);
-}
-
-function nextSiteUuid(env) {
-  if (typeof env?.nextSiteUuid === 'function') {
-    const id = env.nextSiteUuid();
-    if (id) return id;
-  }
-  return newHexId();
 }
 
 function readNow(env) {

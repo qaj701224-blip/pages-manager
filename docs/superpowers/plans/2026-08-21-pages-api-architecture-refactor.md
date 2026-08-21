@@ -241,7 +241,7 @@ pnpm exec eslint apps/pages-auth/src packages/pages-metadata/src apps/pages-api/
 
 **Order**
 
-- [ ] create site；
+- [x] create site；
 - [x] delete site / enqueue deleted resources；
 - [x] transfer owner；
 - [x] update access policy + route snapshot compensation；
