@@ -49,6 +49,7 @@ import {
 } from './application/governance/list-admin-resources.js';
 import { createTeamMemberManagement } from './application/teams/manage-team-members.js';
 import { createTeamManagement } from './application/teams/manage-team.js';
+import { createPlatformAdminManagement } from './application/governance/manage-platform-admins.js';
 import { createNormalWorkerAdminClient } from './infrastructure/providers/normal-worker-admin-client.js';
 import {
   createV1SitesAdminClient as createInfrastructureV1SitesAdminClient,
@@ -2338,8 +2339,8 @@ function createAuditEventsQueryApplication(store) {
 }
 
 async function listPlatformAdmins(config, store) {
-  const admins = await store.listPlatformAdmins({ environment: config.environment });
-  return jsonOk({ admins: admins.map(formatPlatformAdmin) });
+  const admins = await createPlatformAdminApplication(store).list({ environment: config.environment });
+  return jsonOk({ admins });
 }
 
 async function grantPlatformAdmin(request, config, store, session) {
@@ -2353,16 +2354,14 @@ async function grantPlatformAdmin(request, config, store, session) {
   const userId = normalizeRequiredString(body.userId);
   if (!userId) return jsonError('PLATFORM_ADMIN_USER_REQUIRED', 'User id is required.', 400, 'Choose a user to grant.');
 
-  const user = await store.getUser(userId);
-  if (!user) return jsonError('ADMIN_USER_NOT_FOUND', 'User was not found.', 404, 'Choose an existing user.');
-
-  const admin = await store.grantPlatformAdmin({
+  const result = await createPlatformAdminApplication(store).grant({
     environment: config.environment,
     userId,
-    grantedByUserId: session.userId,
-    grantReason: normalizeNullableString(body.reason),
+    actorUserId: session.userId,
+    reason: normalizeNullableString(body.reason),
   });
-  return jsonOk({ admin: formatPlatformAdmin(admin) });
+  if (!result.ok) return platformAdminMutationError(result.reason);
+  return jsonOk({ admin: result.admin });
 }
 
 async function revokePlatformAdmin(request, config, store, session, userId) {
@@ -2379,41 +2378,43 @@ async function revokePlatformAdmin(request, config, store, session, userId) {
   if (!normalizedUserId)
     return jsonError('PLATFORM_ADMIN_USER_REQUIRED', 'User id is required.', 400, 'Choose a user to revoke.');
 
-  let admin;
-  try {
-    admin = await store.revokePlatformAdmin({
-      environment: config.environment,
-      userId: normalizedUserId,
-      revokedByUserId: session.userId,
-      revokeReason: normalizeNullableString(body.reason),
-    });
-  } catch (error) {
-    if (String(error?.message || error).includes('PLATFORM_ADMIN_LAST_ACTIVE')) {
-      return jsonError(
-        'PLATFORM_ADMIN_LAST_ACTIVE',
-        'Platform must keep at least one active administrator.',
-        409,
-        'Grant another platform administrator before revoking this user.'
-      );
-    }
-    throw error;
-  }
-  if (!admin) return jsonError('PLATFORM_ADMIN_NOT_FOUND', 'Platform admin was not found.', 404, 'Check the user id.');
-  return jsonOk({ admin: formatPlatformAdmin(admin) });
+  const result = await createPlatformAdminApplication(store).revoke({
+    environment: config.environment,
+    userId: normalizedUserId,
+    actorUserId: session.userId,
+    reason: normalizeNullableString(body.reason),
+  });
+  if (!result.ok) return platformAdminMutationError(result.reason);
+  return jsonOk({ admin: result.admin });
 }
 
-function formatPlatformAdmin(admin) {
-  return {
-    environment: admin.environment,
-    userId: admin.userId,
-    grantedByUserId: admin.grantedByUserId,
-    grantReason: admin.grantReason || null,
-    revokedAt: admin.revokedAt || null,
-    createdAt: admin.createdAt,
-    updatedAt: admin.updatedAt,
-    ...(admin.revokedByUserId ? { revokedByUserId: admin.revokedByUserId } : {}),
-    ...(admin.revokeReason ? { revokeReason: admin.revokeReason } : {}),
-  };
+function createPlatformAdminApplication(store) {
+  return createPlatformAdminManagement({
+    admins: {
+      list: (query) => store.listPlatformAdmins(query),
+      grant: (command) => store.grantPlatformAdmin(command),
+      revoke: (command) => store.revokePlatformAdmin(command),
+    },
+    users: { get: (userId) => store.getUser(userId) },
+  });
+}
+
+function platformAdminMutationError(reason) {
+  if (reason === 'user_not_found') {
+    return jsonError('ADMIN_USER_NOT_FOUND', 'User was not found.', 404, 'Choose an existing user.');
+  }
+  if (reason === 'last_active') {
+    return jsonError(
+      'PLATFORM_ADMIN_LAST_ACTIVE',
+      'Platform must keep at least one active administrator.',
+      409,
+      'Grant another platform administrator before revoking this user.'
+    );
+  }
+  if (reason === 'admin_not_found') {
+    return jsonError('PLATFORM_ADMIN_NOT_FOUND', 'Platform admin was not found.', 404, 'Check the user id.');
+  }
+  throw new Error('PLATFORM_ADMIN_MUTATION_RESULT_INVALID');
 }
 
 function formatAdminDeployment(deployment) {
