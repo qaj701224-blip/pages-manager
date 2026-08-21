@@ -3,12 +3,14 @@ import { validateSiteSlug } from '@xd/pages-runtime-protocol';
 import { isManagedWfpWorkerName } from './admin-resource-governance.js';
 import { createDeploymentRuntimeConfigCommit } from './application/deployments/commit-runtime-config.js';
 import { createDeploymentRecord } from './application/deployments/deployment-record.js';
+import { createDeploymentProviderOperations } from './application/deployments/provider-operations.js';
 import { createDeploySiteResolution } from './application/deployments/resolve-deploy-site.js';
 import { createRollbackSiteResolution } from './application/deployments/resolve-rollback-site.js';
 import { createDeploymentRuntimeConfigResolution } from './application/deployments/resolve-runtime-config.js';
 import { createDeploymentRuntimeConfigRestoration } from './application/deployments/restore-runtime-config.js';
 import { createDeploymentRuntimeConfigSnapshotValidation } from './application/deployments/validate-runtime-config-snapshot.js';
 import { createDeploySiteResolutionPort } from './application/ports/deploy-site-resolution.js';
+import { createDeploymentProviderPort } from './application/ports/deployment-provider.js';
 import { createDeploymentRecordsPort } from './application/ports/deployment-records.js';
 import { createRollbackSiteResolutionPort } from './application/ports/rollback-site-resolution.js';
 import {
@@ -389,10 +391,9 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
   }
   const versionId = nextId(env, 'ver');
   const plannedWorkerName = workerNameFor(site, versionId, config.environment);
-  let provider;
-  try {
-    provider = createDeploymentProvider(env, config, store, site);
-  } catch {
+  const providerApplication = createDeploymentProviderApplication({ env, config, store });
+  const providerResult = providerApplication.prepare({ site });
+  if (!providerResult.ok) {
     await recordDeploymentStage(trace, {
       stage: 'provider_upload',
       operation: 'create_deployment_provider',
@@ -422,6 +423,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
       'Check the Pages deployment platform configuration and retry with a new Idempotency-Key.'
     );
   }
+  const provider = providerResult.provider;
 
   try {
     await store.updateDeployment(deployment.id, { status: 'uploading' });
@@ -498,27 +500,37 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
         operation: 'provider_upload',
       })
     : null;
-  let uploaded;
-  try {
-    uploaded = await provider.upload({
-      site,
-      exposure: uploadExposure,
-      workerName: plannedWorkerName,
-      versionId,
-      decision,
-      contentHash: canonicalContentHash,
-      artifactBundle,
-      assetManifest,
-      assetFiles,
-      runtimeBindings,
-    });
-    if (providerUploadStage) {
-      await finishDeploymentStage(providerUploadStage, {
-        status: 'succeeded',
-        operation: uploaded?.operation,
-      });
+  const providerUploadResult = await providerApplication.upload({
+    provider,
+    site,
+    exposure: uploadExposure,
+    workerName: plannedWorkerName,
+    versionId,
+    decision,
+    contentHash: canonicalContentHash,
+    artifactBundle,
+    assetManifest,
+    assetFiles,
+    runtimeBindings,
+  });
+  let uploaded = providerUploadResult.ok ? providerUploadResult.uploaded : null;
+  let providerUploadFailed = !providerUploadResult.ok;
+  let providerUploadError = providerUploadResult.error?.cause;
+  if (!providerUploadFailed) {
+    try {
+      if (providerUploadStage) {
+        await finishDeploymentStage(providerUploadStage, {
+          status: 'succeeded',
+          operation: uploaded?.operation,
+        });
+      }
+    } catch (error) {
+      providerUploadFailed = true;
+      providerUploadError = error;
     }
-  } catch (error) {
+  }
+  if (providerUploadFailed) {
+    const error = providerUploadError;
     const code = publicProviderErrorCode(error, 'upload');
     const executionProvider = provider.executionProvider || 'wfp';
     const providerDiagnostics = buildProviderFailureDiagnostics(error, executionProvider);
@@ -647,16 +659,26 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
         operation: 'provider_verify',
       })
     : null;
-  try {
-    await provider.verify({
-      site,
-      workerName,
-      versionId,
-      artifactRef: uploaded.artifactRef,
-      ...uploaded,
-    });
-    if (providerVerifyStage) await finishDeploymentStage(providerVerifyStage, { status: 'succeeded' });
-  } catch (error) {
+  const providerVerifyResult = await providerApplication.verify({
+    provider,
+    site,
+    workerName,
+    versionId,
+    artifactRef: uploaded.artifactRef,
+    ...uploaded,
+  });
+  let providerVerifyFailed = !providerVerifyResult.ok;
+  let providerVerifyError = providerVerifyResult.error?.cause;
+  if (!providerVerifyFailed) {
+    try {
+      if (providerVerifyStage) await finishDeploymentStage(providerVerifyStage, { status: 'succeeded' });
+    } catch (error) {
+      providerVerifyFailed = true;
+      providerVerifyError = error;
+    }
+  }
+  if (providerVerifyFailed) {
+    const error = providerVerifyError;
     const code = publicProviderErrorCode(null, 'verify');
     const executionProvider = uploaded.executionProvider || provider.executionProvider || 'wfp';
     const disposition = providerFailureDisposition(error, 'verify');
@@ -3372,6 +3394,12 @@ function createDeploymentRecordApplication(store, env) {
   return createDeploymentRecord({
     deploymentRecords: createDeploymentRecordsPort(store),
     ids: { next: (prefix) => nextId(env, prefix) },
+  });
+}
+
+function createDeploymentProviderApplication({ env, config, store }) {
+  return createDeploymentProviderOperations({
+    providers: createDeploymentProviderPort((site) => createDeploymentProvider(env, config, store, site)),
   });
 }
 
