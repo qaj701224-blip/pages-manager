@@ -971,7 +971,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
         })
       : null;
     if (typeof store.withSiteCommitLock !== 'function') throw deploymentOperationError('SITE_POLICY_LOCKED');
-    const routeActivationApplication = createDeploymentRouteActivationApplication(store, env);
+    const routeActivationApplication = createDeploymentRouteActivationApplication(store, env, trace);
     const routeSnapshotApplication = createDeploymentRouteSnapshotCommitApplication(store, env);
     route = await store.withSiteCommitLock(
       config.environment,
@@ -1043,46 +1043,14 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
           throw error;
         }
         assertCommitLeaseHealthy(activationLease);
-        const routeActivateStage = trace
-          ? startDeploymentStage(trace, {
-              stage: 'route_activate',
-              operation: 'activate_route',
-            })
-          : null;
-        let activatedRoute;
-        try {
-          const activationResult = await routeActivationApplication.activate({
-            siteId,
-            environment: config.environment,
-            version,
-            lease: activationLease,
-            activation,
-          });
-          activatedRoute = activationResult.ok ? activationResult.route : null;
-          if (routeActivateStage) {
-            await finishDeploymentStage(routeActivateStage, {
-              status: activatedRoute ? 'succeeded' : 'failed',
-              ...(!activatedRoute
-                ? {
-                    errorCode: 'ROUTE_ACTIVATION_CONFLICT',
-                    errorMessage: 'Route changed while deployment was activating.',
-                    diagnostics: { causeClass: 'route_activation_conflict' },
-                  }
-                : {}),
-            });
-          }
-        } catch (error) {
-          if (routeActivateStage) {
-            await finishDeploymentStage(routeActivateStage, {
-              status: 'failed',
-              error,
-              errorCode: error?.code || 'ROUTE_ACTIVATION_FAILED',
-              errorMessage: error?.message || 'Route activation failed.',
-              diagnostics: { causeClass: 'route_activation_error' },
-            });
-          }
-          throw error;
-        }
+        const activationResult = await routeActivationApplication.activate({
+          siteId,
+          environment: config.environment,
+          version,
+          lease: activationLease,
+          activation,
+        });
+        const activatedRoute = activationResult.ok ? activationResult.route : null;
         if (!activatedRoute) return null;
         const routeSnapshotStage = trace
           ? startDeploymentStage(trace, {
@@ -3268,9 +3236,39 @@ function createDeploymentVersionCreationApplication(store, env) {
   });
 }
 
-function createDeploymentRouteActivationApplication(store, env) {
+function createDeploymentRouteActivationApplication(store, env, trace = null) {
   return createDeploymentRouteActivation({
     routes: createDeploymentRoutesPort(store),
+    telemetry: {
+      start: () =>
+        trace
+          ? startDeploymentStage(trace, {
+              stage: 'route_activate',
+              operation: 'activate_route',
+            })
+          : null,
+      finish: (stage, outcome) => {
+        if (!stage) return undefined;
+        if (outcome.reason === 'cas_conflict') {
+          return finishDeploymentStage(stage, {
+            status: 'failed',
+            errorCode: 'ROUTE_ACTIVATION_CONFLICT',
+            errorMessage: 'Route changed while deployment was activating.',
+            diagnostics: { causeClass: 'route_activation_conflict' },
+          });
+        }
+        if (outcome.reason === 'route_error') {
+          return finishDeploymentStage(stage, {
+            status: 'failed',
+            error: outcome.cause,
+            errorCode: outcome.cause?.code || 'ROUTE_ACTIVATION_FAILED',
+            errorMessage: outcome.cause?.message || 'Route activation failed.',
+            diagnostics: { causeClass: 'route_activation_error' },
+          });
+        }
+        return finishDeploymentStage(stage, { status: outcome.status });
+      },
+    },
     clock: { now: () => readNow(env) },
   });
 }

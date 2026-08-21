@@ -25,6 +25,7 @@ const version = {
   dispatchBindingName: 'WORKER_SLOT_1',
   slotId: 'slot_1',
 };
+const telemetry = { start: () => null, finish: async () => null };
 
 test('deployment route activation commits the resolved route through its narrow port', async () => {
   const calls = [];
@@ -37,6 +38,7 @@ test('deployment route activation commits the resolved route through its narrow 
         return activatedRoute;
       },
     },
+    telemetry,
     clock: { now: () => '2026-08-21T00:00:00.000Z' },
   });
 
@@ -74,6 +76,7 @@ test('deployment route activation commits the resolved route through its narrow 
 test('deployment route activation reports a typed CAS conflict without hiding route errors', async () => {
   const conflict = createDeploymentRouteActivation({
     routes: { activate: async () => null },
+    telemetry,
     clock: { now: () => '2026-08-21T00:00:00.000Z' },
   });
   assert.deepEqual(
@@ -88,6 +91,7 @@ test('deployment route activation reports a typed CAS conflict without hiding ro
         throw cause;
       },
     },
+    telemetry,
     clock: { now: () => '2026-08-21T00:00:00.000Z' },
   });
   await assert.rejects(
@@ -105,6 +109,7 @@ test('deployment route activation preserves the rollback artifact availability f
         return { id: 'route_1' };
       },
     },
+    telemetry,
     clock: { now: () => '2026-08-21T00:00:00.000Z' },
   });
 
@@ -123,6 +128,7 @@ test('deployment route activation preserves the rollback artifact availability f
 test('deployment route activation exposes the pure activation decision', () => {
   const application = createDeploymentRouteActivation({
     routes: { activate: async () => null },
+    telemetry,
     clock: { now: () => '2026-08-21T00:00:00.000Z' },
   });
 
@@ -145,13 +151,71 @@ test('deployment route activation exposes the pure activation decision', () => {
   );
 });
 
+test('deployment route activation traces success, conflicts, and route errors in operation order', async () => {
+  const calls = [];
+  const stage = { operation: 'activate_route' };
+  const createApplication = (activate) =>
+    createDeploymentRouteActivation({
+      routes: {
+        async activate(command) {
+          calls.push(['activate', command.siteId]);
+          return activate(command);
+        },
+      },
+      telemetry: {
+        start() {
+          calls.push(['start']);
+          return stage;
+        },
+        async finish(receivedStage, outcome) {
+          calls.push(['finish', receivedStage, outcome]);
+        },
+      },
+      clock: { now: () => '2026-08-21T00:00:00.000Z' },
+    });
+  const command = { siteId: 'site_1', environment: 'production', version, lease: null, activation };
+
+  const route = { id: 'route_1' };
+  assert.deepEqual(await createApplication(async () => route).activate(command), { ok: true, route });
+  assert.deepEqual(calls.splice(0), [
+    ['start'],
+    ['activate', 'site_1'],
+    ['finish', stage, { status: 'succeeded' }],
+  ]);
+
+  assert.deepEqual(await createApplication(async () => null).activate(command), {
+    ok: false,
+    error: { code: 'ROUTE_ACTIVATION_CONFLICT', reason: 'cas_conflict' },
+  });
+  assert.deepEqual(calls.splice(0), [
+    ['start'],
+    ['activate', 'site_1'],
+    ['finish', stage, { status: 'failed', reason: 'cas_conflict' }],
+  ]);
+
+  const cause = new Error('route store unavailable');
+  await assert.rejects(
+    () => createApplication(async () => Promise.reject(cause)).activate(command),
+    (error) => error === cause
+  );
+  assert.deepEqual(calls, [
+    ['start'],
+    ['activate', 'site_1'],
+    ['finish', stage, { status: 'failed', reason: 'route_error', cause }],
+  ]);
+});
+
 test('deployment route activation requires its route and clock capabilities', () => {
   assert.throws(
-    () => createDeploymentRouteActivation({ routes: {}, clock: { now: () => 'now' } }),
+    () => createDeploymentRouteActivation({ routes: {}, telemetry, clock: { now: () => 'now' } }),
     /routes\.activate is required/
   );
   assert.throws(
-    () => createDeploymentRouteActivation({ routes: { activate: async () => null }, clock: {} }),
+    () => createDeploymentRouteActivation({ routes: { activate: async () => null }, telemetry: {}, clock: {} }),
+    /telemetry\.start is required/
+  );
+  assert.throws(
+    () => createDeploymentRouteActivation({ routes: { activate: async () => null }, telemetry, clock: {} }),
     /clock\.now is required/
   );
 });
