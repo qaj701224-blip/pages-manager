@@ -387,19 +387,9 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
     site = creationResult.site;
   }
 
-  let runtimeConfigStage = trace
-    ? startDeploymentStage(trace, {
-        stage: 'runtime_config',
-        operation: 'resolve_runtime_config',
-      })
-    : null;
-  if (!decisionRequiresWorker(decision) && runtimeConfigStage) {
-    await finishDeploymentStage(runtimeConfigStage, { status: 'skipped' });
-    runtimeConfigStage = null;
-  }
   let runtimeSecrets = [];
   let originalRuntimeVarRecords = [];
-  const runtimeConfigResult = await createDeploymentRuntimeConfigResolutionApplication(store, env).resolve({
+  const runtimeConfigResult = await createDeploymentRuntimeConfigResolutionApplication(store, env, trace).resolve({
     environment: config.environment,
     siteId,
     workerRequired: decisionRequiresWorker(decision),
@@ -408,16 +398,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
   });
   if (!runtimeConfigResult.ok) {
     const errorCode = runtimeConfigResult.error.code;
-    const errorMessage =
-      errorCode === 'RUNTIME_CONFIG_UNSUPPORTED' ? 'Runtime configuration is unavailable.' : 'Runtime bindings are invalid.';
-    if (runtimeConfigStage) {
-      await finishDeploymentStage(runtimeConfigStage, {
-        status: 'failed',
-        errorCode,
-        errorMessage,
-        diagnostics: { causeClass: 'runtime_config_error' },
-      });
-    }
+    const errorMessage = runtimeConfigResolutionErrorMessage(errorCode);
     await finalizeFailedDeployment(runtimeConfigFailurePatch({ errorCode, errorMessage }));
     return initialRuntimeConfigResolutionFailure(runtimeConfigResult.error);
   }
@@ -426,10 +407,6 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
   originalRuntimeVarRecords = runtimeConfigResult.originalRuntimeVarRecords;
   runtimeSecrets = runtimeConfigResult.runtimeSecrets;
   const runtimeBindings = runtimeConfigResult.runtimeBindings;
-  if (runtimeConfigStage) {
-    await finishDeploymentStage(runtimeConfigStage, { status: 'succeeded' });
-    runtimeConfigStage = null;
-  }
   const versionId = nextId(env, 'ver');
   const plannedWorkerName = workerNameFor(site, versionId, config.environment);
   const providerApplication = createDeploymentProviderApplication({ env, config, store });
@@ -2461,6 +2438,12 @@ function runtimeConfigFailurePatch({
   };
 }
 
+function runtimeConfigResolutionErrorMessage(errorCode) {
+  return errorCode === 'RUNTIME_CONFIG_UNSUPPORTED'
+    ? 'Runtime configuration is unavailable.'
+    : 'Runtime bindings are invalid.';
+}
+
 function deploymentOperationFailurePatch({ errorCode, errorMessage, operatorAction = 'retry_deploy' }) {
   return {
     errorCode,
@@ -3339,11 +3322,33 @@ function createRollbackSiteResolutionApplication(store) {
   return { resolve };
 }
 
-function createDeploymentRuntimeConfigResolutionApplication(store, env) {
+function createDeploymentRuntimeConfigResolutionApplication(store, env, trace = null) {
   return createDeploymentRuntimeConfigResolution({
     runtimeConfig: createDeploymentRuntimeConfigResolutionPort(store, {
       hashInput: (vars, secrets) => runtimeConfigHashInput(env, vars, secrets),
     }),
+    telemetry: {
+      start: () =>
+        trace
+          ? startDeploymentStage(trace, {
+              stage: 'runtime_config',
+              operation: 'resolve_runtime_config',
+            })
+          : null,
+      finish: (stage, outcome) =>
+        stage
+          ? finishDeploymentStage(stage, {
+              status: outcome.status,
+              ...(outcome.status === 'failed'
+                ? {
+                    errorCode: outcome.error.code,
+                    errorMessage: runtimeConfigResolutionErrorMessage(outcome.error.code),
+                    diagnostics: { causeClass: 'runtime_config_error' },
+                  }
+                : {}),
+            })
+          : undefined,
+    },
   });
 }
 

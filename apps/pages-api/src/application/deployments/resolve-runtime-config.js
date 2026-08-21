@@ -1,11 +1,28 @@
 import { runtimeVarsObject, validateRuntimeBindingQuotas } from '../../domain/runtime-config/rules.js';
 
-export function createDeploymentRuntimeConfigResolution({ runtimeConfig }) {
+export function createDeploymentRuntimeConfigResolution({ runtimeConfig, telemetry }) {
   if (typeof runtimeConfig?.hashInput !== 'function') throw new TypeError('runtimeConfig.hashInput is required');
+  if (typeof telemetry?.start !== 'function') throw new TypeError('telemetry.start is required');
+  if (typeof telemetry?.finish !== 'function') throw new TypeError('telemetry.finish is required');
 
   return { resolve };
 
-  async function resolve(command) {
+  function resolve(command) {
+    const stage = telemetry.start();
+    return resolveAfterStart(command, stage);
+  }
+
+  async function resolveAfterStart(command, stage) {
+    const workerRequired = command.workerRequired === true;
+    if (!workerRequired) await telemetry.finish(stage, { status: 'skipped' });
+    const result = await resolveRuntimeConfig(command);
+    if (workerRequired) {
+      await telemetry.finish(stage, result.ok ? { status: 'succeeded' } : { status: 'failed', error: result.error });
+    }
+    return result;
+  }
+
+  async function resolveRuntimeConfig(command) {
     const workerRequired = command.workerRequired === true;
     let runtimeVars = {};
     let runtimeVarRecords = [];

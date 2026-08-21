@@ -10,6 +10,7 @@ const command = {
   varsProvided: false,
   requestedVars: undefined,
 };
+const telemetry = { start: () => null, finish: async () => null };
 
 test('runtime config resolution reads the stored deployment snapshot through its narrow port', async () => {
   const calls = [];
@@ -29,6 +30,7 @@ test('runtime config resolution reads the stored deployment snapshot through its
         calls.push(['hash', vars, secrets]);
       },
     },
+    telemetry,
   });
 
   const result = await application.resolve(command);
@@ -60,6 +62,7 @@ test('runtime config resolution prepares sorted revision-zero records for explic
       listSecrets: async () => [],
       hashInput: async () => {},
     },
+    telemetry,
   });
 
   const result = await application.resolve({
@@ -86,6 +89,7 @@ test('runtime config resolution skips Store reads for asset-only deployments whi
         calls.push([vars, secrets]);
       },
     },
+    telemetry,
   });
 
   const result = await application.resolve({ ...command, workerRequired: false });
@@ -98,6 +102,7 @@ test('runtime config resolution skips Store reads for asset-only deployments whi
 test('runtime config resolution distinguishes missing Store capabilities from resolution failures', async () => {
   const unavailable = createDeploymentRuntimeConfigResolution({
     runtimeConfig: { listVars: null, listSecrets: null, hashInput: async () => {} },
+    telemetry,
   });
   assert.deepEqual(await unavailable.resolve(command), {
     ok: false,
@@ -112,6 +117,7 @@ test('runtime config resolution distinguishes missing Store capabilities from re
       listSecrets: async () => assert.fail('secret reads follow successful var reads'),
       hashInput: async () => assert.fail('hashing follows successful reads'),
     },
+    telemetry,
   });
   assert.deepEqual(await unreadable.resolve(command), {
     ok: false,
@@ -127,6 +133,7 @@ test('runtime config resolution maps binding conflicts and limits before hashing
       listSecrets: async () => [{ name: 'API_TOKEN', value: 'secret', revision: 1 }],
       hashInput,
     },
+    telemetry,
   });
   assert.deepEqual(await conflict.resolve(command), {
     ok: false,
@@ -139,6 +146,7 @@ test('runtime config resolution maps binding conflicts and limits before hashing
       listSecrets: async () => [],
       hashInput,
     },
+    telemetry,
   });
   assert.deepEqual(await limited.resolve(command), {
     ok: false,
@@ -155,6 +163,7 @@ test('runtime config resolution fails closed when hashing is unavailable', async
         throw new Error('pepper unavailable');
       },
     },
+    telemetry,
   });
 
   assert.deepEqual(await application.resolve(command), {
@@ -173,6 +182,7 @@ test('runtime config resolution preserves the post-hash quota validation', async
         secrets.push({ name: 'FEATURE_FLAG', value: 'secret', revision: 1 });
       },
     },
+    telemetry,
   });
 
   assert.deepEqual(await application.resolve(command), {
@@ -182,5 +192,91 @@ test('runtime config resolution preserves the post-hash quota validation', async
 });
 
 test('runtime config resolution requires its hash capability at composition time', () => {
-  assert.throws(() => createDeploymentRuntimeConfigResolution({ runtimeConfig: {} }), /runtimeConfig\.hashInput is required/);
+  assert.throws(
+    () => createDeploymentRuntimeConfigResolution({ runtimeConfig: {}, telemetry }),
+    /runtimeConfig\.hashInput is required/
+  );
+});
+
+test('runtime config resolution traces worker success and typed failure', async () => {
+  const calls = [];
+  const stage = { operation: 'resolve_runtime_config' };
+  const tracedTelemetry = {
+    start() {
+      calls.push(['start']);
+      return stage;
+    },
+    async finish(receivedStage, outcome) {
+      calls.push(['finish', receivedStage, outcome]);
+    },
+  };
+  const success = createDeploymentRuntimeConfigResolution({
+    runtimeConfig: {
+      listVars: async () => [],
+      listSecrets: async () => [],
+      hashInput: async () => calls.push(['hash']),
+    },
+    telemetry: tracedTelemetry,
+  });
+  assert.equal((await success.resolve(command)).ok, true);
+  assert.deepEqual(calls.splice(0), [
+    ['start'],
+    ['hash'],
+    ['finish', stage, { status: 'succeeded' }],
+  ]);
+
+  const failure = createDeploymentRuntimeConfigResolution({
+    runtimeConfig: { listVars: null, listSecrets: null, hashInput: async () => assert.fail('hash must not run') },
+    telemetry: tracedTelemetry,
+  });
+  const result = await failure.resolve(command);
+  assert.deepEqual(calls, [['start'], ['finish', stage, { status: 'failed', error: result.error }]]);
+});
+
+test('runtime config resolution finishes asset-only trace before empty binding hashing', async () => {
+  const calls = [];
+  const application = createDeploymentRuntimeConfigResolution({
+    runtimeConfig: {
+      listVars: async () => assert.fail('vars must not be read'),
+      listSecrets: async () => assert.fail('secrets must not be read'),
+      async hashInput() {
+        calls.push(['hash']);
+        throw new Error('pepper unavailable');
+      },
+    },
+    telemetry: {
+      start() {
+        calls.push(['start']);
+        return null;
+      },
+      async finish(_stage, outcome) {
+        calls.push(['finish', outcome]);
+      },
+    },
+  });
+
+  assert.deepEqual(await application.resolve({ ...command, workerRequired: false }), {
+    ok: false,
+    error: { code: 'RUNTIME_CONFIG_UNSUPPORTED', reason: 'resolution_failed' },
+  });
+  assert.deepEqual(calls, [
+    ['start'],
+    ['finish', { status: 'skipped' }],
+    ['hash'],
+  ]);
+});
+
+test('runtime config resolution starts telemetry synchronously', () => {
+  const startError = new Error('invalid trace');
+  const application = createDeploymentRuntimeConfigResolution({
+    runtimeConfig: { hashInput: async () => assert.fail('hash must not run') },
+    telemetry: {
+      start() {
+        throw startError;
+      },
+      finish: async () => assert.fail('finish must not run'),
+    },
+  });
+
+  assert.throws(() => application.resolve(command), (error) => error === startError);
 });
