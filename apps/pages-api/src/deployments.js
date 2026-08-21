@@ -4,6 +4,7 @@ import { isManagedWfpWorkerName } from './admin-resource-governance.js';
 import { createRollbackLeaseAcquisition } from './application/deployments/acquire-rollback-lease.js';
 import { createDeploymentRouteActivation } from './application/deployments/activate-route.js';
 import { createDeploymentRouteCutover } from './application/deployments/activate-route-cutover.js';
+import { createRollbackRouteCutover } from './application/deployments/activate-rollback-route.js';
 import { createDeploymentCompletion } from './application/deployments/complete-deployment.js';
 import { createDeploymentFailureCompletion } from './application/deployments/complete-failed-deployment.js';
 import { createDeploymentPreviousResourceCleanup } from './application/deployments/cleanup-previous-resources.js';
@@ -1495,38 +1496,20 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
   let route;
   let rollbackProvider;
   try {
-    await assertRouteSnapshotConverged(env, store, currentRoute, config.environment);
     rollbackProvider = createDeploymentProvider(env, config, store, site);
     const rollbackExposure = normalizeExposureForDeployment(currentRoute.exposure);
-    assertCommitLeaseHealthy(rollbackLease);
-    const rollbackOfficeNetResult = await createRollbackOfficeNetVerificationApplication({
+    const activationResult = await createRollbackRouteCutoverApplication({
       store,
+      env,
       provider: rollbackProvider,
       trace,
-    }).verify({
+    }).activate({
       environment: config.environment,
       siteId: site.id,
-      version,
-      currentVersionId: currentRoute.activeVersionId,
-      exposure: rollbackExposure,
-      signal: rollbackLease.signal,
-    });
-    if (!rollbackOfficeNetResult.ok) {
-      throw rollbackOfficeNetOperationError(rollbackOfficeNetResult.error);
-    }
-    assertCommitLeaseHealthy(rollbackLease);
-    const rollbackRouteActivation = createDeploymentRouteActivationApplication(store, env, trace, {
-      operation: 'rollback_route_activate',
-      conflictMessage: 'Route changed while rollback was activating.',
-      failureCode: 'ROLLBACK_ACTIVATION_FAILED',
-      failureMessage: 'Rollback activation failed.',
-      failureCauseClass: 'rollback_activation_error',
-    });
-    const activationResult = await rollbackRouteActivation.activate({
-      siteId: site.id,
-      environment: config.environment,
+      currentRoute,
       version,
       lease: rollbackLease,
+      exposure: rollbackExposure,
       activation: {
         visibility: currentRoute.visibility,
         expectedRoute: {
@@ -1534,8 +1517,10 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
           exposure: normalizeExposureForDeployment(rollbackLatestRoute.exposure),
         },
       },
-      requiredArtifactAvailability: 'active',
     });
+    if (!activationResult.ok && activationResult.kind === 'office_net_failed') {
+      throw rollbackOfficeNetOperationError(activationResult.error);
+    }
     route = activationResult.ok ? activationResult.route : null;
   } catch (error) {
     await releaseSiteCommitLeaseBestEffort(rollbackLease);
@@ -3225,6 +3210,23 @@ function createDeploymentRouteCutoverApplication({ store, env, trace, provider }
       ensure: (command) => officeNet.ensure({ ...command, provider }),
     },
     routes: createDeploymentRouteActivationApplication(store, env, trace),
+  });
+}
+
+function createRollbackRouteCutoverApplication({ store, env, trace, provider }) {
+  return createRollbackRouteCutover({
+    routeSnapshots: {
+      assertConverged: ({ route, environment }) => assertRouteSnapshotConverged(env, store, route, environment),
+    },
+    leases: { assertHealthy: assertCommitLeaseHealthy },
+    officeNet: createRollbackOfficeNetVerificationApplication({ store, provider, trace }),
+    routes: createDeploymentRouteActivationApplication(store, env, trace, {
+      operation: 'rollback_route_activate',
+      conflictMessage: 'Route changed while rollback was activating.',
+      failureCode: 'ROLLBACK_ACTIVATION_FAILED',
+      failureMessage: 'Rollback activation failed.',
+      failureCauseClass: 'rollback_activation_error',
+    }),
   });
 }
 
