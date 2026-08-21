@@ -47,6 +47,7 @@ import {
   projectAdminTeam as formatAdminTeam,
   projectAdminTeamMember as formatAdminTeamMember,
 } from './application/governance/list-admin-resources.js';
+import { createTeamMemberManagement } from './application/teams/manage-team-members.js';
 import { createNormalWorkerAdminClient } from './infrastructure/providers/normal-worker-admin-client.js';
 import {
   createV1SitesAdminClient as createInfrastructureV1SitesAdminClient,
@@ -55,7 +56,6 @@ import { buildRouteSnapshot, clearRoutePointerIfCurrent, readRouteSnapshotState 
 import { createDeploymentProvider } from './execution-provider.js';
 import { sanitizeDeploymentTraceDiagnostics } from './deployment-trace.js';
 import { ensurePublicWorkerOfficeNetAbsent } from './deployments.js';
-import { ensureCanChangeTeamAdminRole, ensureCanRemoveTeamMember } from './teams.js';
 import { cleanupDeferredLegacyV1WorkerScript, resolveDeferredLegacyV1WorkerTarget } from './legacy-v1/deferred-worker-cleanup.js';
 import { createWfpClient, readWfpConfig } from '@xd/wfp-client';
 import {
@@ -2143,32 +2143,63 @@ async function updateAdminTeamMember(request, config, store, session, teamId, us
     return jsonError('TEAM_ROLE_INVALID', 'Team role is invalid.', 400, 'Use viewer, publisher, or admin.');
   }
 
-  const user = await store.getUser(userId);
-  if (!user) return jsonError('USER_NOT_FOUND', 'User not found.', 404, 'Pick a user that has signed in to XD Cell.');
-
-  const lastAdminError = await ensureCanChangeTeamAdminRole(store, team.id, userId, role);
-  if (lastAdminError) return lastAdminError;
-
-  const member = await store.addTeamMember({
+  const result = await createAdminTeamMemberManagement(store).update({
+    environment: config.environment,
     teamId: team.id,
     userId,
     role,
-    membershipSource: 'manual',
     actorUserId: session.userId,
+    capability: 'platform_admin',
   });
-  return jsonOk({ member: formatAdminTeamMember(member) });
+  if (!result.ok) return adminTeamMemberMutationError(result.reason);
+  return jsonOk({ member: formatAdminTeamMember(result.member) });
 }
 
 async function removeAdminTeamMember(config, store, session, teamId, userId) {
   const team = await getAdminTeamRecord(config, store, teamId);
   if (team instanceof Response) return team;
 
-  const lastAdminError = await ensureCanRemoveTeamMember(store, team.id, userId);
-  if (lastAdminError) return lastAdminError;
+  const result = await createAdminTeamMemberManagement(store).remove({
+    environment: config.environment,
+    teamId: team.id,
+    userId,
+    actorUserId: session.userId,
+    capability: 'platform_admin',
+  });
+  if (!result.ok) return adminTeamMemberMutationError(result.reason);
+  return jsonOk({ member: formatAdminTeamMember(result.member) });
+}
 
-  const member = await store.removeTeamMember({ teamId: team.id, userId, actorUserId: session.userId });
-  if (!member) return jsonError('TEAM_MEMBER_NOT_FOUND', 'Team member not found.', 404, 'Check the user id.');
-  return jsonOk({ member: formatAdminTeamMember(member) });
+function createAdminTeamMemberManagement(store) {
+  return createTeamMemberManagement({
+    teams: { get: (teamId) => store.getTeam(teamId) },
+    users: { get: (userId) => store.getUser(userId) },
+    members: {
+      get: (query) => store.getTeamMember(query),
+      list: (query) => store.listTeamMembers(query),
+      upsert: (command) => store.addTeamMember(command),
+      remove: (command) => store.removeTeamMember(command),
+    },
+  });
+}
+
+function adminTeamMemberMutationError(reason) {
+  if (reason === 'team_not_found') return jsonError('TEAM_NOT_FOUND', 'Team not found.', 404, 'Check the team id.');
+  if (reason === 'user_not_found') {
+    return jsonError('USER_NOT_FOUND', 'User not found.', 404, 'Pick a user that has signed in to XD Cell.');
+  }
+  if (reason === 'last_admin') {
+    return jsonError(
+      'TEAM_LAST_ADMIN',
+      'Team must keep at least one active admin.',
+      409,
+      'Promote another member to admin before changing this member.'
+    );
+  }
+  if (reason === 'member_not_found') {
+    return jsonError('TEAM_MEMBER_NOT_FOUND', 'Team member not found.', 404, 'Check the user id.');
+  }
+  throw new Error('ADMIN_TEAM_MEMBER_MUTATION_RESULT_INVALID');
 }
 
 async function updateAdminTeamSettings(request, config, store, teamId) {
