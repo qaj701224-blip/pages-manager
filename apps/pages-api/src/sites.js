@@ -1,6 +1,5 @@
 import { validateSiteSlug } from '@xd/pages-runtime-protocol';
 
-import { isWfpWorkerResource } from './admin-resource-governance.js';
 import { authenticateApiRequest } from './auth.js';
 import { isSiteVisibility } from './domain/sites/access-policy.js';
 import { actorCanManageSite, actorHasPublishScope } from './domain/sites/authorization.js';
@@ -15,7 +14,7 @@ import { logRuntimeConfigFailure, readRuntimeConfigErrorDiagnostic } from './run
 import { createRuntimeConfigSync } from './infrastructure/providers/runtime-config-sync.js';
 import { createDeploymentProvider as createWfpDeploymentProvider } from './wfp-provider.js';
 import { createSiteWithLegacyV1Takeover } from './legacy-v1/takeover.js';
-import { emitSiteDeletedWebhook, emitSiteDisabledWebhook } from './lifecycle-webhooks.js';
+import { emitSiteDisabledWebhook } from './lifecycle-webhooks.js';
 import {
   createRuntimeConfigApplication,
   runtimeConfigSyncErrorResponse,
@@ -26,8 +25,9 @@ import {
   siteTransferErrorResponse,
 } from './transport/shared/site-ownership-application.js';
 import {
-  refreshCurrentRouteSnapshot,
-} from './transport/shared/site-route-snapshots.js';
+  createSiteLifecycleApplication,
+  siteDeleteErrorResponse,
+} from './transport/shared/site-lifecycle-application.js';
 
 export { actorCanManageSite };
 
@@ -37,7 +37,6 @@ const MAX_ACL_ENTRIES = 200;
 const MAX_RUNTIME_VAR_BODY_BYTES = 64 * 1024;
 const VISIBILITY_ACTION = '请使用 internal、org、acl、owner 或 disabled。';
 const RESERVED_SITE_SLUG_ACTION = '该站点名是 XD Cell 平台保留项，请换一个业务站点名。';
-const DEFAULT_REUSE_HOLD_SECONDS = 300;
 
 export async function handleSitesApi(request, env, config, store, ctx) {
   const auth = await authenticateApiRequest(request, env, store, config, readNow(env));
@@ -456,100 +455,21 @@ async function updateSite(request, env, config, store, actor, siteId, ctx) {
 async function deleteSite(env, config, store, actor, siteId, ctx) {
   const site = await getOwnerSite(store, actor, siteId, config.environment);
   if (site instanceof Response) return site;
-  const deletedAt = readNow(env);
-  const reuseHoldUntil = addSecondsIso(deletedAt, readReuseHoldSeconds(env));
-  const previousRoute = site.route || (await store.getRouteBySiteId(site.id, config.environment));
-  const previousHostnameClaim = previousRoute?.hostname ? await store.getHostnameClaim(previousRoute.hostname) : null;
-  const shouldWriteDeletedSnapshot = routeWasActive(previousRoute);
-  const deleted = await store.deleteSite(
-    site.id,
-    {
-      deletedAt,
-      reuseHoldUntil,
-      releaseReason: 'site_deleted',
-    },
-    config.environment
-  );
-  if (!deleted) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
-  const route = await store.getRouteBySiteId(site.id, config.environment);
-  if (shouldWriteDeletedSnapshot) {
-    const snapshotError = await refreshCurrentRouteSnapshot(env, store, deleted, route, config.environment);
-    if (snapshotError) {
-      await restoreSiteDeleteAfterSnapshotFailure(
-        store,
-        site.id,
-        site,
-        previousRoute,
-        previousHostnameClaim,
-        route,
-        config.environment
-      );
-      return snapshotError;
-    }
-  }
-  await enqueueDeletedSiteWfpCleanup(store, env, config, site, previousRoute, reuseHoldUntil);
-  await emitSiteDeletedWebhook({ store, env, config, ctx, actor, site: deleted, previousRoute, route });
-  return jsonOk({ site: formatSite({ ...deleted, route }) });
-}
-
-export async function enqueueDeletedSiteWfpCleanup(store, env, config, site, previousRoute, cleanupAfter) {
-  if (typeof store.createDeploymentResourceCleanupTask !== 'function') return;
-  const resourcesByWorker = new Map();
-  if (isWfpWorkerResource(previousRoute, config.environment)) {
-    resourcesByWorker.set(previousRoute.workerName, {
-      workerName: previousRoute.workerName,
-      siteId: site.id,
-      versionId: previousRoute.activeVersionId || null,
+  let deleted;
+  let route;
+  try {
+    const result = await createSiteLifecycleApplication({ store, env, config, ctx })({
+      environment: config.environment,
+      site,
+      actor,
+      compensateSnapshotFailure: true,
     });
+    deleted = result.site;
+    route = result.route;
+  } catch (error) {
+    return siteDeleteErrorResponse(error);
   }
-
-  if (typeof store.listSiteWfpCleanupReferences === 'function') {
-    try {
-      const references = await store.listSiteWfpCleanupReferences({
-        siteId: site.id,
-        environment: config.environment,
-      });
-      for (const route of references?.activeRoutes || []) {
-        if (!isWfpWorkerResource(route, config.environment)) continue;
-        resourcesByWorker.set(route.workerName, {
-          workerName: route.workerName,
-          siteId: route.siteId || site.id,
-          versionId: route.versionId || null,
-        });
-      }
-      for (const version of references?.versions || []) {
-        if (!isWfpWorkerResource(version, config.environment)) continue;
-        resourcesByWorker.set(version.workerName, {
-          workerName: version.workerName,
-          siteId: version.siteId || site.id,
-          versionId: version.id || null,
-        });
-      }
-    } catch {
-      // The site deletion is already committed; cleanup remains best-effort post-commit maintenance.
-    }
-  }
-
-  for (const resource of resourcesByWorker.values()) {
-    try {
-      await store.createDeploymentResourceCleanupTask({
-        id: nextId(env, 'cln'),
-        environment: config.environment,
-        resourceType: 'wfp_user_worker',
-        resourceRef: resource.workerName,
-        siteId: resource.siteId,
-        versionId: resource.versionId,
-        deploymentId: null,
-        cleanupReason: 'site_deleted',
-        status: 'pending',
-        cleanupAfter,
-        createdAt: readNow(env),
-        updatedAt: readNow(env),
-      });
-    } catch {
-      // Cleanup is post-commit maintenance. A successful site delete must stay successful.
-    }
-  }
+  return jsonOk({ site: formatSite({ ...deleted, route }) });
 }
 
 async function transferSiteOwner(request, env, config, store, actor, siteId) {
@@ -1210,10 +1130,6 @@ function aclEntryKey(entry) {
   return `${entry.effect || 'allow'}:${entry.subjectType}:${entry.subjectValue}:${entry.accessRole || 'viewer'}`;
 }
 
-function routeWasActive(route) {
-  return route?.routeStatus === 'active' && Boolean(route.activeVersionId);
-}
-
 export async function restoreSiteVisibilityAfterSnapshotFailure(
   store,
   siteId,
@@ -1241,31 +1157,6 @@ export async function restoreSiteAclAfterSnapshotFailure(
     return store.restoreSiteAclEntriesIfCurrent(siteId, previousEntries, previousRoute, previousSite, expectedRoute, environment);
   }
   return store.restoreSiteAclEntries(siteId, previousEntries, previousRoute, previousSite, environment);
-}
-
-export async function restoreSiteDeleteAfterSnapshotFailure(
-  store,
-  siteId,
-  previousSite,
-  previousRoute,
-  previousHostnameClaim,
-  expectedRoute,
-  environment
-) {
-  if (typeof store.restoreSiteDeleteIfCurrent === 'function') {
-    return store.restoreSiteDeleteIfCurrent(
-      siteId,
-      previousSite,
-      previousRoute,
-      previousHostnameClaim,
-      expectedRoute,
-      environment
-    );
-  }
-  if (typeof store.restoreSiteRouteIfCurrent === 'function') {
-    return store.restoreSiteRouteIfCurrent(siteId, previousRoute, expectedRoute, environment);
-  }
-  return store.restoreSiteRoute(siteId, previousRoute, environment);
 }
 
 function formatAclEntry(entry) {
@@ -1337,16 +1228,6 @@ function runtimeConfigSync(store, env, config) {
     environment: config.environment,
     createProvider: () => createWfpDeploymentProvider(env, config),
   });
-}
-
-function readReuseHoldSeconds(env) {
-  const value = Number(env?.HOSTNAME_REUSE_HOLD_SECONDS || DEFAULT_REUSE_HOLD_SECONDS);
-  if (!Number.isInteger(value) || value < 0 || value > 86_400) return DEFAULT_REUSE_HOLD_SECONDS;
-  return value;
-}
-
-function addSecondsIso(iso, seconds) {
-  return new Date(Date.parse(iso) + seconds * 1000).toISOString();
 }
 
 function authErrorResponse(error) {

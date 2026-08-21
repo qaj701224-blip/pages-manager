@@ -16,7 +16,6 @@ import {
   normalizeAclEntries,
   rejectUserExposureMutation,
   buildSiteOwnerTransferAuditEvent,
-  enqueueDeletedSiteWfpCleanup,
   siteCreateErrorResponse,
   validateSlug,
 } from './sites.js';
@@ -30,12 +29,12 @@ import {
   siteTransferErrorResponse,
 } from './transport/shared/site-ownership-application.js';
 import {
-  refreshCurrentRouteSnapshot,
-} from './transport/shared/site-route-snapshots.js';
-import { emitSiteDeletedWebhook, emitSiteDisabledWebhook } from './lifecycle-webhooks.js';
+  createSiteLifecycleApplication,
+  siteDeleteErrorResponse,
+} from './transport/shared/site-lifecycle-application.js';
+import { emitSiteDisabledWebhook } from './lifecycle-webhooks.js';
 
 const CONSOLE_PREFIX = '/.xd-pages/api/console';
-const DEFAULT_REUSE_HOLD_SECONDS = 300;
 
 export async function handleConsoleApi(request, env, config, store, ctx) {
   if (!isConsoleBffRequest(request)) return null;
@@ -247,36 +246,20 @@ export async function deleteConsoleSite(env, config, store, site, options = {}) 
     );
   }
 
-  const deletedAt = readNow(env);
-  const reuseHoldUntil = addSecondsIso(deletedAt, readReuseHoldSeconds(env));
-  const previousRoute = site.route || (await store.getRouteBySiteId(site.id, config.environment));
-  const shouldWriteDeletedSnapshot = routeWasActive(previousRoute);
-  const deleted = await store.deleteSite(
-    site.id,
-    {
-      deletedAt,
-      reuseHoldUntil,
-      releaseReason: 'site_deleted',
-    },
-    config.environment
-  );
-  if (!deleted) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
-  const route = await store.getRouteBySiteId(site.id, config.environment);
-  if (shouldWriteDeletedSnapshot) {
-    const snapshotError = await refreshCurrentRouteSnapshot(env, store, deleted, route, config.environment);
-    if (snapshotError) return snapshotError;
+  let deleted;
+  let route;
+  try {
+    const result = await createSiteLifecycleApplication({ store, env, config, ctx: options.ctx })({
+      environment: config.environment,
+      site,
+      actor: options.actor,
+      compensateSnapshotFailure: false,
+    });
+    deleted = result.site;
+    route = result.route;
+  } catch (error) {
+    return siteDeleteErrorResponse(error);
   }
-  await enqueueDeletedSiteWfpCleanup(store, env, config, site, previousRoute, reuseHoldUntil);
-  await emitSiteDeletedWebhook({
-    store,
-    env,
-    config,
-    ctx: options.ctx,
-    actor: options.actor,
-    site: deleted,
-    previousRoute,
-    route,
-  });
   return jsonOk({ site: formatWorkspaceSite({ ...deleted, route }) });
 }
 
@@ -962,10 +945,6 @@ function hasAdminRole(site) {
   return site.managementRole === 'admin';
 }
 
-function routeWasActive(route) {
-  return route?.routeStatus === 'active' && Boolean(route.activeVersionId);
-}
-
 function byteLength(value) {
   return new globalThis.TextEncoder().encode(String(value)).byteLength;
 }
@@ -991,23 +970,8 @@ function nextSiteUuid(env) {
   return newHexId();
 }
 
-function readNow(env) {
-  if (typeof env?.now === 'function') return env.now();
-  return new Date().toISOString();
-}
-
 function consoleActor(session) {
   return { type: 'user', userId: session.userId };
-}
-
-function readReuseHoldSeconds(env) {
-  const value = Number(env?.HOSTNAME_REUSE_HOLD_SECONDS || DEFAULT_REUSE_HOLD_SECONDS);
-  if (!Number.isInteger(value) || value < 0 || value > 86_400) return DEFAULT_REUSE_HOLD_SECONDS;
-  return value;
-}
-
-function addSecondsIso(iso, seconds) {
-  return new Date(Date.parse(iso) + seconds * 1000).toISOString();
 }
 
 function methodNotAllowed() {
