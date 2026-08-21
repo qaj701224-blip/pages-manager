@@ -2,7 +2,9 @@ import { validateSiteSlug } from '@xd/pages-runtime-protocol';
 
 import { isManagedWfpWorkerName } from './admin-resource-governance.js';
 import { createDeploymentRecord } from './application/deployments/deployment-record.js';
+import { createDeploySiteResolution } from './application/deployments/resolve-deploy-site.js';
 import { createRollbackSiteResolution } from './application/deployments/resolve-rollback-site.js';
+import { createDeploySiteResolutionPort } from './application/ports/deploy-site-resolution.js';
 import { createDeploymentRecordsPort } from './application/ports/deployment-records.js';
 import { createRollbackSiteResolutionPort } from './application/ports/rollback-site-resolution.js';
 import { canonicalRequestHash } from './crypto.js';
@@ -25,8 +27,8 @@ import {
   withDeploymentTraceHeader,
 } from './deployment-trace.js';
 import { validateAssetFiles } from './deployment-upload.js';
-import { isSiteVisibility, teamOwnerSupportsVisibility } from './domain/sites/access-policy.js';
-import { actorCanDeploySite, actorCanManageSite, actorCanReadSite } from './domain/sites/authorization.js';
+import { isSiteVisibility } from './domain/sites/access-policy.js';
+import { actorCanDeploySite, actorCanReadSite } from './domain/sites/authorization.js';
 import { jsonError, jsonOk } from './http.js';
 import { nextId } from './id.js';
 import {
@@ -55,8 +57,10 @@ import {
   readRollbackIntake,
 } from './transport/public/deployment-intake.js';
 import {
+  deploySiteResolutionErrorResponse,
   deploymentRequestFailed,
   deploymentStateWriteFailed,
+  RESERVED_SITE_SLUG_ACTION,
   rollbackSiteResolutionErrorResponse,
 } from './transport/shared/deployment-responses.js';
 
@@ -64,7 +68,6 @@ const PROVIDER_DIAGNOSTIC_CLIENT_CODES = new Set(['WFP_API_ERROR', 'WFP_API_INVA
 const PROVIDER_DIAGNOSTIC_OPERATIONS = new Set(['assets_upload_session', 'assets_upload', 'worker_put', 'worker_get']);
 const TERMINAL_DEPLOYMENT_STATUSES = new Set(['succeeded', 'failed']);
 const DEPLOYMENT_FAILURE_RECOVERY_KEY_PART = 'deployment_failure_recovery';
-const RESERVED_SITE_SLUG_ACTION = '该站点名是 XD Cell 平台保留项，请换一个业务站点名。';
 const deploymentRequestTraceStates = new WeakMap();
 
 const deploymentHttpHandlers = createDeploymentsHttpHandlers({
@@ -198,17 +201,21 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
   }
   queueRequestTraceSuccess(trace, 'payload_validation', 'validate_deployment_payload');
   setRequestTraceStage(trace, 'auth_and_site_resolution', 'resolve_site');
-  let site = await resolveDeploySite(store, actor, config, env, {
+  const resolution = await createDeploySiteResolutionApplication({ store, env, config }).resolve({
+    actor,
+    environment: config.environment,
     siteId: requestedSiteId,
     siteSlug: requestedSiteSlug,
     teamId: requestedTeamId,
     visibility: requestedVisibility || 'org',
     requestedVisibility,
   });
-  if (site instanceof Response) {
-    await finishRequestAuthStageFromResponse(authStage, site, 'site_resolution_error');
-    return site;
+  if (!resolution.ok) {
+    const response = deploySiteResolutionErrorResponse(resolution.error);
+    await finishRequestAuthStageFromResponse(authStage, response, 'site_resolution_error');
+    return response;
   }
+  let site = resolution.site;
   let ownerTransfer = null;
   const routeSlugError = validateDeployableSiteSlug(site.slug, config.environment);
   if (routeSlugError) {
@@ -2367,54 +2374,6 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
   return jsonOk(await deploymentEnvelope(store, completed, { version, route }), 201);
 }
 
-async function resolveDeploySite(store, actor, config, env, { siteId, siteSlug, teamId, visibility, requestedVisibility }) {
-  const environment = config.environment;
-  if (siteId) {
-    const site = await store.getSiteForUser(siteId, actor.userId, actor, environment);
-    if (!site) return siteNotFound('Check the site id.');
-    return transferDeploySiteToTeamIfRequested(store, actor, config, env, site, teamId, requestedVisibility);
-  }
-  const bySlug = typeof store.findSiteBySlug === 'function' ? await store.findSiteBySlug(environment, siteSlug) : null;
-  if (!bySlug) {
-    const slugError = validateDeploySiteSlug(siteSlug, environment);
-    if (slugError) return slugError;
-    return createSiteFromDeployOwner(store, actor, config, env, { siteSlug, teamId, visibility });
-  }
-  const site = await store.getSiteForUser(bySlug.id, actor.userId, actor, environment);
-  if (!site) return siteNotFound('Check the site slug and access key scope.');
-  return transferDeploySiteToTeamIfRequested(store, actor, config, env, site, teamId, requestedVisibility);
-}
-
-async function transferDeploySiteToTeamIfRequested(store, actor, config, env, site, teamId, visibility) {
-  if (!teamId) return site;
-  if (site.ownerType === 'team' && site.ownerId === teamId) return site;
-  if (!actorCanManageSite(actor, site)) {
-    return jsonError(
-      'DEPLOY_FORBIDDEN',
-      'Actor cannot transfer this site before deployment.',
-      403,
-      'Use a publisher/admin role or owner-scoped access key for the current site.'
-    );
-  }
-
-  const target = await resolveDeployTransferTeam(store, actor, teamId, config.environment);
-  if (target instanceof Response) return target;
-  const nextVisibility = visibility || site.route?.visibility || site.defaultVisibility;
-  if (!teamOwnerSupportsVisibility({ ownerType: 'team' }, nextVisibility)) return teamOwnerVisibilityUnsupported();
-  if (typeof store.transferSiteOwner !== 'function') {
-    return jsonError('SITE_TRANSFER_UNSUPPORTED', 'Site transfer is unavailable.', 503, 'Retry later.');
-  }
-
-  void env;
-  return {
-    ...site,
-    pendingOwnerTransfer: {
-      ownerId: target.ownerId,
-      visibility,
-    },
-  };
-}
-
 async function applyPendingDeployOwnerTransfer(store, actor, config, env, site, transfer) {
   const updatedAt = readNow(env);
   const auditEvent = buildSiteOwnerTransferAuditEvent(
@@ -2464,121 +2423,6 @@ async function restoreDeployOwnerTransferAfterFailure(store, { siteId, previousS
   }
 }
 
-async function resolveDeployTransferTeam(store, actor, teamId, environment) {
-  if (actor.type === 'access_key' && (actor.ownerType || 'user') === 'team') {
-    if (actor.ownerId !== teamId || !actor.scopes.includes('deploy:site')) {
-      return jsonError(
-        'DEPLOY_FORBIDDEN',
-        'Actor cannot transfer this site to the requested team.',
-        403,
-        'Use an owner-scoped access key for the target team.'
-      );
-    }
-    const team = typeof store.getTeam === 'function' ? await store.getTeam(teamId) : null;
-    if (!team || team.environment !== environment || team.deletedAt) {
-      return jsonError('TEAM_NOT_FOUND', 'Team not found.', 404, 'Check the team id.');
-    }
-    return { ownerId: team.id, role: 'publisher' };
-  }
-  return resolveTeamDeployOwner(store, actor.userId, teamId, environment);
-}
-
-async function createSiteFromDeployOwner(store, actor, config, env, { siteSlug, teamId, visibility }) {
-  if (actor.type !== 'access_key' && teamId) {
-    return createTeamSiteFromUserDeploy(store, actor, config, env, { siteSlug, teamId, visibility });
-  }
-  return createSiteFromOwnerScopedAccessKeyDeploy(store, actor, config, env, { siteSlug, teamId, visibility });
-}
-
-async function createTeamSiteFromUserDeploy(store, actor, config, env, { siteSlug, teamId, visibility }) {
-  if (!teamOwnerSupportsVisibility({ ownerType: 'team' }, visibility)) return teamOwnerVisibilityUnsupported();
-  const teamOwner = await resolveTeamDeployOwner(store, actor.userId, teamId, config.environment);
-  if (teamOwner instanceof Response) return teamOwner;
-  return pendingDeploySiteCreation(store, config, env, {
-    siteSlug,
-    ownerType: 'team',
-    ownerId: teamOwner.ownerId,
-    ownerUserId: actor.userId,
-    visibility,
-    managementRole: teamOwner.role,
-  });
-}
-
-async function createSiteFromOwnerScopedAccessKeyDeploy(store, actor, config, env, { siteSlug, teamId, visibility }) {
-  if (actor.type !== 'access_key') return siteNotFound('Check the site slug.');
-  if (actor.siteId) return siteNotFound('Check the site slug and access key scope.');
-  if (!actor.scopes.includes('deploy:site')) {
-    return jsonError('DEPLOY_FORBIDDEN', 'Actor cannot deploy this site.', 403, 'Use a token scoped to deploy sites.');
-  }
-
-  const ownerType = actor.ownerType || 'user';
-  const ownerId = actor.ownerId || actor.userId;
-  const ownerUserId = ownerType === 'team' ? actor.userId : ownerId;
-  if (teamId && ownerType === 'user') {
-    return createTeamSiteFromUserDeploy(store, actor, config, env, { siteSlug, teamId, visibility });
-  }
-  if (teamId && (ownerType !== 'team' || ownerId !== teamId)) {
-    return jsonError(
-      'DEPLOY_FORBIDDEN',
-      'Actor cannot deploy this site.',
-      403,
-      'Use a user CLI token or an owner-scoped access key for this team.'
-    );
-  }
-  if (!ownerId || !ownerUserId) {
-    return jsonError('DEPLOY_FORBIDDEN', 'Actor cannot deploy this site.', 403, 'Use an active owner-scoped access key.');
-  }
-  if (!teamOwnerSupportsVisibility({ ownerType }, visibility)) return teamOwnerVisibilityUnsupported();
-
-  return pendingDeploySiteCreation(store, config, env, {
-    siteSlug,
-    ownerType,
-    ownerId,
-    ownerUserId,
-    visibility,
-  });
-}
-
-function teamOwnerVisibilityUnsupported() {
-  return jsonError(
-    'SITE_VISIBILITY_INVALID',
-    'Team-owned sites cannot use owner visibility.',
-    400,
-    'Use internal, org, acl, or disabled for team-owned sites.'
-  );
-}
-
-function pendingDeploySiteCreation(
-  store,
-  config,
-  env,
-  { siteSlug, ownerType, ownerId, ownerUserId, visibility, managementRole }
-) {
-  const pendingSiteCreation = createSiteCreationApplication({ store, env, config }).prepare({
-    environment: config.environment,
-    slug: siteSlug,
-    ownerType,
-    ownerId,
-    ownerUserId,
-    visibility,
-  });
-  const site = {
-    id: pendingSiteCreation.id,
-    slug: pendingSiteCreation.slug,
-    ownerType: pendingSiteCreation.ownerType,
-    ownerId: pendingSiteCreation.ownerId,
-    ownerUserId: pendingSiteCreation.ownerUserId,
-    siteUuid: pendingSiteCreation.siteUuid,
-    defaultVisibility: pendingSiteCreation.defaultVisibility,
-    environment: pendingSiteCreation.environment,
-    managementRole: managementRole || null,
-  };
-  return {
-    ...site,
-    pendingSiteCreation,
-  };
-}
-
 async function applyPendingDeploySiteCreation(env, config, store, actor, site) {
   try {
     const created = await createSiteCreationApplication({ store, env, config }).commit({
@@ -2598,25 +2442,6 @@ async function applyPendingDeploySiteCreation(env, config, store, actor, site) {
     if (response) return response;
     throw error;
   }
-}
-
-async function resolveTeamDeployOwner(store, userId, teamId, environment) {
-  if (!teamId) return jsonError('TEAM_REQUIRED', 'Team id is required.', 400, 'Choose a team.');
-  const team = await store.getTeam(teamId);
-  if (!team || team.environment !== environment) {
-    return jsonError('TEAM_NOT_FOUND', 'Team not found.', 404, 'Check the team id.');
-  }
-  const member = await store.getTeamMember({ teamId, userId });
-  if (!member) return jsonError('TEAM_NOT_FOUND', 'Team not found.', 404, 'Check the team id.');
-  if (member.role !== 'admin' && member.role !== 'publisher') {
-    return jsonError(
-      'TEAM_PUBLISHER_REQUIRED',
-      'Team publisher role required.',
-      403,
-      'Ask a team publisher to deploy this site.'
-    );
-  }
-  return { ownerId: team.id, role: member.role };
 }
 
 async function validateRollbackVersion(store, version, environment) {
@@ -3641,6 +3466,14 @@ function createDeploymentRecordApplication(store, env) {
     deploymentRecords: createDeploymentRecordsPort(store),
     ids: { next: (prefix) => nextId(env, prefix) },
   });
+}
+
+function createDeploySiteResolutionApplication({ store, env, config }) {
+  const resolve = createDeploySiteResolution({
+    sites: createDeploySiteResolutionPort(store),
+    prepareSite: (command) => createSiteCreationApplication({ store, env, config }).prepare(command),
+  });
+  return { resolve };
 }
 
 function createRollbackSiteResolutionApplication(store) {
