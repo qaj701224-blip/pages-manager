@@ -71,6 +71,8 @@ XD_CELL_API_TOKEN=<token> xd-cell sites list --json
 
 也可以使用 `--token <token>` 只为当前命令提供 token。不要把 token 写入项目文件、日志或命令输出；站点级 Worker secret 使用 `xd-cell secrets put/delete` 管理。
 
+部署响应带有关联号时，普通输出会显示 `追踪：dtr_...`，`--json` 成功结果和错误对象会包含 `deploymentTraceId`。排查部署失败时可把这个关联号提供给平台管理员；它不包含凭证或站点内容。
+
 `sites delete` 在非交互或 JSON 模式下必须显式传入 `--yes`。删除行为和错误码以 CLI 输出及当前平台契约为准。
 
 ## 配置

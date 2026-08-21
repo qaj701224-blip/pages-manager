@@ -12,14 +12,42 @@ const SCRIPT_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const BINDING_NAME_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
 // Termination backstop for cursor pagination when the caller sets no explicit bounds.
 const WFP_UNBOUNDED_CURSOR_PAGE_CAP = 1000;
+const WFP_PROVIDER_OPERATIONS = new Set([
+  'assets_upload_session',
+  'assets_upload',
+  'worker_put',
+  'worker_get',
+  'worker_delete',
+  'worker_settings_get',
+  'worker_settings_patch',
+  'worker_secret_put',
+  'worker_secret_delete',
+  'worker_subdomain_disable',
+  'worker_placeholder_put',
+]);
+const WFP_CLIENT_CODE_RE = /^WFP_[A-Z0-9_]{1,64}$/;
+const PROVIDER_REQUEST_ID_RE = /^[A-Za-z0-9._:/-]{1,128}$/;
+const PROVIDER_CODE_MAX_LENGTH = 64;
+const PROVIDER_MESSAGE_MAX_LENGTH = 512;
+const NETWORK_ERROR_MESSAGE = 'Cloudflare WFP request failed before receiving a response.';
 
 export class WfpApiError extends Error {
-  constructor({ status, code = 'WFP_API_ERROR', message, detail }) {
-    super(message || code);
+  constructor({ status, code = 'WFP_API_ERROR', message, detail, operation, providerCode, providerMessage, providerRequestId }) {
+    const safeCode = normalizeClientCode(code);
+    super(message || safeCode);
     this.name = 'WfpApiError';
-    this.status = status;
-    this.code = code;
+    const safeStatus = normalizeProviderHttpStatus(status);
+    if (safeStatus !== undefined) this.status = safeStatus;
+    this.code = safeCode;
     if (detail) this.detail = detail;
+    const safeOperation = normalizeProviderOperation(operation);
+    const safeProviderCode = normalizeProviderCode(providerCode);
+    const safeProviderMessage = normalizeProviderMessage(providerMessage, []);
+    const safeProviderRequestId = normalizeProviderRequestId(providerRequestId);
+    if (safeOperation) this.operation = safeOperation;
+    if (safeProviderCode !== undefined) this.providerCode = safeProviderCode;
+    if (safeProviderMessage !== undefined) this.providerMessage = safeProviderMessage;
+    if (safeProviderRequestId !== undefined) this.providerRequestId = safeProviderRequestId;
   }
 }
 
@@ -67,6 +95,9 @@ export function createWfpClient({
       const { scriptName, mainModule, modules, compatibilityDate, tags = [], bindings = [] } = input || {};
       const safeScriptName = validateScriptName(scriptName);
       const safeBindings = normalizeWorkerBindings(bindings);
+      const redactionTokens = safeBindings
+        .filter((binding) => binding.type === 'secret_text' && typeof binding.text === 'string')
+        .map((binding) => binding.text);
       const usesAssets = decisionRequiresAssets(input?.decision);
       const usesUserWorker = decisionRequiresWorker(input?.decision);
       let safeMainModule = mainModule;
@@ -83,6 +114,7 @@ export function createWfpClient({
           decision: input.decision,
           assetManifest: input.assetManifest,
           assetFiles: input.assetFiles,
+          redactionTokens,
         });
         if (!usesUserWorker) {
           safeMainModule = 'worker.mjs';
@@ -113,18 +145,24 @@ export function createWfpClient({
       const metadataBindings = assetMetadata ? [{ type: 'assets', name: 'ASSETS' }, ...safeBindings] : safeBindings;
       if (metadataBindings.length > 0) metadata.bindings = metadataBindings;
       if (assetMetadata) metadata.assets = assetMetadata;
-      form.set(
-        'metadata',
-        new Blob([JSON.stringify(metadata)], { type: 'application/json' })
-      );
+      form.set('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
       for (const module of safeModules) {
         form.set(module.name, new Blob([module.content], { type: module.type || 'application/javascript+module' }), module.name);
       }
 
-      await requestCloudflare(fetch, apiToken, scriptUrl(baseUrl, account, namespace, safeScriptName), {
-        method: 'PUT',
-        body: form,
-      });
+      await requestCloudflare(
+        fetch,
+        apiToken,
+        scriptUrl(baseUrl, account, namespace, safeScriptName),
+        {
+          method: 'PUT',
+          body: form,
+        },
+        {
+          operation: 'worker_put',
+          redactionTokens: [...redactionTokens, ...(assetMetadata?.jwt ? [assetMetadata.jwt] : [])],
+        }
+      );
       return {
         scriptName: safeScriptName,
         dispatchNamespace,
@@ -133,9 +171,13 @@ export function createWfpClient({
     },
 
     async getUserWorker(scriptName) {
-      return requestCloudflareOk(fetch, apiToken, scriptUrl(baseUrl, account, namespace, validateScriptName(scriptName)), {
-        method: 'GET',
-      });
+      return requestCloudflareOk(
+        fetch,
+        apiToken,
+        scriptUrl(baseUrl, account, namespace, validateScriptName(scriptName)),
+        { method: 'GET' },
+        { operation: 'worker_get' }
+      );
     },
 
     async listUserWorkers(options = {}) {
@@ -160,9 +202,7 @@ export function createWfpClient({
         if (firstPage.mode === 'page' && firstPage.totalPages <= 1) return workers;
         if (firstPageWorkers.length === 0) throw invalidCloudflareListResponse('empty first page claims more pages');
 
-        const inferredMaxPages = maxWorkers
-          ? Math.max(1, Math.ceil(maxWorkers / firstPageWorkers.length))
-          : null;
+        const inferredMaxPages = maxWorkers ? Math.max(1, Math.ceil(maxWorkers / firstPageWorkers.length)) : null;
         const pageBounds = [explicitMaxPages, inferredMaxPages].filter(Boolean);
         const maxPages = pageBounds.length > 0 ? Math.min(...pageBounds) : null;
 
@@ -234,19 +274,29 @@ export function createWfpClient({
     },
 
     async deleteUserWorker(scriptName) {
-      return requestCloudflare(fetch, apiToken, scriptUrl(baseUrl, account, namespace, validateScriptName(scriptName)), {
-        method: 'DELETE',
-      });
+      return requestCloudflare(
+        fetch,
+        apiToken,
+        scriptUrl(baseUrl, account, namespace, validateScriptName(scriptName)),
+        { method: 'DELETE' },
+        { operation: 'worker_delete' }
+      );
     },
 
     async updateUserWorkerBindings(scriptName, input = {}) {
       const safeScriptName = validateScriptName(scriptName);
       const safeBindings = normalizeWorkerBindings(input.bindings || []);
       const settingsUrl = `${scriptUrl(baseUrl, account, namespace, safeScriptName)}/settings`;
-      const currentSettings = await requestCloudflare(fetch, apiToken, settingsUrl, {
-        method: 'GET',
-        signal: input.signal,
-      });
+      const currentSettings = await requestCloudflare(
+        fetch,
+        apiToken,
+        settingsUrl,
+        {
+          method: 'GET',
+          signal: input.signal,
+        },
+        { operation: 'worker_settings_get' }
+      );
       if (
         !Array.isArray(currentSettings?.bindings) ||
         currentSettings.bindings.some((binding) => !binding || typeof binding !== 'object' || Array.isArray(binding))
@@ -255,6 +305,7 @@ export function createWfpClient({
           status: 502,
           code: 'WFP_API_SETTINGS_INVALID',
           message: 'Cloudflare WFP settings response did not include bindings.',
+          operation: 'worker_settings_get',
         });
       }
       const currentBindings = currentSettings.bindings;
@@ -265,20 +316,32 @@ export function createWfpClient({
 
       const form = new FormData();
       form.set('settings', new Blob([JSON.stringify({ bindings })], { type: 'application/json' }));
-      return requestCloudflare(fetch, apiToken, settingsUrl, {
-        method: 'PATCH',
-        body: form,
-        signal: input.signal,
-      });
+      return requestCloudflare(
+        fetch,
+        apiToken,
+        settingsUrl,
+        {
+          method: 'PATCH',
+          body: form,
+          signal: input.signal,
+        },
+        { operation: 'worker_settings_patch' }
+      );
     },
 
     async getUserWorkerSettings(scriptName, options = {}) {
       const safeScriptName = validateScriptName(scriptName);
       const settingsUrl = `${scriptUrl(baseUrl, account, namespace, safeScriptName)}/settings`;
-      const currentSettings = await requestCloudflare(fetch, apiToken, settingsUrl, {
-        method: 'GET',
-        signal: options.signal,
-      });
+      const currentSettings = await requestCloudflare(
+        fetch,
+        apiToken,
+        settingsUrl,
+        {
+          method: 'GET',
+          signal: options.signal,
+        },
+        { operation: 'worker_settings_get' }
+      );
       if (
         !Array.isArray(currentSettings?.bindings) ||
         currentSettings.bindings.some((binding) => !binding || typeof binding !== 'object' || Array.isArray(binding))
@@ -287,6 +350,7 @@ export function createWfpClient({
           status: 502,
           code: 'WFP_API_SETTINGS_INVALID',
           message: 'Cloudflare WFP settings response did not include bindings.',
+          operation: 'worker_settings_get',
         });
       }
       return currentSettings;
@@ -296,38 +360,46 @@ export function createWfpClient({
       const safeScriptName = validateScriptName(scriptName);
       const currentSettings = await this.getUserWorkerSettings(safeScriptName, options);
       const currentBindings = currentSettings.bindings.map(cloneJsonObject);
-      const bindings = currentBindings.filter(
-        (binding) => !(binding.type === 'vpc_network' && binding.name === 'XD_OFFICE_NET')
-      );
+      const bindings = currentBindings.filter((binding) => !(binding.type === 'vpc_network' && binding.name === 'XD_OFFICE_NET'));
       if (bindings.length === currentBindings.length) return { removed: false, bindings };
 
       const settingsUrl = `${scriptUrl(baseUrl, account, namespace, safeScriptName)}/settings`;
       const form = new FormData();
       form.set('settings', new Blob([JSON.stringify({ bindings })], { type: 'application/json' }));
-      const result = await requestCloudflare(fetch, apiToken, settingsUrl, {
-        method: 'PATCH',
-        body: form,
-        signal: options.signal,
-      });
+      const result = await requestCloudflare(
+        fetch,
+        apiToken,
+        settingsUrl,
+        {
+          method: 'PATCH',
+          body: form,
+          signal: options.signal,
+        },
+        { operation: 'worker_settings_patch' }
+      );
       return { removed: true, bindings, result };
     },
 
     async verifyOfficeNetAbsent(scriptName, options = {}) {
       const currentSettings = await this.getUserWorkerSettings(scriptName, options);
-      return !currentSettings.bindings.some(
-        (binding) => binding?.type === 'vpc_network' && binding?.name === 'XD_OFFICE_NET'
-      );
+      return !currentSettings.bindings.some((binding) => binding?.type === 'vpc_network' && binding?.name === 'XD_OFFICE_NET');
     },
 
     async putUserWorkerSecret(scriptName, secret, options = {}) {
       const safeScriptName = validateScriptName(scriptName);
       const body = normalizeUserWorkerSecret(secret);
-      return requestCloudflare(fetch, apiToken, `${scriptUrl(baseUrl, account, namespace, safeScriptName)}/secrets`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: options.signal,
-      });
+      return requestCloudflare(
+        fetch,
+        apiToken,
+        `${scriptUrl(baseUrl, account, namespace, safeScriptName)}/secrets`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: options.signal,
+        },
+        { operation: 'worker_secret_put', redactionTokens: [body.text] }
+      );
     },
 
     async deleteUserWorkerSecret(scriptName, secretName, options = {}) {
@@ -340,7 +412,8 @@ export function createWfpClient({
         {
           method: 'DELETE',
           signal: options.signal,
-        }
+        },
+        { operation: 'worker_secret_delete' }
       );
     },
   };
@@ -355,13 +428,20 @@ async function uploadAssets({
   decision,
   assetManifest,
   assetFiles,
+  redactionTokens = [],
 }) {
   validateAssetInput({ decision, assetManifest, assetFiles });
-  const session = await requestCloudflare(fetch, apiToken, `${scriptResourceUrl}/assets-upload-session`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ manifest: assetManifest }),
-  });
+  const session = await requestCloudflare(
+    fetch,
+    apiToken,
+    `${scriptResourceUrl}/assets-upload-session`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ manifest: assetManifest }),
+    },
+    { operation: 'assets_upload_session', redactionTokens }
+  );
 
   if (!Array.isArray(session?.buckets) || session.buckets.length === 0) return session.jwt;
 
@@ -374,10 +454,16 @@ async function uploadAssets({
       if (!file) continue;
       form.set(hash, new Blob([bytesToBase64(file.bytes)], { type: file.contentType || 'application/octet-stream' }), hash);
     }
-    const result = await requestCloudflare(fetch, session.jwt, assetUploadUrl(baseUrl, accountId), {
-      method: 'POST',
-      body: form,
-    });
+    const result = await requestCloudflare(
+      fetch,
+      session.jwt,
+      assetUploadUrl(baseUrl, accountId),
+      {
+        method: 'POST',
+        body: form,
+      },
+      { operation: 'assets_upload', redactionTokens: [apiToken, ...redactionTokens] }
+    );
     if (result?.jwt) completionJwt = result.jwt;
   }
   return completionJwt;
@@ -403,7 +489,9 @@ function assetFileMap(assetManifest, assetFiles) {
 }
 
 function normalizeAssetPath(value) {
-  return `/${String(value || '').replaceAll('\\', '/').replace(/^\/+/, '')}`;
+  return `/${String(value || '')
+    .replaceAll('\\', '/')
+    .replace(/^\/+/, '')}`;
 }
 
 function assetConfigForDecision(decision) {
@@ -506,25 +594,44 @@ function cloneJsonObject(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-async function requestCloudflare(fetch, apiToken, url, init) {
-  const payload = await requestCloudflarePayload(fetch, apiToken, url, init);
+async function requestCloudflare(fetch, apiToken, url, init, options = {}) {
+  const payload = await requestCloudflarePayload(fetch, apiToken, url, init, options);
   return payload?.result ?? payload;
 }
 
-async function requestCloudflarePayload(fetch, apiToken, url, init) {
-  const headers = new Headers(init.headers);
+export async function requestCloudflareProvider(fetch, apiToken, url, init, options = {}) {
+  return requestCloudflare(fetch, apiToken, url, init, options);
+}
+
+async function requestCloudflarePayload(fetch, apiToken, url, init, options = {}) {
+  const operation = normalizeProviderOperation(options.operation);
+  const redactionTokens = [apiToken, ...(Array.isArray(options.redactionTokens) ? options.redactionTokens : [])];
+  const headers = new Headers(init?.headers);
   headers.set('Authorization', `Bearer ${apiToken}`);
-  const response = await fetch(
-    new Request(url, {
-      ...init,
-      headers,
-    })
-  );
-  const payload = await readJson(response);
+  const request = new Request(url, {
+    ...init,
+    headers,
+  });
+  let response;
+  try {
+    response = await fetch(request);
+  } catch {
+    throw new WfpApiError({
+      code: 'WFP_NETWORK_ERROR',
+      message: NETWORK_ERROR_MESSAGE,
+      operation,
+    });
+  }
+  const providerRequestId = readProviderRequestId(response.headers, redactionTokens);
+  const payload = await readJson(response, { operation, providerRequestId });
   if (!response.ok || payload?.success === false) {
+    const providerError = readProviderError(payload, redactionTokens);
     throw new WfpApiError({
       status: response.status,
-      message: redactCloudflareError(payload, apiToken),
+      message: redactCloudflareError(payload, redactionTokens),
+      operation,
+      providerRequestId,
+      ...providerError,
     });
   }
   return payload;
@@ -552,10 +659,7 @@ function readCloudflarePagination(payload) {
   }
   // Observed live contract: the dispatch scripts list paginates like KV, with
   // result_info carrying only count/cursor and an empty cursor marking the last page.
-  if (
-    Object.prototype.hasOwnProperty.call(resultInfo, 'cursor') ||
-    Object.prototype.hasOwnProperty.call(resultInfo, 'count')
-  ) {
+  if (Object.prototype.hasOwnProperty.call(resultInfo, 'cursor') || Object.prototype.hasOwnProperty.call(resultInfo, 'count')) {
     if (Object.prototype.hasOwnProperty.call(resultInfo, 'count') && !Number.isInteger(resultInfo.count)) {
       throw invalidCloudflareListResponse(describeShape('result_info', resultInfo));
     }
@@ -650,15 +754,27 @@ function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-async function requestCloudflareOk(fetch, apiToken, url, init) {
-  const headers = new Headers(init.headers);
+async function requestCloudflareOk(fetch, apiToken, url, init, options = {}) {
+  const operation = normalizeProviderOperation(options.operation);
+  const redactionTokens = [apiToken, ...(Array.isArray(options.redactionTokens) ? options.redactionTokens : [])];
+  const headers = new Headers(init?.headers);
   headers.set('Authorization', `Bearer ${apiToken}`);
-  const response = await fetch(
-    new Request(url, {
-      ...init,
-      headers,
-    })
-  );
+  let response;
+  try {
+    response = await fetch(
+      new Request(url, {
+        ...init,
+        headers,
+      })
+    );
+  } catch {
+    throw new WfpApiError({
+      code: 'WFP_NETWORK_ERROR',
+      message: NETWORK_ERROR_MESSAGE,
+      operation,
+    });
+  }
+
   if (response.ok) {
     return {
       status: response.status,
@@ -666,14 +782,23 @@ async function requestCloudflareOk(fetch, apiToken, url, init) {
     };
   }
 
-  const payload = await readJsonIfPossible(response);
+  const providerRequestId = readProviderRequestId(response.headers, redactionTokens);
+  const payload = await readJson(response, { operation, providerRequestId });
+  const providerError = readProviderError(payload, redactionTokens);
   throw new WfpApiError({
     status: response.status,
-    message: redactCloudflareError(payload, apiToken),
+    message: redactCloudflareError(payload, redactionTokens),
+    operation,
+    providerRequestId,
+    ...providerError,
   });
 }
 
-async function readJson(response) {
+export async function requestCloudflareProviderOk(fetch, apiToken, url, init, options = {}) {
+  return requestCloudflareOk(fetch, apiToken, url, init, options);
+}
+
+async function readJson(response, { operation, providerRequestId } = {}) {
   const text = await response.text();
   if (!text) return null;
   try {
@@ -683,27 +808,126 @@ async function readJson(response) {
       status: response.status,
       code: 'WFP_API_INVALID_JSON',
       message: 'Cloudflare API returned invalid JSON.',
+      operation,
+      providerRequestId,
     });
   }
 }
 
-async function readJsonIfPossible(response) {
-  const text = await response.text();
-  if (!text) return null;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
+function readProviderRequestId(headers, redactionTokens = []) {
+  for (const name of ['cf-ray', 'x-request-id']) {
+    const value = normalizeProviderRequestId(headers?.get(name), redactionTokens);
+    if (value) return value;
   }
+  return undefined;
 }
 
-function redactCloudflareError(payload, apiToken) {
+function readProviderError(payload, redactionTokens) {
+  const error = Array.isArray(payload?.errors) ? payload.errors[0] : null;
+  return {
+    providerCode: normalizeProviderCode(error?.code, redactionTokens),
+    providerMessage: normalizeProviderMessage(error?.message, redactionTokens),
+  };
+}
+
+function normalizeProviderOperation(value) {
+  return WFP_PROVIDER_OPERATIONS.has(value) ? value : undefined;
+}
+
+function normalizeClientCode(value) {
+  return typeof value === 'string' && WFP_CLIENT_CODE_RE.test(value) ? value : 'WFP_API_ERROR';
+}
+
+function normalizeProviderHttpStatus(value) {
+  return Number.isInteger(value) && value >= 100 && value <= 599 ? value : undefined;
+}
+
+function normalizeProviderRequestId(value, redactionTokens = []) {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim();
+  if (
+    !PROVIDER_REQUEST_ID_RE.test(normalized) ||
+    containsProviderUrl(normalized) ||
+    containsRedactionToken(normalized, redactionTokens)
+  ) {
+    return undefined;
+  }
+  return normalized;
+}
+
+function normalizeProviderCode(value, redactionTokens = []) {
+  if (typeof value !== 'string' && (typeof value !== 'number' || !Number.isFinite(value))) return undefined;
+  const normalized = String(value).trim();
+  if (
+    !normalized ||
+    normalized.length > PROVIDER_CODE_MAX_LENGTH ||
+    hasProviderControlCharacters(normalized) ||
+    containsProviderUrl(normalized) ||
+    containsRedactionToken(normalized, redactionTokens)
+  ) {
+    return undefined;
+  }
+  return normalized;
+}
+
+function normalizeProviderMessage(value, redactionTokens) {
+  if (typeof value !== 'string') return undefined;
+  const normalized = redactSensitiveText(value, redactionTokens);
+  if (!normalized) return undefined;
+  return normalized.slice(0, PROVIDER_MESSAGE_MAX_LENGTH);
+}
+
+function redactSensitiveText(value, redactionTokens = []) {
+  let normalized = replaceProviderControlCharacters(value).trim();
+  for (const token of redactionTokens) {
+    if (typeof token === 'string' && token) normalized = normalized.replaceAll(token, '[redacted]');
+  }
+  return normalized
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
+    .replace(/((?:["']?)(?:api[-_ ]?key|token|secret|password)(?:["']?)\s*[:=]\s*)(["'])(.*?)\2/gi, '$1$2[redacted]$2')
+    .replace(/((?:["']?)(?:api[-_ ]?key|token|secret|password)(?:["']?)\s*[:=]\s*)(?!["'])[^\s,;}]+/gi, '$1[redacted]')
+    .replace(/(\b(?:api[-_ ]?key|token|secret|password)\s+)(["'])(.*?)\2/gi, '$1$2[redacted]$2')
+    .replace(/(\b(?:api[-_ ]?key|token|secret|password)\s+)(?!["'])[^\s,;}]+/gi, '$1[redacted]')
+    .replace(/\bhttps?:\/\/[^\s,;}"']+/gi, '[redacted-url]');
+}
+
+function redactCloudflareError(payload, apiTokenOrTokens) {
+  const redactionTokens = Array.isArray(apiTokenOrTokens) ? apiTokenOrTokens : [apiTokenOrTokens];
   const errors = Array.isArray(payload?.errors) ? payload.errors : [];
   const message = errors
-    .map((error) => `${error.code || 'unknown'} ${error.message || ''}`.trim())
+    .map((error) => {
+      const code = normalizeProviderCode(error?.code, redactionTokens) || 'unknown';
+      const detail = typeof error?.message === 'string' ? error.message : '';
+      return `${code} ${detail}`.trim();
+    })
     .filter(Boolean)
     .join('; ');
-  return String(message || 'Cloudflare WFP API request failed.').replaceAll(apiToken, '[redacted]');
+  return redactSensitiveText(message || 'Cloudflare WFP API request failed.', redactionTokens);
+}
+
+function hasProviderControlCharacters(value) {
+  for (const character of String(value)) {
+    const code = character.codePointAt(0);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
+function replaceProviderControlCharacters(value) {
+  let result = '';
+  for (const character of String(value)) {
+    const code = character.codePointAt(0);
+    result += code <= 0x1f || code === 0x7f ? ' ' : character;
+  }
+  return result;
+}
+
+function containsRedactionToken(value, redactionTokens) {
+  return redactionTokens.some((token) => typeof token === 'string' && token && value.includes(token));
+}
+
+function containsProviderUrl(value) {
+  return /https?:\/\//i.test(String(value));
 }
 
 function scriptUrl(baseUrl, accountId, namespace, scriptName) {

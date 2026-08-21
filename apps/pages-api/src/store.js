@@ -5218,6 +5218,65 @@ export class D1PagesStore {
     return row ? mapDeployment(row) : null;
   }
 
+  async createDeploymentEvent(input) {
+    const record = deploymentEventRecord(input, this.now);
+    await this.db
+      .prepare(
+        `INSERT INTO deployment_events (
+          id, environment, trace_id, inbound_ray_id, deployment_id, site_id,
+          attempt, stage, operation, status, started_at, completed_at,
+          duration_ms, error_code, error_message, diagnostics_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .bind(
+        record.id,
+        record.environment,
+        record.traceId,
+        record.inboundRayId,
+        record.deploymentId,
+        record.siteId,
+        record.attempt,
+        record.stage,
+        record.operation,
+        record.status,
+        record.startedAt,
+        record.completedAt,
+        record.durationMs,
+        record.errorCode,
+        record.errorMessage,
+        stringifyJsonColumn(record.diagnostics),
+        record.createdAt
+      )
+      .run();
+    return cloneRecord(record);
+  }
+
+  async listDeploymentEvents({ environment, deploymentId, traceId } = {}) {
+    const normalizedEnvironment = normalizeRequiredString(environment);
+    const normalizedDeploymentId = normalizeRequiredString(deploymentId);
+    const normalizedTraceId = normalizeRequiredString(traceId);
+    if (!normalizedEnvironment || (!normalizedDeploymentId && !normalizedTraceId)) return [];
+    const filters = ['environment = ?'];
+    const values = [normalizedEnvironment];
+    if (normalizedDeploymentId) {
+      filters.push('deployment_id = ?');
+      values.push(normalizedDeploymentId);
+    }
+    if (normalizedTraceId) {
+      filters.push('trace_id = ?');
+      values.push(normalizedTraceId);
+    }
+    const result = await this.db
+      .prepare(
+        `SELECT * FROM deployment_events
+        WHERE ${filters.join(' AND ')}
+        ORDER BY started_at ASC, created_at ASC, id ASC`
+      )
+      .bind(...values)
+      .all();
+    return (result.results || []).map(mapDeploymentEvent);
+  }
+
   async updateDeployment(id, patch) {
     const existing = await this.getDeployment(id);
     if (!existing) return null;
@@ -5243,6 +5302,18 @@ export class D1PagesStore {
       )
       .run();
     return this.getDeployment(id);
+  }
+
+  async claimDeploymentTrace({ id, environment, traceId }) {
+    await this.db
+      .prepare(
+        `UPDATE deployments
+        SET trace_id = ?
+        WHERE id = ? AND environment = ? AND trace_id IS NULL`,
+      )
+      .bind(traceId, id, environment)
+      .run();
+    return this.getDeployment(id, environment);
   }
 
   async createDeploymentForIdempotency(input) {
@@ -5273,6 +5344,7 @@ export class D1PagesStore {
       idempotencyKey: input.idempotencyKey,
       idempotencyScope,
       requestHash: input.requestHash,
+      traceId: input.traceId || null,
       terminalResponseJson: input.terminalResponseJson || null,
       previousVersionId: input.previousVersionId || null,
       errorCode: input.errorCode || null,
@@ -5287,10 +5359,10 @@ export class D1PagesStore {
         `INSERT INTO deployments (
           id, environment, site_id, version_id, actor_id, actor_user_id,
           actor_type, source, operation, visibility, status, idempotency_key,
-          idempotency_scope, request_hash, terminal_response_json,
+          idempotency_scope, request_hash, trace_id, terminal_response_json,
           previous_version_id, error_code, error_message, failure_stage,
           failure_diagnostics_json, created_at, completed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         record.id,
@@ -5307,6 +5379,7 @@ export class D1PagesStore {
         record.idempotencyKey,
         record.idempotencyScope,
         record.requestHash,
+        record.traceId,
         record.terminalResponseJson,
         record.previousVersionId,
         record.errorCode,
@@ -6682,6 +6755,7 @@ function mapDeployment(row) {
     idempotencyKey: row.idempotency_key,
     idempotencyScope: row.idempotency_scope,
     requestHash: row.request_hash,
+    traceId: row.trace_id || null,
     terminalResponseJson: row.terminal_response_json,
     previousVersionId: row.previous_version_id,
     errorCode: row.error_code,
@@ -6690,6 +6764,54 @@ function mapDeployment(row) {
     failureDiagnostics: parseJsonColumn(row.failure_diagnostics_json),
     createdAt: row.created_at,
     completedAt: row.completed_at,
+  };
+}
+
+function deploymentEventRecord(input, now) {
+  const record = {
+    id: normalizeRequiredString(input.id),
+    environment: normalizeRequiredString(input.environment),
+    traceId: normalizeRequiredString(input.traceId),
+    inboundRayId: input.inboundRayId || null,
+    deploymentId: input.deploymentId || null,
+    siteId: input.siteId || null,
+    attempt: Number.isInteger(input.attempt) && input.attempt > 0 ? input.attempt : 1,
+    stage: normalizeRequiredString(input.stage),
+    operation: input.operation || null,
+    status: normalizeRequiredString(input.status),
+    startedAt: normalizeRequiredString(input.startedAt),
+    completedAt: input.completedAt || null,
+    durationMs: Number.isInteger(input.durationMs) && input.durationMs >= 0 ? input.durationMs : null,
+    errorCode: input.errorCode || null,
+    errorMessage: input.errorMessage || null,
+    diagnostics: input.diagnostics || null,
+    createdAt: input.createdAt || now(),
+  };
+  if (!record.id || !record.environment || !record.traceId || !record.stage || !record.status || !record.startedAt) {
+    throw new Error('DEPLOYMENT_EVENT_INVALID');
+  }
+  return record;
+}
+
+function mapDeploymentEvent(row) {
+  return {
+    id: row.id,
+    environment: row.environment,
+    traceId: row.trace_id,
+    inboundRayId: row.inbound_ray_id || null,
+    deploymentId: row.deployment_id || null,
+    siteId: row.site_id || null,
+    attempt: Number(row.attempt || 1),
+    stage: row.stage,
+    operation: row.operation || null,
+    status: row.status,
+    startedAt: row.started_at,
+    completedAt: row.completed_at || null,
+    durationMs: row.duration_ms === null || row.duration_ms === undefined ? null : Number(row.duration_ms),
+    errorCode: row.error_code || null,
+    errorMessage: row.error_message || null,
+    diagnostics: parseJsonColumn(row.diagnostics_json),
+    createdAt: row.created_at,
   };
 }
 

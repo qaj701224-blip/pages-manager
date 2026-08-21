@@ -38,6 +38,17 @@ test('admin dashboard requires platform admin and returns governance counts', as
     status: 'failed',
     idempotencyKey: 'dashboard-1',
     requestHash: 'hash-dashboard-1',
+    errorCode: 'DEPLOYMENT_UPLOAD_FAILED',
+    errorMessage: 'Deployment upload failed.',
+    failureStage: 'upload_worker',
+    failureDiagnostics: {
+      schemaVersion: 1,
+      provider: {
+        name: 'cloudflare_wfp',
+        operation: 'worker_put',
+        providerMessage: 'detail only',
+      },
+    },
   });
 
   const forbidden = await worker.fetch(
@@ -95,6 +106,9 @@ test('admin dashboard requires platform admin and returns governance counts', as
           source: 'cli',
           operation: 'publish',
           createdAt: '2026-07-02T00:00:00.000Z',
+          errorCode: 'DEPLOYMENT_UPLOAD_FAILED',
+          errorMessage: 'Deployment upload failed.',
+          failureStage: 'upload_worker',
         },
       ],
     },
@@ -1306,6 +1320,15 @@ test('admin site deployment list exposes redacted failure diagnostics for review
         code: 'ROUTE_SNAPSHOT_WRITE_FAILED',
         class: 'route_snapshot_store_error',
       },
+      provider: {
+        name: 'cloudflare_wfp',
+        operation: 'worker_put',
+        httpStatus: 502,
+        clientCode: 'WFP_API_ERROR',
+        providerCode: '10090',
+        providerMessage: 'provider message',
+        providerRequestId: 'ray-admin-1',
+      },
     },
   });
 
@@ -1359,11 +1382,350 @@ test('admin site deployment list exposes redacted failure diagnostics for review
             code: 'ROUTE_SNAPSHOT_WRITE_FAILED',
             class: 'route_snapshot_store_error',
           },
+          provider: {
+            name: 'cloudflare_wfp',
+            operation: 'worker_put',
+            httpStatus: 502,
+            clientCode: 'WFP_API_ERROR',
+            providerCode: '10090',
+            providerMessage: 'provider message',
+            providerRequestId: 'ray-admin-1',
+          },
         },
         createdAt: '2026-07-02T00:00:00.000Z',
       },
     ],
   });
+});
+
+test('platform admin can read an environment-scoped deployment trace timeline', async () => {
+  const store = createTestPagesStore({ now: () => '2026-08-20T08:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await store.createDeploymentForIdempotency({
+    id: 'dep_trace',
+    environment: 'production',
+    siteId: 'site_trace',
+    actorId: 'usr_root',
+    actorUserId: 'usr_root',
+    actorType: 'user',
+    source: 'cli',
+    operation: 'deploy',
+    status: 'failed',
+    idempotencyKey: 'trace-detail-1',
+    requestHash: 'hash-trace-detail-1',
+    traceId: 'dtr_trace',
+    errorCode: 'DEPLOYMENT_VERIFY_FAILED',
+    errorMessage: 'Deployment verification failed.',
+    failureStage: 'verify_worker',
+    createdAt: '2026-08-20T07:54:12.462Z',
+    completedAt: '2026-08-20T07:54:18.422Z',
+  });
+  await store.createDeploymentEvent({
+    id: 'dpe_2',
+    environment: 'production',
+    traceId: 'dtr_trace',
+    inboundRayId: null,
+    deploymentId: 'dep_trace',
+    siteId: 'site_trace',
+    attempt: 1,
+    stage: 'cleanup_or_compensation',
+    operation: 'worker_delete',
+    status: 'failed',
+    startedAt: '2026-08-20T07:54:18.100Z',
+    completedAt: '2026-08-20T07:54:18.200Z',
+    durationMs: 100,
+    errorCode: null,
+    errorMessage: null,
+    diagnostics: {
+      causeClass: 'provider_error',
+      cleanupStatus: 'failed',
+      trafficImpact: 'old_version_retained',
+      token: 'must-not-return',
+      compensation: {
+        status: 'failed',
+        operation: 'worker_delete',
+        providerMessage: 'aaaa.bbbb.cccc',
+        providerRequestId: 'ray-cleanup-safe',
+        secret: 'must-not-return',
+      },
+    },
+    createdAt: '2026-08-20T07:54:18.200Z',
+  });
+  await store.createDeploymentEvent({
+    id: 'dpe_1',
+    environment: 'production',
+    traceId: 'dtr_trace',
+    inboundRayId: 'a2dfd41a7a7796d2-SIN',
+    deploymentId: 'dep_trace',
+    siteId: 'site_trace',
+    attempt: 1,
+    stage: 'provider_verify',
+    operation: 'worker_get',
+    status: 'failed',
+    startedAt: '2026-08-20T07:54:17.000Z',
+    completedAt: '2026-08-20T07:54:18.000Z',
+    durationMs: 1000,
+    errorCode: 'DEPLOYMENT_VERIFY_FAILED',
+    errorMessage: 'Deployment verification failed.',
+    diagnostics: {
+      causeClass: 'provider_error',
+      httpStatus: 404,
+      clientCode: 'WFP_API_ERROR',
+      providerCode: '10007',
+      providerMessage: 'Worker not found',
+      providerRequestId: 'ray-verify-safe',
+      url: 'https://must-not-return.example',
+    },
+    createdAt: '2026-08-20T07:54:18.000Z',
+  });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/deployments/dep_trace/trace', {
+      userId: 'usr_root',
+      admin: true,
+    }),
+    env(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.deepEqual(body.deployment, {
+    id: 'dep_trace',
+    traceId: 'dtr_trace',
+    inboundRayId: 'a2dfd41a7a7796d2-SIN',
+    status: 'failed',
+    failureStage: 'verify_worker',
+    errorCode: 'DEPLOYMENT_VERIFY_FAILED',
+    errorMessage: 'Deployment verification failed.',
+  });
+  assert.deepEqual(
+    body.events.map((event) => ({
+      id: event.id,
+      stage: event.stage,
+      operation: event.operation,
+      status: event.status,
+      diagnostics: event.diagnostics,
+    })),
+    [
+      {
+        id: 'dpe_1',
+        stage: 'provider_verify',
+        operation: 'worker_get',
+        status: 'failed',
+        diagnostics: {
+          causeClass: 'provider_error',
+          httpStatus: 404,
+          clientCode: 'WFP_API_ERROR',
+          providerCode: '10007',
+          providerMessage: 'Worker not found',
+          providerRequestId: 'ray-verify-safe',
+        },
+      },
+      {
+        id: 'dpe_2',
+        stage: 'cleanup_or_compensation',
+        operation: 'worker_delete',
+        status: 'failed',
+        diagnostics: {
+          causeClass: 'provider_error',
+          trafficImpact: 'old_version_retained',
+          cleanupStatus: 'failed',
+          compensation: {
+            status: 'failed',
+            operation: 'worker_delete',
+            providerRequestId: 'ray-cleanup-safe',
+          },
+        },
+      },
+    ]
+  );
+  assert.doesNotMatch(JSON.stringify(body), /must-not-return/);
+  assert.doesNotMatch(JSON.stringify(body), /aaaa\.bbbb\.cccc/);
+
+  const missing = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/deployments/dep_missing/trace', {
+      userId: 'usr_root',
+      admin: true,
+    }),
+    env(store)
+  );
+  assert.equal(missing.status, 404);
+  assert.equal((await missing.json()).error.code, 'DEPLOYMENT_NOT_FOUND');
+
+  await store.createDeploymentForIdempotency({
+    id: 'dep_staging_only',
+    environment: 'staging',
+    siteId: 'site_trace',
+    actorId: 'usr_root',
+    actorUserId: 'usr_root',
+    actorType: 'user',
+    source: 'cli',
+    operation: 'deploy',
+    status: 'failed',
+    idempotencyKey: 'trace-detail-staging',
+    requestHash: 'hash-trace-detail-staging',
+    traceId: 'dtr_staging',
+  });
+  const crossEnvironment = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/deployments/dep_staging_only/trace', {
+      userId: 'usr_root',
+      admin: true,
+    }),
+    env(store)
+  );
+  assert.equal(crossEnvironment.status, 404);
+});
+
+test('platform admin can query a pre-deployment timeline by trace id', async () => {
+  const store = createTestPagesStore({ now: () => '2026-08-20T08:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await store.createDeploymentEvent({
+    id: 'dpe_predeployment',
+    environment: 'production',
+    traceId: 'dtr_predeployment',
+    inboundRayId: 'ray-predeployment-SIN',
+    deploymentId: null,
+    siteId: null,
+    attempt: 1,
+    stage: 'payload_validation',
+    operation: 'validate_content_hash',
+    status: 'failed',
+    startedAt: '2026-08-20T07:54:12.462Z',
+    completedAt: '2026-08-20T07:54:12.500Z',
+    durationMs: 38,
+    errorCode: 'CONTENT_HASH_MISMATCH',
+    errorMessage: 'Deployment content hash does not match the uploaded payload.',
+    diagnostics: { causeClass: 'payload_validation_error' },
+    createdAt: '2026-08-20T07:54:12.500Z',
+  });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/deployment-traces/dtr_predeployment', {
+      userId: 'usr_root',
+      admin: true,
+    }),
+    env(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.deployment, null);
+  assert.deepEqual(body.trace, {
+    traceId: 'dtr_predeployment',
+    inboundRayId: 'ray-predeployment-SIN',
+    deploymentId: null,
+  });
+  assert.deepEqual(
+    body.events.map((event) => ({ stage: event.stage, operation: event.operation, errorCode: event.errorCode })),
+    [
+      {
+        stage: 'payload_validation',
+        operation: 'validate_content_hash',
+        errorCode: 'CONTENT_HASH_MISMATCH',
+      },
+    ]
+  );
+
+  const missing = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/deployment-traces/dtr_missing', {
+      userId: 'usr_root',
+      admin: true,
+    }),
+    env(store)
+  );
+  assert.equal(missing.status, 404);
+  assert.equal((await missing.json()).error.code, 'DEPLOYMENT_TRACE_NOT_FOUND');
+});
+
+test('deployment trace detail falls back to the event trace id for legacy deployment rows', async () => {
+  const store = createTestPagesStore({ now: () => '2026-08-20T08:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await store.createDeploymentForIdempotency({
+    id: 'dep_event_trace',
+    environment: 'production',
+    siteId: 'site_trace',
+    actorId: 'usr_root',
+    actorUserId: 'usr_root',
+    actorType: 'user',
+    source: 'cli',
+    operation: 'deploy',
+    status: 'failed',
+    idempotencyKey: 'event-trace-fallback',
+    requestHash: 'hash-event-trace-fallback',
+    traceId: null,
+  });
+  await store.createDeploymentEvent({
+    id: 'dpe_event_trace',
+    environment: 'production',
+    traceId: 'dtr_event_trace',
+    deploymentId: 'dep_event_trace',
+    siteId: 'site_trace',
+    attempt: 1,
+    stage: 'provider_upload',
+    operation: 'worker_put',
+    status: 'failed',
+    startedAt: '2026-08-20T07:54:12.462Z',
+    completedAt: '2026-08-20T07:54:12.500Z',
+    durationMs: 38,
+  });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/deployments/dep_event_trace/trace', {
+      userId: 'usr_root',
+      admin: true,
+    }),
+    env(store)
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.trace.traceId, 'dtr_event_trace');
+  assert.equal(body.deployment.traceId, 'dtr_event_trace');
+});
+
+test('admin site deployment list exposes only the primary trace reference', async () => {
+  const store = createTestPagesStore({ now: () => '2026-08-20T08:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await store.createTeam({
+    id: 'team_trace_list',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Trace List Team',
+    createdByUserId: 'usr_root',
+  });
+  await seedTeamSite(store, {
+    id: 'site_trace_list',
+    slug: 'trace-list',
+    teamId: 'team_trace_list',
+  });
+  await store.createDeploymentForIdempotency({
+    id: 'dep_trace_list',
+    environment: 'production',
+    siteId: 'site_trace_list',
+    actorId: 'usr_root',
+    actorUserId: 'usr_root',
+    actorType: 'user',
+    source: 'cli',
+    operation: 'deploy',
+    status: 'failed',
+    idempotencyKey: 'trace-list-1',
+    requestHash: 'hash-trace-list-1',
+    traceId: 'dtr_trace_list',
+  });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_trace_list/deployments', {
+      userId: 'usr_root',
+      admin: true,
+    }),
+    env(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const deployment = (await response.json()).deployments[0];
+  assert.equal(deployment.traceId, 'dtr_trace_list');
+  assert.equal(Object.hasOwn(deployment, 'events'), false);
+  assert.equal(Object.hasOwn(deployment, 'inboundRayId'), false);
 });
 
 test('admin users can be searched by persisted profile fields', async () => {

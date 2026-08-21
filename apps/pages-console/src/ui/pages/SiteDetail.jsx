@@ -44,6 +44,7 @@ import {
 } from '../api.js';
 import { AppDialog, ConfirmDialog, SelectField } from '../components/RadixPrimitives.jsx';
 import { Sidebar } from '../components/Sidebar.jsx';
+import { DeploymentTracePanel } from '../components/DeploymentTracePanel.jsx';
 import {
   aclSubjectPlaceholder,
   aclSubjectTypeLabel,
@@ -67,7 +68,7 @@ import {
   siteOwnerCandidateLabel,
   siteOwnerCandidateMeta,
 } from '../site-settings-model.js';
-import { adminDeploymentActorView, siteVisibilityLabel } from '../site-display-model.js';
+import { adminDeploymentActorView, deploymentProviderView, siteVisibilityLabel } from '../site-display-model.js';
 import { PageHeading } from './SitesDirectory.jsx';
 
 const SITE_TABS = new Set(['overview', 'deployments', 'access', 'config', 'settings']);
@@ -419,26 +420,46 @@ function DeploymentsPanel({ state, site, scope }) {
         <span>完成时间</span>
       </div>
       {deployments.map((deployment) => (
-        <div className="deployment-entry" key={deployment.id}>
-          <div className="table-row deployment-row">
-            <div>
-              <strong title={deployment.id}>{deployment.id}</strong>
-              <span>{deployment.operation || '-'}</span>
-            </div>
-            <span>{deployment.source || 'unknown'}</span>
-            {scope === 'admin' ? (
-              <DeploymentActorCell actor={adminDeploymentActorView(deployment.actor)} />
-            ) : (
-              <span title={deploymentOwnerLabel(deployment, site)}>{deploymentOwnerLabel(deployment, site)}</span>
-            )}
-            <span className="tag muted">{deployment.status || 'unknown'}</span>
-            <span>{formatDate(deployment.createdAt)}</span>
-            <span>{formatDate(deployment.completedAt)}</span>
-          </div>
-          <DeploymentDiagnostics deployment={deployment} />
-        </div>
+        <DeploymentEntry deployment={deployment} key={deployment.id} scope={scope} site={site} />
       ))}
     </section>
+  );
+}
+
+function DeploymentEntry({ deployment, scope, site }) {
+  const [traceOpen, setTraceOpen] = useState(false);
+  return (
+    <div className="deployment-entry">
+      <div className="table-row deployment-row">
+        <div>
+          <strong title={deployment.id}>{deployment.id}</strong>
+          <span>{deployment.operation || '-'}</span>
+        </div>
+        <span>{deployment.source || 'unknown'}</span>
+        {scope === 'admin' ? (
+          <DeploymentActorCell actor={adminDeploymentActorView(deployment.actor)} />
+        ) : (
+          <span title={deploymentOwnerLabel(deployment, site)}>{deploymentOwnerLabel(deployment, site)}</span>
+        )}
+        <span className="tag muted">{deployment.status || 'unknown'}</span>
+        <span>{formatDate(deployment.createdAt)}</span>
+        <span>{formatDate(deployment.completedAt)}</span>
+      </div>
+      <DeploymentDiagnostics deployment={deployment} scope={scope} />
+      {scope === 'admin' ? (
+        <div className="deployment-trace-actions">
+          <button
+            aria-expanded={traceOpen}
+            className="table-action"
+            type="button"
+            onClick={() => setTraceOpen((current) => !current)}
+          >
+            {traceOpen ? <span>收起时间线</span> : <span>查看时间线</span>}
+          </button>
+          <DeploymentTracePanel deploymentId={deployment.id} open={traceOpen} />
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -451,8 +472,8 @@ function DeploymentActorCell({ actor }) {
   );
 }
 
-function DeploymentDiagnostics({ deployment }) {
-  const summary = deploymentFailureSummary(deployment);
+function DeploymentDiagnostics({ deployment, scope }) {
+  const summary = deploymentFailureSummary(deployment, scope === 'admin');
   if (!summary.length) return null;
 
   return (
@@ -467,7 +488,7 @@ function DeploymentDiagnostics({ deployment }) {
   );
 }
 
-function deploymentFailureSummary(deployment) {
+function deploymentFailureSummary(deployment, includeProvider = false) {
   const diagnostics = deployment.failureDiagnostics || {};
   const cause = diagnostics.cause || {};
   return [
@@ -477,6 +498,7 @@ function deploymentFailureSummary(deployment) {
     ['影响', deploymentTrafficImpactLabel(diagnostics.trafficImpact)],
     ['建议', deploymentOperatorActionLabel(diagnostics.operatorAction)],
     ['清理', diagnostics.uploadedWorkerCleanup],
+    ...(includeProvider ? deploymentProviderView(diagnostics.provider) : []),
   ].filter(([, value]) => value);
 }
 
@@ -487,6 +509,7 @@ function deploymentTrafficImpactLabel(value) {
 
 function deploymentOperatorActionLabel(value) {
   if (value === 'retry_deploy') return '重新部署';
+  if (value === 'fix_worker_source') return '修复 Worker 源码';
   if (value === 'manual_cleanup') return '人工清理';
   if (value === 'wait_drain') return '等待 drain';
   return value || '';

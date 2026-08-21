@@ -936,9 +936,29 @@ for (const backend of storeBackends) {
 
       assert.equal(created.kind, 'created');
       assert.equal(created.deployment.idempotencyScope, 'production:usr_owner:site_1:deploy');
+      assert.equal(created.deployment.traceId, 'dtr_1');
       assert.equal(replay.kind, 'existing');
       assert.equal(replay.deployment.id, 'dep_1');
       assert.equal(conflict.kind, 'conflict');
+
+      const legacy = await fixture.store.createDeploymentForIdempotency({
+        ...input,
+        id: 'dep_legacy',
+        idempotencyKey: 'legacy-trace',
+        traceId: null,
+      });
+      const claimedLegacy = await fixture.store.claimDeploymentTrace({
+        id: legacy.deployment.id,
+        environment: 'production',
+        traceId: 'dtr_legacy',
+      });
+      const retainedLegacy = await fixture.store.claimDeploymentTrace({
+        id: legacy.deployment.id,
+        environment: 'production',
+        traceId: 'dtr_other',
+      });
+      assert.equal(claimedLegacy.traceId, 'dtr_legacy');
+      assert.equal(retainedLegacy.traceId, 'dtr_legacy');
 
       const failed = await fixture.store.updateDeployment('dep_1', {
         status: 'failed',
@@ -985,6 +1005,100 @@ for (const backend of storeBackends) {
         { status: succeeded.status, attemptCount: succeeded.attemptCount, lockedUntil: succeeded.lockedUntil },
         { status: 'succeeded', attemptCount: 1, lockedUntil: null },
       );
+
+      await fixture.store.createDeploymentEvent({
+        id: 'dpe_later',
+        environment: 'production',
+        traceId: 'dtr_1',
+        inboundRayId: 'ray-1-SIN',
+        deploymentId: 'dep_1',
+        siteId: 'site_1',
+        attempt: 1,
+        stage: 'provider_upload',
+        operation: 'worker_put',
+        status: 'succeeded',
+        startedAt: '2026-07-28T00:00:02.000Z',
+        completedAt: '2026-07-28T00:00:02.025Z',
+        durationMs: 25,
+        diagnostics: { providerRequestId: 'provider-ray-1' },
+        createdAt: '2026-07-28T00:00:02.025Z',
+      });
+      for (const [id, createdAt] of [
+        ['dpe_same_time_b', '2026-07-28T00:00:02.030Z'],
+        ['dpe_same_time_a', '2026-07-28T00:00:02.030Z'],
+        ['dpe_created_later', '2026-07-28T00:00:02.040Z'],
+      ]) {
+        await fixture.store.createDeploymentEvent({
+          id,
+          environment: 'production',
+          traceId: 'dtr_1',
+          deploymentId: 'dep_1',
+          siteId: 'site_1',
+          attempt: 1,
+          stage: 'provider_verify',
+          operation: 'worker_get',
+          status: 'succeeded',
+          startedAt: '2026-07-28T00:00:02.000Z',
+          completedAt: createdAt,
+          durationMs: 30,
+          createdAt,
+        });
+      }
+      await fixture.store.createDeploymentEvent({
+        id: 'dpe_intake',
+        environment: 'production',
+        traceId: 'dtr_1',
+        inboundRayId: 'ray-1-SIN',
+        deploymentId: null,
+        siteId: null,
+        attempt: 1,
+        stage: 'intake',
+        operation: 'parse_multipart',
+        status: 'failed',
+        startedAt: '2026-07-28T00:00:01.000Z',
+        completedAt: '2026-07-28T00:00:01.010Z',
+        durationMs: 10,
+        errorCode: 'INVALID_MULTIPART',
+        errorMessage: 'Invalid multipart body.',
+        diagnostics: { causeClass: 'payload_validation_error' },
+        createdAt: '2026-07-28T00:00:01.010Z',
+      });
+
+      const byTrace = await fixture.store.listDeploymentEvents({
+        environment: 'production',
+        traceId: 'dtr_1',
+      });
+      const byDeployment = await fixture.store.listDeploymentEvents({
+        environment: 'production',
+        deploymentId: 'dep_1',
+      });
+      assert.deepEqual(
+        byTrace.map((event) => event.id),
+        ['dpe_intake', 'dpe_later', 'dpe_same_time_a', 'dpe_same_time_b', 'dpe_created_later'],
+      );
+      assert.deepEqual(
+        byDeployment.map((event) => event.id),
+        ['dpe_later', 'dpe_same_time_a', 'dpe_same_time_b', 'dpe_created_later'],
+      );
+      assert.deepEqual(byTrace[0], {
+        id: 'dpe_intake',
+        environment: 'production',
+        traceId: 'dtr_1',
+        inboundRayId: 'ray-1-SIN',
+        deploymentId: null,
+        siteId: null,
+        attempt: 1,
+        stage: 'intake',
+        operation: 'parse_multipart',
+        status: 'failed',
+        startedAt: '2026-07-28T00:00:01.000Z',
+        completedAt: '2026-07-28T00:00:01.010Z',
+        durationMs: 10,
+        errorCode: 'INVALID_MULTIPART',
+        errorMessage: 'Invalid multipart body.',
+        diagnostics: { causeClass: 'payload_validation_error' },
+        createdAt: '2026-07-28T00:00:01.010Z',
+      });
     } finally {
       fixture.dispose();
     }
@@ -1267,6 +1381,7 @@ function deploymentInput() {
     operation: 'deploy',
     idempotencyKey: 'idem_1',
     requestHash: 'sha256:request',
+    traceId: 'dtr_1',
     visibility: 'org',
     status: 'pending',
   };

@@ -14,6 +14,12 @@ const adminUsersSource = readFileSync(new URL('./pages/AdminUsers.jsx', import.m
 const apiSource = readFileSync(new URL('./api.js', import.meta.url), 'utf8');
 const appSource = readFileSync(new URL('./App.jsx', import.meta.url), 'utf8');
 const stylesSource = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
+let deploymentTracePanelSource = '';
+try {
+  deploymentTracePanelSource = readFileSync(new URL('./components/DeploymentTracePanel.jsx', import.meta.url), 'utf8');
+} catch {
+  // The red test should fail on the missing implementation, not while loading fixtures.
+}
 
 test('admin failed deployments show owner context', () => {
   assert.match(adminDashboardSource, /adminDeploymentOwnerView\(deployment\.owner\)/);
@@ -211,6 +217,49 @@ test('admin deployment failure review exposes diagnostics context', () => {
   assert.match(siteDetailSource, /failureDiagnostics/);
   assert.match(siteDetailSource, /DeploymentDiagnostics/);
   assert.match(siteDetailSource, /deploymentFailureSummary/);
+});
+
+test('deployment failure review keeps full Provider diagnostics in site detail instead of the dashboard list', () => {
+  assert.match(siteDetailSource, /deploymentProviderView\(diagnostics\.provider\)/);
+  assert.doesNotMatch(adminDashboardSource, /deploymentProviderView/);
+  assert.doesNotMatch(adminDashboardSource, /data-label="Provider"/);
+});
+
+test('admin deployment rows load and display a reusable trace timeline', () => {
+  assert.match(adminDashboardSource, /<DeploymentTracePanel/);
+  assert.match(adminDashboardSource, />\s*查看时间线\s*</);
+  assert.match(deploymentTracePanelSource, /getAdminDeploymentTrace\(deploymentId\)/);
+  assert.match(deploymentTracePanelSource, /mounted\.current = true/);
+  assert.match(deploymentTracePanelSource, /state\.status === 'loading'/);
+  assert.match(deploymentTracePanelSource, /state\.status === 'error'/);
+  assert.match(deploymentTracePanelSource, /该部署没有阶段事件，仅可查看终态摘要/);
+  assert.match(deploymentTracePanelSource, /\['错误说明', deployment\.errorMessage\]/);
+  assert.match(deploymentTracePanelSource, /deploymentTraceEventView\(event\)/);
+  assert.match(deploymentTracePanelSource, /\['Provider', view\.provider, view\.providerTitle\]/);
+  assert.match(deploymentTracePanelSource, /\['清理', view\.cleanup/);
+  assert.match(deploymentTracePanelSource, /Provider Request ID/);
+  assert.match(stylesSource, /\.deployment-trace-table/);
+  assert.match(stylesSource, /\.deployment-trace-impact/);
+  assert.match(stylesSource, /\.admin-table \.deployment-trace-table td/);
+  assert.match(stylesSource, /@media \(max-width: 900px\)[\s\S]*?\.deployment-trace-table tbody\s*\{[\s\S]*?display:\s*grid;/);
+});
+
+test('mobile admin deployment timeline overrides the generic table cell grid after it is declared', () => {
+  const media640Start = stylesSource.indexOf('@media (max-width: 640px)');
+  const media640Source = stylesSource.slice(media640Start, stylesSource.indexOf('@media (max-width: 520px)', media640Start));
+  const genericCellRule = media640Source.lastIndexOf('.admin-table td {');
+  const traceCellRule = media640Source.lastIndexOf('.admin-table .deployment-trace-row > td {');
+
+  assert.ok(genericCellRule >= 0);
+  assert.ok(traceCellRule > genericCellRule);
+  assert.match(
+    media640Source.slice(traceCellRule),
+    /\.admin-table \.deployment-trace-row > td\s*\{[\s\S]*?display:\s*block;[\s\S]*?padding:\s*0;/
+  );
+  assert.match(
+    media640Source.slice(traceCellRule),
+    /\.admin-table \.deployment-trace-row > td::before\s*\{[\s\S]*?display:\s*none;/
+  );
 });
 
 test('admin deep routes stay under the admin guard', () => {

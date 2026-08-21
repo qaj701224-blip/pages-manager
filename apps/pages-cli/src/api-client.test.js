@@ -11,13 +11,13 @@ test('API client sends bearer credential and JSON body with idempotency key', as
     credential: { type: 'cli_token', value: 'cli_secret' },
     fetch: async (request) => {
       calls.push(request);
-      return Response.json({ ok: true });
+      return Response.json({ ok: true }, { headers: { 'X-Deployment-Trace-Id': 'dtr_cli_success' } });
     },
   });
 
   assert.deepEqual(
     await client.requestApi('POST', '/.xd-pages/api/deployments', { siteId: 'site_1' }, { idempotencyKey: 'idem_1' }),
-    { ok: true }
+    { ok: true, deploymentTraceId: 'dtr_cli_success' }
   );
 
   const request = calls[0];
@@ -118,6 +118,37 @@ test('API client turns safe error envelopes into ApiError', async () => {
         httpStatus: 502,
         providerEndpointType: 'sso_profile',
       });
+      return true;
+    }
+  );
+});
+
+test('API client preserves a safe deployment trace header on API errors', async () => {
+  const client = createApiClient({
+    apiBaseUrl: 'https://api.pages.xd.team',
+    authBaseUrl: 'https://auth.pages.xd.team',
+    credential: { type: 'access_key', value: 'xdpak_production_ak_1_secret' },
+    fetch: async () =>
+      Response.json(
+        {
+          error: {
+            code: 'DEPLOYMENT_UPLOAD_FAILED',
+            message: 'Deployment upload failed.',
+            deploymentTraceId: 'dtr_spoofed_body',
+          },
+        },
+        {
+          status: 502,
+          headers: { 'X-Deployment-Trace-Id': 'dtr_cli_failure' },
+        }
+      ),
+  });
+
+  await assert.rejects(
+    () => client.requestApiForm('POST', '/.xd-pages/api/deployments', new FormData()),
+    (error) => {
+      assert.equal(error instanceof ApiError, true);
+      assert.equal(error.deploymentTraceId, 'dtr_cli_failure');
       return true;
     }
   );
@@ -242,6 +273,31 @@ test('API client explains non-JSON responses with HTTP context', async () => {
       assert.match(error.message, /text\/html/);
       assert.match(error.action, /服务地址和网络访问/);
       assert.doesNotMatch(error.action, /xd-cell env|--env/);
+      return true;
+    }
+  );
+});
+
+test('API client preserves deployment trace context when a deployment response is not JSON', async () => {
+  const client = createApiClient({
+    apiBaseUrl: 'https://api.pages.xd.team',
+    authBaseUrl: 'https://auth.pages.xd.team',
+    credential: { type: 'cli_token', value: 'cli_secret' },
+    fetch: async () =>
+      new Response('<!doctype html><title>bad gateway</title>', {
+        status: 502,
+        headers: {
+          'Content-Type': 'text/html; charset=utf-8',
+          'X-Deployment-Trace-Id': 'dtr_invalid_json',
+        },
+      }),
+  });
+
+  await assert.rejects(
+    () => client.requestApiForm('POST', '/.xd-pages/api/deployments', new FormData()),
+    (error) => {
+      assert.equal(error.code, 'INVALID_JSON_RESPONSE');
+      assert.equal(error.deploymentTraceId, 'dtr_invalid_json');
       return true;
     }
   );

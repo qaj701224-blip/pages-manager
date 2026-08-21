@@ -66,6 +66,55 @@ test('health rejects legacy token headers', async () => {
   assert.equal(body.error.action, 'Run `xd-cell login` or use an XD Cell access key.');
 });
 
+test('POST deployment routes keep a trace header and safe fallback log when the Store is unavailable', async () => {
+  for (const pathname of ['/.xd-pages/api/deployments', '/.xd-pages/api/versions/ver_1/rollback']) {
+    const lines = [];
+    const response = await worker.fetch(new Request(`https://api.pages.xd.team${pathname}`, { method: 'POST' }), {
+      PAGES_ENV: 'production',
+      nextId: (prefix) => `${prefix}_store_unavailable`,
+      logDeploymentTraceWriteFailed: (line) => lines.push(line),
+    });
+
+    assert.equal(response.status, 500);
+    assert.equal(response.headers.get('X-Deployment-Trace-Id'), 'dtr_store_unavailable');
+    assert.equal((await response.json()).error.code, 'API_STORE_UNAVAILABLE');
+    assert.equal(lines.length, 1);
+    assert.deepEqual(JSON.parse(lines[0]), {
+      event: 'pages_deployment_trace_write_failed',
+      traceId: 'dtr_store_unavailable',
+      deploymentId: null,
+      stage: 'deployment_record',
+      operation: 'create_store',
+      causeClass: 'event_store_error',
+    });
+  }
+});
+
+test('POST deployment preflight rejections still expose a server trace header', async () => {
+  for (const [url, headers, code] of [
+    ['http://api.pages.xd.team/.xd-pages/api/deployments', {}, 'HTTPS_REQUIRED'],
+    ['http://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback', {}, 'HTTPS_REQUIRED'],
+    [
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      { 'X-Pages-Token': 'legacy-must-not-be-logged' },
+      'LEGACY_TOKEN_UNSUPPORTED',
+    ],
+    [
+      'https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback',
+      { 'X-Pages-Token': 'legacy-must-not-be-logged' },
+      'LEGACY_TOKEN_UNSUPPORTED',
+    ],
+  ]) {
+    const response = await worker.fetch(new Request(url, { method: 'POST', headers }), {
+      PAGES_ENV: 'production',
+      nextId: (prefix) => `${prefix}_preflight`,
+    });
+
+    assert.equal((await response.clone().json()).error.code, code);
+    assert.equal(response.headers.get('X-Deployment-Trace-Id'), 'dtr_preflight');
+  }
+});
+
 test('scheduled handler runs due WFP cleanup tasks', async () => {
   const store = createTestPagesStore({
     now: () => '2026-06-15T00:00:00.000Z',
@@ -349,6 +398,19 @@ test('invalid environment fails closed', async () => {
   assert.equal(body.error.action, 'Check the pages-api Worker environment configuration.');
 });
 
+test('POST deployment routes keep a trace header when the API environment is invalid', async () => {
+  for (const pathname of ['/.xd-pages/api/deployments', '/.xd-pages/api/versions/ver_1/rollback']) {
+    const response = await worker.fetch(new Request(`https://api.pages.xd.team${pathname}`, { method: 'POST' }), {
+      PAGES_ENV: 'preview',
+      nextId: (prefix) => `${prefix}_invalid_environment`,
+    });
+
+    assert.equal(response.status, 500);
+    assert.equal((await response.clone().json()).error.code, 'API_ENV_INVALID');
+    assert.equal(response.headers.get('X-Deployment-Trace-Id'), 'dtr_invalid_environment');
+  }
+});
+
 test('unknown endpoints return safe JSON errors', async () => {
   const response = await worker.fetch(
     new Request('https://api.pages.xd.team/.xd-pages/api/missing', {
@@ -428,10 +490,7 @@ test('every OpenAPI management operation reaches API authentication outside the 
         );
 
         assert.equal(response.status, 401, `${method.toUpperCase()} ${pathname}`);
-        assert.equal(
-          (await response.json()).error.code,
-          isConsoleBffPath ? 'CONSOLE_AUTH_REQUIRED' : 'PAGES_AUTH_REQUIRED'
-        );
+        assert.equal((await response.json()).error.code, isConsoleBffPath ? 'CONSOLE_AUTH_REQUIRED' : 'PAGES_AUTH_REQUIRED');
       });
     }
   }
@@ -615,10 +674,7 @@ test('internal CLI access-key exchange enforces environment and TTL policy', asy
     }
   );
   assert.equal(defaultTtl.status, 201);
-  assert.equal(
-    (await defaultTtl.json()).accessKey.expiresAt,
-    new Date((1_800_000_000 + 31_536_000) * 1000).toISOString()
-  );
+  assert.equal((await defaultTtl.json()).accessKey.expiresAt, new Date((1_800_000_000 + 31_536_000) * 1000).toISOString());
 
   const response = await worker.fetch(
     jsonRequest('https://pages-api.internal/.xd-pages/internal/cli-access-keys', {

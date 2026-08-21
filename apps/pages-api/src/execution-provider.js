@@ -1,4 +1,4 @@
-import { normalizeWorkerBindings } from '@xd/wfp-client';
+import { normalizeWorkerBindings, requestCloudflareProvider, requestCloudflareProviderOk } from '@xd/wfp-client';
 import {
   createDeploymentProvider as createWfpDeploymentProvider,
   kvGatewayServiceBinding,
@@ -9,7 +9,6 @@ import { runtimeBindingsForProvider } from './runtime-config.js';
 const EXECUTION_MODES = new Set(['wfp', 'normal-worker-slot']);
 const DEFAULT_EXECUTION_MODE = 'wfp';
 const DEFAULT_CF_API_BASE_URL = 'https://api.cloudflare.com/client/v4';
-const WORKER_SUBDOMAIN_DISABLE_FAILED = 'WORKER_SUBDOMAIN_DISABLE_FAILED';
 const ASSETS_WORKER_MODULE = `export default {
   fetch(request, env) {
     return env.ASSETS.fetch(request);
@@ -77,7 +76,7 @@ function createNormalWorkerSlotProvider(env, config, store) {
         await cleanupAssignedSlotAfterUploadFailure({
           store,
           slot,
-          input: { ...input, errorCode: error?.code },
+          input: { ...input, errorCode: error?.code, errorOperation: error?.operation },
           env,
           getClient,
           injectedProvider,
@@ -120,10 +119,7 @@ function createNormalWorkerSlotProvider(env, config, store) {
 
     async cleanupRetainedSlot(input) {
       if (!input?.slotId || !input?.versionId || input.slotId === input.activeSlotId) return null;
-      if (
-        typeof store.markWorkerSlotCleanupPending !== 'function' ||
-        typeof store.releaseCleanupWorkerSlot !== 'function'
-      ) {
+      if (typeof store.markWorkerSlotCleanupPending !== 'function' || typeof store.releaseCleanupWorkerSlot !== 'function') {
         return null;
       }
       const slot = await store.markWorkerSlotCleanupPending(input.slotId, {
@@ -153,7 +149,7 @@ function createNormalWorkerSlotProvider(env, config, store) {
   }
 }
 
-function createOrdinaryWorkerClient(env, config) {
+export function createOrdinaryWorkerClient(env, config) {
   const accountId = readRequired(env.CF_ACCOUNT_ID, 'CF_ACCOUNT_ID');
   const apiToken = readRequired(env.CF_API_TOKEN, 'CF_API_TOKEN');
   const apiBaseUrl = normalizeApiBase(env.CF_API_BASE_URL || DEFAULT_CF_API_BASE_URL, config.environment);
@@ -172,6 +168,9 @@ function createOrdinaryWorkerClient(env, config) {
       bindings = [],
     }) {
       const safeBindings = normalizeWorkerBindings(bindings);
+      const redactionTokens = safeBindings
+        .filter((binding) => binding.type === 'secret_text' && typeof binding.text === 'string')
+        .map((binding) => binding.text);
       await disableWorkerSubdomain(fetchImpl, apiToken, apiBaseUrl, accountId, scriptName);
       const usesAssets = decisionRequiresAssets(decision);
       const usesUserWorker = decisionRequiresWorker(decision);
@@ -189,6 +188,7 @@ function createOrdinaryWorkerClient(env, config) {
           decision,
           assetManifest,
           assetFiles,
+          redactionTokens,
         });
         if (!usesUserWorker) {
           safeMainModule = 'worker.mjs';
@@ -215,17 +215,23 @@ function createOrdinaryWorkerClient(env, config) {
       if (metadataBindings.length > 0) metadata.bindings = metadataBindings;
       if (assetMetadata) metadata.assets = assetMetadata;
       const form = new FormData();
-      form.set(
-        'metadata',
-        new Blob([JSON.stringify(metadata)], { type: 'application/json' })
-      );
+      form.set('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
       for (const module of safeModules) {
         form.set(module.name, new Blob([module.content], { type: module.type || 'application/javascript+module' }), module.name);
       }
-      const result = await requestCloudflare(fetchImpl, apiToken, scriptUrl(apiBaseUrl, accountId, scriptName), {
-        method: 'PUT',
-        body: form,
-      });
+      const result = await requestCloudflareProvider(
+        fetchImpl,
+        apiToken,
+        scriptUrl(apiBaseUrl, accountId, scriptName),
+        {
+          method: 'PUT',
+          body: form,
+        },
+        {
+          operation: 'worker_put',
+          redactionTokens: [...redactionTokens, ...(assetMetadata?.jwt ? [assetMetadata.jwt] : [])],
+        }
+      );
       try {
         await disableWorkerSubdomain(fetchImpl, apiToken, apiBaseUrl, accountId, scriptName);
       } catch (error) {
@@ -236,7 +242,23 @@ function createOrdinaryWorkerClient(env, config) {
     },
 
     async getWorker(scriptName) {
-      return requestCloudflareOk(fetchImpl, apiToken, scriptUrl(apiBaseUrl, accountId, scriptName), { method: 'GET' });
+      return requestCloudflareProviderOk(
+        fetchImpl,
+        apiToken,
+        scriptUrl(apiBaseUrl, accountId, scriptName),
+        { method: 'GET' },
+        { operation: 'worker_get' }
+      );
+    },
+
+    async deleteWorker(scriptName) {
+      return requestCloudflareProvider(
+        fetchImpl,
+        apiToken,
+        scriptUrl(apiBaseUrl, accountId, scriptName),
+        { method: 'DELETE' },
+        { operation: 'worker_delete' }
+      );
     },
 
     async putPlaceholderWorker({ scriptName, compatibilityDate }) {
@@ -249,10 +271,16 @@ function createOrdinaryWorkerClient(env, config) {
       const form = new FormData();
       form.set('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
       form.set('worker.mjs', new Blob([PLACEHOLDER_WORKER_MODULE], { type: 'application/javascript+module' }), 'worker.mjs');
-      const result = await requestCloudflare(fetchImpl, apiToken, scriptUrl(apiBaseUrl, accountId, scriptName), {
-        method: 'PUT',
-        body: form,
-      });
+      const result = await requestCloudflareProvider(
+        fetchImpl,
+        apiToken,
+        scriptUrl(apiBaseUrl, accountId, scriptName),
+        {
+          method: 'PUT',
+          body: form,
+        },
+        { operation: 'worker_placeholder_put' }
+      );
       await disableWorkerSubdomain(fetchImpl, apiToken, apiBaseUrl, accountId, scriptName);
       return result;
     },
@@ -261,7 +289,13 @@ function createOrdinaryWorkerClient(env, config) {
 
 async function deleteWorkerScript(fetchImpl, apiToken, apiBaseUrl, accountId, scriptName) {
   try {
-    await requestCloudflare(fetchImpl, apiToken, scriptUrl(apiBaseUrl, accountId, scriptName), { method: 'DELETE' });
+    await requestCloudflareProvider(
+      fetchImpl,
+      apiToken,
+      scriptUrl(apiBaseUrl, accountId, scriptName),
+      { method: 'DELETE' },
+      { operation: 'worker_delete' }
+    );
   } catch {
     // The caller still fails closed by disabling the slot record; manual cleanup can retry by worker name.
   }
@@ -276,13 +310,20 @@ async function uploadAssets({
   decision,
   assetManifest,
   assetFiles,
+  redactionTokens = [],
 }) {
   validateAssetInput({ decision, assetManifest, assetFiles });
-  const session = await requestCloudflare(fetchImpl, apiToken, `${scriptResourceUrl}/assets-upload-session`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ manifest: assetManifest }),
-  });
+  const session = await requestCloudflareProvider(
+    fetchImpl,
+    apiToken,
+    `${scriptResourceUrl}/assets-upload-session`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ manifest: assetManifest }),
+    },
+    { operation: 'assets_upload_session', redactionTokens }
+  );
 
   if (!Array.isArray(session?.buckets) || session.buckets.length === 0) return session.jwt;
 
@@ -295,10 +336,16 @@ async function uploadAssets({
       if (!file) continue;
       form.set(hash, new Blob([bytesToBase64(file.bytes)], { type: file.contentType || 'application/octet-stream' }), hash);
     }
-    const result = await requestCloudflare(fetchImpl, session.jwt, assetUploadUrl(apiBaseUrl, accountId), {
-      method: 'POST',
-      body: form,
-    });
+    const result = await requestCloudflareProvider(
+      fetchImpl,
+      session.jwt,
+      assetUploadUrl(apiBaseUrl, accountId),
+      {
+        method: 'POST',
+        body: form,
+      },
+      { operation: 'assets_upload', redactionTokens: [apiToken, ...redactionTokens] }
+    );
     if (result?.jwt) completionJwt = result.jwt;
   }
   return completionJwt;
@@ -324,7 +371,9 @@ function assetFileMap(assetManifest, assetFiles) {
 }
 
 function normalizeAssetPath(value) {
-  return `/${String(value || '').replaceAll('\\', '/').replace(/^\/+/, '')}`;
+  return `/${String(value || '')
+    .replaceAll('\\', '/')
+    .replace(/^\/+/, '')}`;
 }
 
 function assetConfigForDecision(decision) {
@@ -384,14 +433,11 @@ async function cleanupUploadedSlotBeforeReuse({ store, input, env, getClient, in
 }
 
 async function cleanupAssignedSlotAfterUploadFailure({ store, slot, input, env, getClient, injectedProvider }) {
-  if (input?.errorCode === WORKER_SUBDOMAIN_DISABLE_FAILED) {
+  if (input?.errorOperation === 'worker_subdomain_disable') {
     await releaseSlot(store, slot.id, env, 'disabled');
     return;
   }
-  if (
-    typeof store.markWorkerSlotCleanupPending !== 'function' ||
-    typeof store.releaseCleanupWorkerSlot !== 'function'
-  ) {
+  if (typeof store.markWorkerSlotCleanupPending !== 'function' || typeof store.releaseCleanupWorkerSlot !== 'function') {
     await releaseSlot(store, slot.id, env, 'disabled');
     return;
   }
@@ -422,27 +468,6 @@ async function cleanupAssignedSlotAfterUploadFailure({ store, slot, input, env, 
   }
 }
 
-async function requestCloudflare(fetchImpl, apiToken, url, init) {
-  const headers = new Headers(init.headers);
-  headers.set('Authorization', `Bearer ${apiToken}`);
-  const response = await fetchImpl(new Request(url, { ...init, headers }));
-  const text = await response.text();
-  const payload = text ? JSON.parse(text) : null;
-  if (!response.ok || payload?.success === false) throw new Error('CLOUDFLARE_WORKER_API_ERROR');
-  return payload?.result ?? payload;
-}
-
-async function requestCloudflareOk(fetchImpl, apiToken, url, init) {
-  const headers = new Headers(init.headers);
-  headers.set('Authorization', `Bearer ${apiToken}`);
-  const response = await fetchImpl(new Request(url, { ...init, headers }));
-  if (!response.ok) throw new Error('CLOUDFLARE_WORKER_API_ERROR');
-  return {
-    status: response.status,
-    contentType: response.headers.get('Content-Type') || '',
-  };
-}
-
 function scriptUrl(apiBaseUrl, accountId, scriptName) {
   return `${apiBaseUrl}/accounts/${encodeURIComponent(accountId)}/workers/scripts/${encodeURIComponent(scriptName)}`;
 }
@@ -454,17 +479,17 @@ function subdomainUrl(apiBaseUrl, accountId, scriptName) {
 }
 
 async function disableWorkerSubdomain(fetchImpl, apiToken, apiBaseUrl, accountId, scriptName) {
-  try {
-    return await requestCloudflare(fetchImpl, apiToken, subdomainUrl(apiBaseUrl, accountId, scriptName), {
+  return requestCloudflareProvider(
+    fetchImpl,
+    apiToken,
+    subdomainUrl(apiBaseUrl, accountId, scriptName),
+    {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled: false }),
-    });
-  } catch {
-    const error = new Error(WORKER_SUBDOMAIN_DISABLE_FAILED);
-    error.code = WORKER_SUBDOMAIN_DISABLE_FAILED;
-    throw error;
-  }
+    },
+    { operation: 'worker_subdomain_disable' }
+  );
 }
 
 function normalizeApiBase(value, environment) {

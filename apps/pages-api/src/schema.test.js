@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { SCHEMA_VERSION, createSchemaSql } from './schema.js';
@@ -16,6 +17,7 @@ test('schema defines all v2 authority tables', () => {
     'site_vars',
     'worker_slots',
     'deployments',
+    'deployment_events',
     'deployment_resource_cleanup_tasks',
     'site_members',
     'site_acl_entries',
@@ -29,7 +31,7 @@ test('schema defines all v2 authority tables', () => {
     'webhook_deliveries',
   ];
 
-  assert.equal(SCHEMA_VERSION, 19);
+  assert.equal(SCHEMA_VERSION, 20);
   for (const table of tables) {
     assert.match(sql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}\\b`));
   }
@@ -49,7 +51,7 @@ test('schema defines the Cindy connection membership identity column', () => {
 test('schema defines XDMaker identity and access-key source columns without S2S guard tables', () => {
   const sql = createSchemaSql().join('\n');
 
-  assert.equal(SCHEMA_VERSION, 19);
+  assert.equal(SCHEMA_VERSION, 20);
   assert.match(sql, /feishu_open_id TEXT/);
   assert.match(sql, /created_source TEXT NOT NULL DEFAULT 'xd_sso'/);
   assert.match(sql, /issued_source TEXT NOT NULL DEFAULT 'legacy'/);
@@ -93,8 +95,23 @@ test('schema includes authority indexes for routing, idempotency, and access key
   assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_hostname_claims_environment_slug_live/);
   assert.match(sql, /WHERE status IN \('pending', 'active', 'held', 'conflicted'\)/);
   assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_deployments_idempotency/);
+  assert.match(sql, /trace_id TEXT/);
   assert.match(sql, /failure_stage TEXT/);
   assert.match(sql, /failure_diagnostics_json TEXT/);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS deployment_events/);
+  assert.match(sql, /inbound_ray_id TEXT/);
+  assert.match(
+    sql,
+    /CREATE INDEX IF NOT EXISTS idx_deployment_events_deployment\s+ON deployment_events\(environment, deployment_id, started_at\)/
+  );
+  assert.match(
+    sql,
+    /CREATE INDEX IF NOT EXISTS idx_deployment_events_trace\s+ON deployment_events\(environment, trace_id, started_at\)/
+  );
+  assert.match(
+    sql,
+    /CREATE INDEX IF NOT EXISTS idx_deployment_events_site\s+ON deployment_events\(environment, site_id, created_at\)/
+  );
   assert.match(sql, /resource_type TEXT NOT NULL/);
   assert.match(sql, /cleanup_after TEXT NOT NULL/);
   assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_cleanup_tasks_environment_status/);
@@ -152,4 +169,15 @@ test('schema includes authority indexes for routing, idempotency, and access key
   assert.doesNotMatch(sql, /X-Pages-Token/);
   assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_worker_slots_environment_binding/);
   assert.doesNotMatch(sql, /workers\.xd\.team/);
+});
+
+test('deployment traceability migration only adds nullable deployment trace state and event storage', () => {
+  const sql = readFileSync(new URL('../migrations/0020_deployment_traceability.sql', import.meta.url), 'utf8');
+
+  assert.match(sql, /ALTER TABLE deployments ADD COLUMN trace_id TEXT/);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS deployment_events/);
+  assert.match(sql, /deployment_id TEXT/);
+  assert.match(sql, /inbound_ray_id TEXT/);
+  assert.match(sql, /diagnostics_json TEXT/);
+  assert.doesNotMatch(sql, /DROP TABLE|DROP COLUMN|DELETE FROM deployments/i);
 });
