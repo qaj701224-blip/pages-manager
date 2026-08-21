@@ -37,6 +37,7 @@ import { createExposureSnapshotFinalization } from './application/governance/fin
 import { createSiteExposureUpdate } from './application/governance/update-site-exposure.js';
 import { createWorkerOrphanScan } from './application/governance/scan-worker-orphans.js';
 import { createWorkerOrphanBackfill } from './application/governance/backfill-worker-orphans.js';
+import { createNormalWorkersQuery, projectNormalWorker } from './application/governance/list-normal-workers.js';
 import { buildRouteSnapshot, clearRoutePointerIfCurrent, readRouteSnapshotState } from './route-snapshot.js';
 import { createDeploymentProvider } from './execution-provider.js';
 import { sanitizeDeploymentTraceDiagnostics } from './deployment-trace.js';
@@ -1018,8 +1019,10 @@ async function listAdminNormalWorkers(config, store) {
   if (typeof store.listAdminNormalWorkers !== 'function') {
     return jsonError('NORMAL_WORKERS_UNSUPPORTED', 'Normal Worker management is unavailable.', 503, 'Retry later.');
   }
-  const workers = await store.listAdminNormalWorkers({ environment: config.environment });
-  return jsonOk({ workers: workers.map(formatAdminNormalWorker) });
+  const workers = await createNormalWorkersQuery({
+    workers: { list: (query) => store.listAdminNormalWorkers(query) },
+  }).list({ environment: config.environment });
+  return jsonOk({ workers });
 }
 
 async function listDeploymentCleanups(url, env, config, store) {
@@ -1854,7 +1857,7 @@ async function mapNormalWorkerDeleteBatch(ids, mapper) {
 }
 
 async function deleteAdminNormalWorkerRecord({ env, config, store, session, worker, reason }) {
-  const formatted = formatAdminNormalWorker(worker);
+  const formatted = projectNormalWorker(worker);
   if (!formatted.canDelete) {
     return {
       id: worker.id,
@@ -1892,7 +1895,7 @@ async function deleteAdminNormalWorkerRecord({ env, config, store, session, work
         id: worker.id,
         status: 'delete_pending',
         httpStatus: 202,
-        worker: formatAdminNormalWorker(pending),
+        worker: projectNormalWorker(pending),
         warning: normalWorkerDeletePendingWarning(),
       };
     }
@@ -1936,7 +1939,7 @@ async function deleteAdminNormalWorkerRecord({ env, config, store, session, work
     id: worker.id,
     status: 'retired',
     httpStatus: 200,
-    worker: formatAdminNormalWorker(retired),
+    worker: projectNormalWorker(retired),
   };
 }
 
@@ -1957,40 +1960,6 @@ async function listAdminUsers(url, config, store) {
       offset: result.offset,
     },
   });
-}
-
-function formatAdminNormalWorker(worker) {
-  const activeRoute = worker.activeRoute || null;
-  const lifecycle = activeRoute
-    ? 'active'
-    : worker.status === 'retired'
-      ? 'retired'
-      : isNormalWorkerDeletableStatus(worker.status)
-        ? 'idle'
-        : worker.status;
-  return {
-    id: worker.id,
-    environment: worker.environment,
-    slotNumber: worker.slotNumber,
-    workerName: worker.workerName,
-    bindingName: worker.bindingName,
-    status: worker.status,
-    lifecycle,
-    canDelete: lifecycle === 'idle',
-    activeRoute: activeRoute
-      ? {
-          siteId: activeRoute.siteId,
-          routeId: activeRoute.routeId,
-          activeVersionId: activeRoute.activeVersionId,
-          hostname: activeRoute.hostname,
-        }
-      : null,
-    updatedAt: worker.updatedAt,
-  };
-}
-
-function isNormalWorkerDeletableStatus(status) {
-  return ['available', 'assigned', 'cleanup_pending', 'disabled', 'delete_pending'].includes(status);
 }
 
 function normalWorkerDeleteResultResponse(result) {
