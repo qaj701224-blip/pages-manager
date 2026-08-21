@@ -1,6 +1,14 @@
-export function createDeploymentRouteSnapshotRecovery({ routes, runtimeConfig, routeSnapshots, telemetry, repairs }) {
+export function createDeploymentRouteSnapshotRecovery({
+  routes,
+  runtimeConfig,
+  ownerTransfers,
+  routeSnapshots,
+  telemetry,
+  repairs,
+}) {
   if (typeof routes?.restore !== 'function') throw new TypeError('routes.restore is required');
   if (typeof runtimeConfig?.restore !== 'function') throw new TypeError('runtimeConfig.restore is required');
+  if (typeof ownerTransfers?.restore !== 'function') throw new TypeError('ownerTransfers.restore is required');
   if (typeof routeSnapshots?.writeRestored !== 'function') {
     throw new TypeError('routeSnapshots.writeRestored is required');
   }
@@ -32,7 +40,12 @@ export function createDeploymentRouteSnapshotRecovery({ routes, runtimeConfig, r
       restorationFailed = true;
     }
 
-    const restoredSite = (await restoreOwner(routes, command)) || command.site;
+    const restoredSite =
+      (await ownerTransfers.restore({
+        siteId: command.siteId,
+        environment: command.environment,
+        ...(command.ownerTransfer || {}),
+      })) || command.site;
     const restoredSnapshotWritten = restorationFailed
       ? false
       : await routeSnapshots.writeRestored({
@@ -61,21 +74,5 @@ export function createDeploymentRouteSnapshotRecovery({ routes, runtimeConfig, r
       });
     }
     return result;
-  }
-}
-
-async function restoreOwner(routes, command) {
-  const previousSite = command.ownerTransfer?.previousSite;
-  if (!command.ownerTransfer?.enabled || !previousSite || typeof routes.restoreOwner !== 'function') return null;
-  try {
-    return await routes.restoreOwner(command.siteId, {
-      ownerType: previousSite.ownerType || 'user',
-      ownerId: previousSite.ownerId || previousSite.ownerUserId,
-      ownerUserId: previousSite.ownerUserId,
-      defaultVisibility: previousSite.defaultVisibility,
-      updatedAt: previousSite.updatedAt,
-    }, command.environment);
-  } catch {
-    return null;
   }
 }

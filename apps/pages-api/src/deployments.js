@@ -29,6 +29,7 @@ import { createDeploySiteResolution } from './application/deployments/resolve-de
 import { createRollbackSiteResolution } from './application/deployments/resolve-rollback-site.js';
 import { createDeploymentRuntimeConfigResolution } from './application/deployments/resolve-runtime-config.js';
 import { createDeploymentRuntimeConfigRestoration } from './application/deployments/restore-runtime-config.js';
+import { createDeploymentOwnerTransferRestoration } from './application/deployments/restore-owner-transfer.js';
 import { createDeploymentCommitLease } from './application/deployments/run-under-commit-lease.js';
 import { createDeploymentRuntimeConfigSnapshotValidation } from './application/deployments/validate-runtime-config-snapshot.js';
 import { createDeploySiteResolutionPort } from './application/ports/deploy-site-resolution.js';
@@ -1009,7 +1010,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
       enabled: workerRuntimeVarsProvided,
     });
     site =
-      (await restoreDeployOwnerTransferAfterFailure(store, {
+      (await createDeploymentOwnerTransferRestorationApplication(store).restore({
         siteId,
         previousSite: ownerTransferRollbackSite,
         environment: config.environment,
@@ -1120,7 +1121,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
         enabled: workerRuntimeVarsProvided,
       });
       site =
-        (await restoreDeployOwnerTransferAfterFailure(store, {
+        (await createDeploymentOwnerTransferRestorationApplication(store).restore({
           siteId,
           previousSite: ownerTransferRollbackSite,
           environment: config.environment,
@@ -1166,7 +1167,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
       enabled: workerRuntimeVarsProvided,
     });
     site =
-      (await restoreDeployOwnerTransferAfterFailure(store, {
+      (await createDeploymentOwnerTransferRestorationApplication(store).restore({
         siteId,
         previousSite: ownerTransferRollbackSite,
         environment: config.environment,
@@ -1691,25 +1692,6 @@ async function applyPendingDeployOwnerTransfer(store, actor, config, env, site, 
     site: updated,
     ownerTransfer: auditEvent.metadata,
   };
-}
-
-async function restoreDeployOwnerTransferAfterFailure(store, { siteId, previousSite, environment, enabled }) {
-  if (!enabled || !previousSite || typeof store.transferSiteOwner !== 'function') return null;
-  try {
-    return await store.transferSiteOwner(
-      siteId,
-      {
-        ownerType: previousSite.ownerType || 'user',
-        ownerId: previousSite.ownerId || previousSite.ownerUserId,
-        ownerUserId: previousSite.ownerUserId,
-        defaultVisibility: previousSite.defaultVisibility,
-        updatedAt: previousSite.updatedAt,
-      },
-      environment
-    );
-  } catch {
-    return null;
-  }
 }
 
 async function applyPendingDeploySiteCreation(env, config, store, actor, site) {
@@ -2752,6 +2734,7 @@ function createDeploymentRouteSnapshotRecoveryApplication({ store, env, trace = 
   return createDeploymentRouteSnapshotRecovery({
     routes: createDeploymentRecoveryPort(store),
     runtimeConfig: createDeploymentRuntimeConfigRestorationApplication(store, env),
+    ownerTransfers: createDeploymentOwnerTransferRestorationApplication(store),
     routeSnapshots: createDeploymentRouteSnapshotRecoveryAdapter({
       store,
       routeSnapshots: createDeploymentRouteSnapshotInfrastructure(store, env),
@@ -2788,6 +2771,15 @@ function createDeploymentRouteSnapshotRecoveryApplication({ store, env, trace = 
     },
     repairs: {
       report: (input) => logDeploymentRepairRequired(env, input),
+    },
+  });
+}
+
+function createDeploymentOwnerTransferRestorationApplication(store) {
+  return createDeploymentOwnerTransferRestoration({
+    owners: {
+      restore: ({ siteId, environment, owner }) =>
+        typeof store?.transferSiteOwner === 'function' ? store.transferSiteOwner(siteId, owner, environment) : null,
     },
   });
 }

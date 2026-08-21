@@ -14,10 +14,6 @@ test('deployment recovery port prefers the CAS route restoration capability', as
       calls.push(['fallback', ...args]);
       return null;
     },
-    async transferSiteOwner(...args) {
-      calls.push(['owner', ...args]);
-      return { id: 'site_1' };
-    },
     async getSiteVersion(...args) {
       calls.push(['version', ...args]);
       return { id: args[0] };
@@ -36,12 +32,10 @@ test('deployment recovery port prefers the CAS route restoration capability', as
   };
 
   assert.deepEqual(await port.restore(command), { id: 'route_1' });
-  assert.deepEqual(await port.restoreOwner('site_1', { ownerId: 'usr_1' }, 'production'), { id: 'site_1' });
   assert.deepEqual(await port.getVersion('ver_1', 'production'), { id: 'ver_1' });
   assert.deepEqual(await port.updateAccessPolicy({ siteId: 'site_1' }), { route: { id: 'route_1' } });
   assert.deepEqual(calls, [
     ['current', 'site_1', command.previousRoute, command.expectedRoute, 'production'],
-    ['owner', 'site_1', { ownerId: 'usr_1' }, 'production'],
     ['version', 'ver_1', 'production'],
     ['policy', { siteId: 'site_1' }],
   ]);
@@ -72,5 +66,4 @@ test('deployment recovery port retains the legacy route restoration fallback', a
     { id: 'route_1' }
   );
   assert.deepEqual(calls, [['site_1', { activeVersionId: 'ver_1' }, 'staging']]);
-  assert.equal(port.restoreOwner, null);
 });

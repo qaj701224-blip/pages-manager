@@ -11,8 +11,6 @@ export function createDeploymentRecoveryPort(store) {
       }
       return store.restoreSiteRoute(command.siteId, command.previousRoute, command.environment);
     },
-    restoreOwner:
-      typeof store?.transferSiteOwner === 'function' ? store.transferSiteOwner.bind(store) : null,
   };
 }
 

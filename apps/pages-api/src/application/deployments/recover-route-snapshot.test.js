@@ -41,8 +41,10 @@ test('snapshot recovery restores route, runtime config, owner, and snapshot in o
         calls.push(['route', input]);
         return restoredRoute;
       },
-      async restoreOwner(siteId, patch, environment) {
-        calls.push(['owner', siteId, patch, environment]);
+    },
+    ownerTransfers: {
+      async restore(input) {
+        calls.push(['owner', input]);
         return restoredSite;
       },
     },
@@ -76,15 +78,12 @@ test('snapshot recovery restores route, runtime config, owner, and snapshot in o
   assert.deepEqual(calls.map(([operation]) => operation), ['route', 'runtime', 'owner', 'snapshot']);
   assert.deepEqual(calls[2], [
     'owner',
-    'site_1',
     {
-      ownerType: 'user',
-      ownerId: 'usr_1',
-      ownerUserId: 'usr_1',
-      defaultVisibility: 'internal',
-      updatedAt: '2026-08-21T00:00:00.000Z',
+      siteId: 'site_1',
+      environment: 'production',
+      enabled: true,
+      previousSite,
     },
-    'production',
   ]);
 });
 
@@ -96,8 +95,8 @@ test('snapshot recovery clears the failed route pointer after route restoration 
         calls.push('route');
         throw new Error('route restore failed');
       },
-      restoreOwner: null,
     },
+    ownerTransfers: { restore: async () => null },
     runtimeConfig: {
       async restore() {
         calls.push('runtime');
@@ -134,8 +133,9 @@ test('snapshot recovery clears the restored route pointer when the compensation 
   const restoredRoute = { ...previousRoute, routeGeneration: 3 };
   const cleared = [];
   const application = createDeploymentRouteSnapshotRecovery({
-    routes: { restore: async () => restoredRoute, restoreOwner: null },
+    routes: { restore: async () => restoredRoute },
     runtimeConfig: { restore: async () => ({ kind: 'skipped' }) },
+    ownerTransfers: { restore: async () => null },
     routeSnapshots: {
       writeRestored: async () => false,
       async clearCurrent(route) {
@@ -162,12 +162,21 @@ test('snapshot recovery clears the restored route pointer when the compensation 
 
 test('snapshot recovery requires its narrow route, snapshot, telemetry, and repair capabilities', () => {
   assert.throws(
-    () => createDeploymentRouteSnapshotRecovery({ routes: {}, runtimeConfig: {}, routeSnapshots: {}, telemetry, repairs }),
+    () =>
+      createDeploymentRouteSnapshotRecovery({
+        routes: {},
+        runtimeConfig: {},
+        ownerTransfers: {},
+        routeSnapshots: {},
+        telemetry,
+        repairs,
+      }),
     /routes\.restore is required/
   );
   const capabilities = {
     routes: { restore() {} },
     runtimeConfig: { restore() {} },
+    ownerTransfers: { restore() {} },
     routeSnapshots: { writeRestored() {}, clearCurrent() {} },
   };
   assert.throws(
@@ -183,8 +192,9 @@ test('snapshot recovery requires its narrow route, snapshot, telemetry, and repa
 test('snapshot recovery records compensation before reporting required repair', async () => {
   const calls = [];
   const application = createDeploymentRouteSnapshotRecovery({
-    routes: { restore: async () => null, restoreOwner: null },
+    routes: { restore: async () => null },
     runtimeConfig: { restore: async () => null },
+    ownerTransfers: { restore: async () => null },
     routeSnapshots: {
       writeRestored: async () => false,
       clearCurrent: async () => false,
