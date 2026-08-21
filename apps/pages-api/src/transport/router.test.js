@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { readApiConfig } from '../config.js';
+import { readApiConfig } from '../infrastructure/config/api-config.js';
 import { createPagesApiRouter } from './router.js';
 
 const config = readApiConfig({ PAGES_ENV: 'production' });

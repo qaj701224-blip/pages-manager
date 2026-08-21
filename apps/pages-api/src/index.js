@@ -1,7 +1,7 @@
 import { runDueDeploymentCleanups } from './admin.js';
-import { readApiConfig } from './config.js';
+import { readApiConfig } from './infrastructure/config/api-config.js';
+import { createPagesStore } from './infrastructure/store/create-store.js';
 import { RoutePointerDO } from './route-snapshot.js';
-import { createPagesStore } from './store.js';
 import { createPagesApiRouter } from './transport/router.js';
 import { createScheduledHandler } from './transport/scheduled.js';
 

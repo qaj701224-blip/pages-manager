@@ -14,7 +14,7 @@ import {
   deploymentIdempotencyScope,
   hostnameFamilyForHostname,
   resolveLatestAdminSitePublicExposureReason,
-} from './store.js';
+} from './infrastructure/store/store-support.js';
 import { departmentTeamDisplayName, deriveDepartmentTeamIdentity, normalizeDepartmentPath } from './department-path.js';
 import { MAX_RUNTIME_VARS, runtimeVarObjectsEqual, runtimeVarsObject, validateRuntimeBindingQuotas } from './runtime-config.js';
 

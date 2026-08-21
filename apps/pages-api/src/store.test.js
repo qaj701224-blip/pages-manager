@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { readRuntimeConfigErrorDiagnostic } from './runtime-config-diagnostics.js';
-import { D1PagesStore, createHostnameClaim } from './store.js';
+import { D1PagesStore } from './infrastructure/store/create-store.js';
+import { createHostnameClaim } from './infrastructure/store/store-support.js';
 import { createTestPagesStore } from './test-store.js';
 
 test('test store enforces unique site slug per environment', async () => {

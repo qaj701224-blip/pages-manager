@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { createD1TestDatabase } from './d1-test-db.js';
 import { createSchemaSql } from './schema.js';
-import { D1PagesStore } from './store.js';
+import { D1PagesStore } from './infrastructure/store/create-store.js';
 import { createTestPagesStore } from './test-store.js';
 
 // Intentional implementation differences outside this shared contract:
