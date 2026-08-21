@@ -317,7 +317,7 @@ node --test apps/pages-api/src/store-contract.test.js apps/pages-api/src/route-s
 
 **Order**
 
-- [ ] dashboard/deployment trace/audit projections；
+- [x] dashboard/deployment trace/audit projections；
 - [ ] public exposure mutation；
 - [ ] WFP orphan inventory/backfill；
 - [ ] ordinary Worker inventory/retirement；
