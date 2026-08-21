@@ -18,7 +18,6 @@ import { createDeploymentRecord } from './application/deployments/deployment-rec
 import { createSuccessfulRollbackFinalization } from './application/deployments/finalize-successful-rollback.js';
 import { createSuccessfulDeploymentFinalization } from './application/deployments/finalize-successful-deployment.js';
 import { createRollbackRouteFinalization } from './application/deployments/finalize-rollback-route.js';
-import { createPublicWorkerOfficeNetGuard } from './application/deployments/ensure-public-office-net.js';
 import { createRollbackOfficeNetVerification } from './application/deployments/ensure-rollback-office-net.js';
 import { createDeploymentProviderOperations } from './application/deployments/provider-operations.js';
 import { createDeploymentRouteActivationPreparation } from './application/deployments/prepare-route-activation.js';
@@ -80,7 +79,6 @@ import { actorCanDeploySite, actorCanReadSite } from './domain/sites/authorizati
 import { jsonError, jsonOk } from './http.js';
 import { nextId } from './id.js';
 import { createSiteRouteSnapshots } from './infrastructure/route-snapshots/site-route-snapshots.js';
-import { createPublicOfficeNetSettings } from './infrastructure/providers/public-office-net-settings.js';
 import { createDeploymentWebhookDispatcher } from './infrastructure/integrations/webhooks/deployment-webhook-dispatcher.js';
 import { createDeploymentFailureRecoveryMarkers } from './infrastructure/route-snapshots/deployment-failure-recovery.js';
 import { createDeploymentRouteSnapshotRecoveryAdapter } from './infrastructure/route-snapshots/deployment-recovery.js';
@@ -127,6 +125,12 @@ import {
   RESERVED_SITE_SLUG_ACTION,
   rollbackSiteResolutionErrorResponse,
 } from './transport/shared/deployment-responses.js';
+import {
+  createPublicWorkerOfficeNetGuardApplication,
+  ensurePublicWorkerOfficeNetAbsent,
+  isPublicOfficeNetFailure,
+  publicOfficeNetOperationError,
+} from './transport/shared/public-office-net-application.js';
 
 const PROVIDER_DIAGNOSTIC_CLIENT_CODES = new Set(['WFP_API_ERROR', 'WFP_API_INVALID_JSON', 'WFP_NETWORK_ERROR']);
 const PROVIDER_DIAGNOSTIC_OPERATIONS = new Set(['assets_upload_session', 'assets_upload', 'worker_put', 'worker_get']);
@@ -2261,46 +2265,10 @@ async function assertRouteSnapshotConverged(env, store, route, environment) {
   // turn a cached old/null pointer into a false activation conflict.
 }
 
-export async function ensurePublicWorkerOfficeNetAbsent(
-  provider,
-  command
-) {
-  const { store, trace, ...input } = command;
-  const result = await createPublicWorkerOfficeNetGuardApplication(store, trace).ensure({
-    ...input,
-    provider,
-  });
-  if (result.ok) return result.result;
-
-  throw publicOfficeNetOperationError(result.error);
-}
-
-function publicOfficeNetOperationError(error) {
-  if (error.reason === 'deployment_shape_unknown') {
-    return deploymentOperationError(error.code, {
-      message: 'The public Worker deployment shape is not recognized.',
-      action: 'Deploy a known Worker shape and retry the public activation.',
-    });
-  }
-  if (error.reason === 'execution_provider_unsupported') {
-    return deploymentOperationError(error.code, {
-      message: 'The public Worker execution provider cannot verify OfficeNet bindings.',
-      action: 'Use a supported execution provider and retry the public activation.',
-    });
-  }
-  return deploymentOperationError(error.code, {
-    cause: error.cause?.cause || error.cause,
-  });
-}
-
 function rollbackOfficeNetOperationError(error) {
   return deploymentOperationError(error.code, {
     message: 'The current public Worker version could not be verified before rollback.',
   });
-}
-
-function isPublicOfficeNetFailure(error) {
-  return error?.code === 'SITE_PUBLIC_OFFICE_NET_REMOVE_FAILED' || error?.code === 'SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED';
 }
 
 function deploymentOperationError(code, { message, action, cause } = {}) {
@@ -2920,39 +2888,6 @@ function createDeploymentProviderApplication({ env, config, store, trace = null 
                 : {}),
             })
           : undefined,
-    },
-  });
-}
-
-function createPublicWorkerOfficeNetGuardApplication(store, trace = null) {
-  return createPublicWorkerOfficeNetGuard({
-    settings: createPublicOfficeNetSettings({
-      withRuntimeConfigLock:
-        typeof store?.withRuntimeConfigLock === 'function' ? store.withRuntimeConfigLock.bind(store) : undefined,
-    }),
-    telemetry: {
-      start: () =>
-        trace
-          ? startDeploymentStage(trace, {
-              stage: 'office_net',
-              operation: 'verify_public_office_net_absent',
-            })
-          : null,
-      finish: (stage, outcome) => {
-        if (!stage) return undefined;
-        const error = outcome.error ? publicOfficeNetOperationError(outcome.error) : outcome.cause;
-        return finishDeploymentStage(stage, {
-          status: outcome.status,
-          ...(outcome.status === 'failed'
-            ? {
-                error,
-                errorCode: error?.code || 'SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED',
-                errorMessage: error?.message || 'Public Worker OfficeNet verification failed.',
-                diagnostics: { causeClass: 'public_office_net_error' },
-              }
-            : {}),
-        });
-      },
     },
   });
 }

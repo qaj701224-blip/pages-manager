@@ -23,7 +23,6 @@ import { createDeploymentProvider } from '../../execution-provider.js';
 import { jsonError, jsonOk, readJsonBody } from '../../http.js';
 import { newId, nextId } from '../../id.js';
 import { buildRouteSnapshot, clearRoutePointerIfCurrent, readRouteSnapshotState } from '../../route-snapshot.js';
-import { ensurePublicWorkerOfficeNetAbsent } from '../../deployments.js';
 import { formatAclEntry } from '../../console.js';
 import {
   createSiteOwnershipApplication,
@@ -33,6 +32,7 @@ import {
   refreshCurrentRouteSnapshot,
   restoreSiteVisibilityAfterSnapshotFailure,
 } from '../shared/site-route-snapshots.js';
+import { ensurePublicWorkerOfficeNetAbsent } from '../shared/public-office-net-application.js';
 import { normalizeNullableString, normalizeRequiredString, readNow } from './admin-support.js';
 
 const TEAM_ROLES = new Set(['viewer', 'publisher', 'admin']);
@@ -843,4 +843,3 @@ function teamOwnerVisibilityUnsupported() {
     'Use internal, org, acl, or disabled for team-owned sites.'
   );
 }
-

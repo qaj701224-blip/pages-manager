@@ -6,7 +6,7 @@ import test from 'node:test';
 import { WfpApiError } from '@xd/wfp-client';
 import worker from './index.js';
 import { createAccessKeyPlaintext, hashAccessKey } from './crypto.js';
-import { ensurePublicWorkerOfficeNetAbsent } from './deployments.js';
+import { ensurePublicWorkerOfficeNetAbsent } from './transport/shared/public-office-net-application.js';
 import { buildRouteSnapshot, RoutePointerDO, writeRouteSnapshot } from './route-snapshot.js';
 import { createTestPagesStore } from './test-store.js';
 import { seedLifecycleWebhook, TEST_WEBHOOK_URL_ENCRYPTION_KEY } from './lifecycle-webhook-test-fixtures.js';
