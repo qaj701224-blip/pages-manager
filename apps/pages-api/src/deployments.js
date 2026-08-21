@@ -1,6 +1,8 @@
 import { validateSiteSlug } from '@xd/pages-runtime-protocol';
 
 import { isManagedWfpWorkerName } from './admin-resource-governance.js';
+import { createDeploymentRecord } from './application/deployments/deployment-record.js';
+import { createDeploymentRecordsPort } from './application/ports/deployment-records.js';
 import { canonicalRequestHash } from './crypto.js';
 import {
   assertRuntimeConfigSnapshotUnchanged,
@@ -243,12 +245,9 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
   setRequestTraceStage(trace, 'deployment_record', 'create_deployment');
   let deploymentResult;
   try {
-    deploymentResult = await store.createDeploymentForIdempotency({
-      id: nextId(env, 'dep'),
+    deploymentResult = await createDeploymentRecordApplication(store, env).createPending({
       environment: config.environment,
-      actorId: actor.actorId,
-      actorUserId: actor.userId,
-      actorType: actor.type,
+      actor,
       source,
       siteId,
       operation: 'deploy',
@@ -257,7 +256,6 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
       traceId: trace?.traceId || null,
       visibility: site.pendingOwnerTransfer?.visibility || site.defaultVisibility,
       previousVersionId: site.route?.activeVersionId || null,
-      status: 'pending',
     });
   } catch {
     await finishValidatedRequestTrace(trace, authStage);
@@ -1770,12 +1768,9 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
   setRequestTraceStage(trace, 'deployment_record', 'create_deployment');
   let deploymentResult;
   try {
-    deploymentResult = await store.createDeploymentForIdempotency({
-      id: nextId(env, 'dep'),
+    deploymentResult = await createDeploymentRecordApplication(store, env).createPending({
       environment: config.environment,
-      actorId: actor.actorId,
-      actorUserId: actor.userId,
-      actorType: actor.type,
+      actor,
       source: 'api',
       siteId: site.id,
       operation: 'rollback',
@@ -1783,7 +1778,6 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
       requestHash,
       traceId: trace?.traceId || null,
       visibility: currentRoute.visibility,
-      status: 'pending',
       versionId,
       previousVersionId: currentRoute.activeVersionId,
     });
@@ -3659,6 +3653,13 @@ function boundedNamePart(value, maxLength) {
     .replace(/-+/g, '-');
   if (normalized.length <= maxLength) return normalized || 'x';
   return normalized.slice(0, maxLength).replace(/-+$/g, '') || normalized.slice(-maxLength);
+}
+
+function createDeploymentRecordApplication(store, env) {
+  return createDeploymentRecord({
+    deploymentRecords: createDeploymentRecordsPort(store),
+    ids: { next: (prefix) => nextId(env, prefix) },
+  });
 }
 
 function normalizeOptionalString(value) {
