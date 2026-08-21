@@ -37,7 +37,9 @@ import { createExposureSnapshotFinalization } from './application/governance/fin
 import { createSiteExposureUpdate } from './application/governance/update-site-exposure.js';
 import { createWorkerOrphanScan } from './application/governance/scan-worker-orphans.js';
 import { createWorkerOrphanBackfill } from './application/governance/backfill-worker-orphans.js';
-import { createNormalWorkersQuery, projectNormalWorker } from './application/governance/list-normal-workers.js';
+import { createNormalWorkersQuery } from './application/governance/list-normal-workers.js';
+import { createNormalWorkerRetirement } from './application/governance/retire-normal-workers.js';
+import { createNormalWorkerAdminClient } from './infrastructure/providers/normal-worker-admin-client.js';
 import { buildRouteSnapshot, clearRoutePointerIfCurrent, readRouteSnapshotState } from './route-snapshot.js';
 import { createDeploymentProvider } from './execution-provider.js';
 import { sanitizeDeploymentTraceDiagnostics } from './deployment-trace.js';
@@ -62,9 +64,9 @@ import {
 const CONSOLE_PREFIX = '/.xd-pages/api/console';
 const TEAM_ROLES = new Set(['viewer', 'publisher', 'admin']);
 const NORMAL_WORKER_BULK_DELETE_LIMIT = 100;
-const NORMAL_WORKER_BULK_DELETE_CONCURRENCY = 5;
 const WFP_ORPHAN_BACKFILL_LIMIT = 100;
 const V1_SITE_BULK_RETIRE_LIMIT = 100;
+const V1_SITE_BULK_RETIRE_CONCURRENCY = 5;
 const DEFAULT_WFP_ORPHAN_SCAN_MAX_WORKERS = 10_000;
 const CLEANUP_TASK_LOCK_SECONDS = 5 * 60;
 const CLEANUP_TASK_FAILED_CODE = 'CLEANUP_TASK_FAILED';
@@ -598,7 +600,7 @@ async function bulkRetireAdminV1Sites(request, env, config, store, session) {
       .filter(Boolean)
       .map((record) => [record.name, record])
   );
-  const results = await mapNormalWorkerDeleteBatch(names, async (name) => {
+  const results = await mapV1SiteRetireBatch(names, async (name) => {
     const record = records.get(name);
     if (!record) {
       await recordV1RetireAuditSafe(
@@ -634,6 +636,20 @@ async function bulkRetireAdminV1Sites(request, env, config, store, session) {
     },
     results: results.map(formatV1RetireResult),
   });
+}
+
+async function mapV1SiteRetireBatch(names, mapper) {
+  const results = new Array(names.length);
+  let nextIndex = 0;
+  const consumers = Array.from({ length: Math.min(V1_SITE_BULK_RETIRE_CONCURRENCY, names.length) }, async () => {
+    while (nextIndex < names.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(names[index]);
+    }
+  });
+  await Promise.all(consumers);
+  return results;
 }
 
 async function retireV1SiteRecord({ env, config, store, session, record, client }) {
@@ -1788,11 +1804,12 @@ async function deleteAdminNormalWorker(request, env, config, store, session, slo
     return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
   }
   const reason = normalizeNullableString(body.reason) || 'legacy normal worker retired by admin';
-  const workers = await store.listAdminNormalWorkers({ environment: config.environment });
-  const worker = workers.find((item) => item.id === slotId);
-  if (!worker) return jsonError('NORMAL_WORKER_NOT_FOUND', 'Normal Worker not found.', 404, 'Check the worker id.');
-
-  const result = await deleteAdminNormalWorkerRecord({ env, config, store, session, worker, reason });
+  const result = await createNormalWorkerRetirementApplication(env, store).retire({
+    id: slotId,
+    environment: config.environment,
+    actorUserId: session.user.userId,
+    reason,
+  });
   return normalWorkerDeleteResultResponse(result);
 }
 
@@ -1822,125 +1839,39 @@ async function bulkDeleteAdminNormalWorkers(request, env, config, store, session
   }
 
   const reason = normalizeNullableString(body.reason) || 'legacy normal workers retired by admin';
-  const workers = await store.listAdminNormalWorkers({ environment: config.environment });
-  const workerById = new Map(workers.map((worker) => [worker.id, worker]));
-  const results = await mapNormalWorkerDeleteBatch(ids, async (id) => {
-    const worker = workerById.get(id);
-    if (!worker) {
-      return {
-        id,
-        status: 'failed',
-        error: normalWorkerNotFoundError(),
-      };
-    }
-    return deleteAdminNormalWorkerRecord({ env, config, store, session, worker, reason });
+  const result = await createNormalWorkerRetirementApplication(env, store).retireBatch({
+    ids,
+    environment: config.environment,
+    actorUserId: session.user.userId,
+    reason,
   });
 
   return jsonOk({
-    summary: summarizeNormalWorkerDeleteResults(ids.length, results),
-    results: results.map(formatNormalWorkerBatchResult),
+    summary: result.summary,
+    results: result.results.map(formatNormalWorkerBatchResult),
   });
 }
 
-async function mapNormalWorkerDeleteBatch(ids, mapper) {
-  const results = new Array(ids.length);
-  let nextIndex = 0;
-  const workers = Array.from({ length: Math.min(NORMAL_WORKER_BULK_DELETE_CONCURRENCY, ids.length) }, async () => {
-    while (nextIndex < ids.length) {
-      const index = nextIndex;
-      nextIndex += 1;
-      results[index] = await mapper(ids[index]);
-    }
+function createNormalWorkerRetirementApplication(env, store) {
+  return createNormalWorkerRetirement({
+    workers: {
+      list: (query) => store.listAdminNormalWorkers(query),
+      retire: (command) => store.retireIdleNormalWorker(command),
+      ...(typeof store.markNormalWorkerDeletePending === 'function'
+        ? { markDeletePending: (command) => store.markNormalWorkerDeletePending(command) }
+        : {}),
+    },
+    provider: {
+      deleteWorker: (command) =>
+        createNormalWorkerAdminClient({
+          client: env.NORMAL_WORKER_ADMIN_CLIENT,
+          accountId: env.CF_ACCOUNT_ID,
+          apiToken: env.CF_API_TOKEN,
+          fetch: env.fetch || globalThis.fetch,
+        }).deleteWorker(command),
+    },
+    clock: { now: () => readNow(env) },
   });
-  await Promise.all(workers);
-  return results;
-}
-
-async function deleteAdminNormalWorkerRecord({ env, config, store, session, worker, reason }) {
-  const formatted = projectNormalWorker(worker);
-  if (!formatted.canDelete) {
-    return {
-      id: worker.id,
-      status: 'failed',
-      httpStatus: 409,
-      worker: formatted,
-      error: normalWorkerActiveError(),
-    };
-  }
-
-  try {
-    await createNormalWorkerAdminClient(env).deleteWorker({ workerName: worker.workerName });
-  } catch (error) {
-    if (isNormalWorkerDeleteBlocked(error)) {
-      const pending =
-        typeof store.markNormalWorkerDeletePending === 'function'
-          ? await store.markNormalWorkerDeletePending({
-              id: worker.id,
-              environment: config.environment,
-              actorUserId: session.user.userId,
-              reason,
-              updatedAt: readNow(env),
-            })
-          : null;
-      if (!pending) {
-        return {
-          id: worker.id,
-          status: 'failed',
-          httpStatus: 409,
-          worker: formatted,
-          error: normalWorkerActiveError(),
-        };
-      }
-      return {
-        id: worker.id,
-        status: 'delete_pending',
-        httpStatus: 202,
-        worker: projectNormalWorker(pending),
-        warning: normalWorkerDeletePendingWarning(),
-      };
-    }
-    return {
-      id: worker.id,
-      status: 'failed',
-      httpStatus: 502,
-      worker: formatted,
-      error: normalWorkerDeleteFailedError(),
-    };
-  }
-
-  let retired;
-  try {
-    retired = await store.retireIdleNormalWorker({
-      id: worker.id,
-      environment: config.environment,
-      actorUserId: session.user.userId,
-      reason,
-      updatedAt: readNow(env),
-    });
-  } catch {
-    return {
-      id: worker.id,
-      status: 'failed',
-      httpStatus: 409,
-      worker: formatted,
-      error: normalWorkerStateInconsistentError(),
-    };
-  }
-  if (!retired) {
-    return {
-      id: worker.id,
-      status: 'failed',
-      httpStatus: 409,
-      worker: formatted,
-      error: normalWorkerStateInconsistentError(),
-    };
-  }
-  return {
-    id: worker.id,
-    status: 'retired',
-    httpStatus: 200,
-    worker: projectNormalWorker(retired),
-  };
 }
 
 async function listAdminUsers(url, config, store) {
@@ -1964,34 +1895,36 @@ async function listAdminUsers(url, config, store) {
 
 function normalWorkerDeleteResultResponse(result) {
   if (result.status === 'failed') {
-    return jsonError(result.error.code, result.error.message, result.httpStatus, result.error.action);
+    const failure = normalWorkerDeleteFailure(result.errorCode);
+    return jsonError(failure.error.code, failure.error.message, failure.httpStatus, failure.error.action);
   }
   return jsonOk(
     {
       worker: result.worker,
-      ...(result.warning ? { warning: result.warning } : {}),
+      ...(result.status === 'delete_pending' ? { warning: normalWorkerDeletePendingWarning() } : {}),
     },
-    result.httpStatus
+    result.status === 'delete_pending' ? 202 : 200
   );
 }
 
 function formatNormalWorkerBatchResult(result) {
+  const failure = result.status === 'failed' ? normalWorkerDeleteFailure(result.errorCode) : null;
   return {
     id: result.id,
     status: result.status,
     ...(result.worker ? { worker: result.worker } : {}),
-    ...(result.warning ? { warning: result.warning } : {}),
-    ...(result.error ? { error: result.error } : {}),
+    ...(result.status === 'delete_pending' ? { warning: normalWorkerDeletePendingWarning() } : {}),
+    ...(failure ? { error: failure.error } : {}),
   };
 }
 
-function summarizeNormalWorkerDeleteResults(requested, results) {
-  return {
-    requested,
-    retired: results.filter((result) => result.status === 'retired').length,
-    pending: results.filter((result) => result.status === 'delete_pending').length,
-    failed: results.filter((result) => result.status === 'failed').length,
-  };
+function normalWorkerDeleteFailure(code) {
+  if (code === 'NORMAL_WORKER_NOT_FOUND') return { httpStatus: 404, error: normalWorkerNotFoundError() };
+  if (code === 'NORMAL_WORKER_ACTIVE') return { httpStatus: 409, error: normalWorkerActiveError() };
+  if (code === 'NORMAL_WORKER_STATE_INCONSISTENT') {
+    return { httpStatus: 409, error: normalWorkerStateInconsistentError() };
+  }
+  return { httpStatus: 502, error: normalWorkerDeleteFailedError() };
 }
 
 function normalizeNormalWorkerIds(value) {
@@ -2006,44 +1939,6 @@ function normalizeNormalWorkerIds(value) {
     ids.push(id);
   }
   return ids;
-}
-
-function createNormalWorkerAdminClient(env) {
-  if (env.NORMAL_WORKER_ADMIN_CLIENT) return env.NORMAL_WORKER_ADMIN_CLIENT;
-  const accountId = normalizeRequiredString(env.CF_ACCOUNT_ID);
-  const apiToken = normalizeRequiredString(env.CF_API_TOKEN);
-  const fetchImpl = env.fetch || globalThis.fetch;
-  if (!accountId || !apiToken || typeof fetchImpl !== 'function') {
-    throw new Error('NORMAL_WORKER_ADMIN_CLIENT_UNAVAILABLE');
-  }
-  return {
-    async deleteWorker({ workerName }) {
-      const url = new URL(
-        `accounts/${encodeURIComponent(accountId)}/workers/scripts/${encodeURIComponent(workerName)}`,
-        'https://api.cloudflare.com/client/v4/'
-      );
-      const response = await fetchImpl(url.toString(), {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${apiToken}` },
-      });
-      if (response.status === 404) return null;
-      const payload = await response.json().catch(() => null);
-      if (!response.ok || payload?.success === false) throw normalWorkerDeleteError(response, payload);
-      return payload?.result || payload;
-    },
-  };
-}
-
-function normalWorkerDeleteError(response, payload) {
-  const error = new Error('NORMAL_WORKER_DELETE_FAILED');
-  error.status = response.status;
-  error.code = response.status === 409 ? 'NORMAL_WORKER_DELETE_BLOCKED' : 'NORMAL_WORKER_DELETE_FAILED';
-  error.cloudflareErrors = Array.isArray(payload?.errors) ? payload.errors : [];
-  return error;
-}
-
-function isNormalWorkerDeleteBlocked(error) {
-  return error?.code === 'NORMAL_WORKER_DELETE_BLOCKED' || error?.status === 409;
 }
 
 function normalWorkerActiveError() {
