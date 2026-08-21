@@ -19,6 +19,7 @@ function createApplication(overrides = {}) {
     clock: { now: () => '2026-08-21T00:00:00.000Z' },
     ids: { next: () => 'cln_1' },
     managedWorkers: { isManaged: () => true },
+    telemetry: { record: async (outcome) => outcome },
     config: { cleanupDrainSeconds: 300 },
     ...overrides,
   });
@@ -177,7 +178,40 @@ test('post-commit cleanup reports Provider and task failures without throwing', 
   );
 });
 
-test('post-commit cleanup requires its clock, ids, and managed Worker rule', () => {
+test('post-commit cleanup records the slot outcome before enqueueing previous Worker cleanup', async () => {
+  const calls = [];
+  const previousRoute = {
+    siteId: 'site_1',
+    activeVersionId: 'ver_1',
+    workerName: 'pages-v2-guide-ver-1',
+    executionProvider: 'wfp',
+    dispatchType: 'dispatch-namespace',
+    routeStatus: 'active',
+    slotId: null,
+  };
+  const application = createApplication({
+    cleanupTasks: {
+      async create() {
+        calls.push(['enqueue']);
+      },
+    },
+    telemetry: {
+      async record(outcome, context) {
+        calls.push(['record', outcome.operation, context]);
+        return outcome;
+      },
+    },
+  });
+
+  await application.cleanup({ environment: 'production', previousRoute, activeRoute, deployment });
+  assert.deepEqual(calls, [
+    ['record', 'worker_placeholder_put', { trafficImpact: 'new_version_active' }],
+    ['enqueue'],
+    ['record', 'worker_delete', { trafficImpact: 'new_version_active' }],
+  ]);
+});
+
+test('post-commit cleanup requires its clock, ids, managed Worker rule, and telemetry', () => {
   assert.throws(
     () =>
       createDeploymentPreviousResourceCleanup({
@@ -186,6 +220,7 @@ test('post-commit cleanup requires its clock, ids, and managed Worker rule', () 
         clock: {},
         ids: { next() {} },
         managedWorkers: { isManaged() {} },
+        telemetry: { record() {} },
         config: {},
       }),
     /clock\.now is required/
@@ -193,5 +228,5 @@ test('post-commit cleanup requires its clock, ids, and managed Worker rule', () 
 });
 
 async function runCleanup(application, command) {
-  return [await application.cleanupPreviousSlot(command), await application.enqueuePreviousWorker(command)];
+  return application.cleanup(command);
 }

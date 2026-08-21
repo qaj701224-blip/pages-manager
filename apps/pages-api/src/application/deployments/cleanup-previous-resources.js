@@ -4,18 +4,33 @@ export function createDeploymentPreviousResourceCleanup({
   clock,
   ids,
   managedWorkers,
+  telemetry,
   config = {},
 }) {
   if (typeof clock?.now !== 'function') throw new TypeError('clock.now is required');
   if (typeof ids?.next !== 'function') throw new TypeError('ids.next is required');
   if (typeof managedWorkers?.isManaged !== 'function') throw new TypeError('managedWorkers.isManaged is required');
+  if (typeof telemetry?.record !== 'function') throw new TypeError('telemetry.record is required');
 
-  return {
-    cleanupPreviousSlot: (command) =>
-      cleanupPreviousNormalWorkerSlot(provider, clock, command.previousRoute, command.activeRoute),
-    enqueuePreviousWorker: (command) =>
-      enqueuePreviousWfpWorkerCleanup({ cleanupTasks, clock, ids, managedWorkers, config }, command),
-  };
+  return { cleanup };
+
+  async function cleanup(command) {
+    const outcomes = [];
+    const slotOutcome = await cleanupPreviousNormalWorkerSlot(
+      provider,
+      clock,
+      command.previousRoute,
+      command.activeRoute
+    );
+    outcomes.push(await telemetry.record(slotOutcome, { trafficImpact: 'new_version_active' }));
+
+    const workerOutcome = await enqueuePreviousWfpWorkerCleanup(
+      { cleanupTasks, clock, ids, managedWorkers, config },
+      command
+    );
+    outcomes.push(await telemetry.record(workerOutcome, { trafficImpact: 'new_version_active' }));
+    return outcomes;
+  }
 }
 
 async function cleanupPreviousNormalWorkerSlot(provider, clock, previousRoute, activeRoute) {

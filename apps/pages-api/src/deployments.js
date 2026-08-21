@@ -1463,19 +1463,14 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
     stageHandle: deploymentStateStage,
   });
 
-  const previousResourceCleanup = createDeploymentPreviousResourceCleanupApplication({ store, env, provider });
+  const previousResourceCleanup = createDeploymentPreviousResourceCleanupApplication({ store, env, provider, trace });
   const cleanupCommand = {
     environment: config.environment,
     previousRoute,
     activeRoute: route,
     deployment: completed,
   };
-  await recordCleanupOutcome(trace, await previousResourceCleanup.cleanupPreviousSlot(cleanupCommand), {
-    trafficImpact: 'new_version_active',
-  });
-  await recordCleanupOutcome(trace, await previousResourceCleanup.enqueuePreviousWorker(cleanupCommand), {
-    trafficImpact: 'new_version_active',
-  });
+  await previousResourceCleanup.cleanup(cleanupCommand);
   const webhookDelivery = emitDeploymentSucceededWebhook({
     application: createDeploymentSucceededWebhookApplication({ store, env, config }),
     actor,
@@ -3118,13 +3113,16 @@ function createUnexpectedRequestFailureRecoveryApplication({ store, env, config,
   });
 }
 
-function createDeploymentPreviousResourceCleanupApplication({ store, env, provider }) {
+function createDeploymentPreviousResourceCleanupApplication({ store, env, provider, trace }) {
   return createDeploymentPreviousResourceCleanup({
     provider,
     cleanupTasks: createDeploymentCleanupTasksPort(store),
     clock: { now: () => readNow(env) },
     ids: { next: (prefix) => nextId(env, prefix) },
     managedWorkers: { isManaged: isManagedWfpWorkerName },
+    telemetry: {
+      record: (outcome, context) => recordCleanupOutcome(trace, outcome, context),
+    },
     config: {
       cleanupDrainSeconds: env?.WFP_WORKER_CLEANUP_DRAIN_SECONDS || env?.WFP_CLEANUP_DRAIN_SECONDS || 300,
     },
