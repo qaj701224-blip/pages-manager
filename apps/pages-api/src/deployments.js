@@ -35,6 +35,7 @@ import { createRollbackSiteResolution } from './application/deployments/resolve-
 import { createDeploymentRuntimeConfigResolution } from './application/deployments/resolve-runtime-config.js';
 import { createDeploymentRuntimeConfigRestoration } from './application/deployments/restore-runtime-config.js';
 import { createDeploymentOwnerTransferRestoration } from './application/deployments/restore-owner-transfer.js';
+import { createRollbackSite } from './application/deployments/rollback-site.js';
 import { createDeploymentCommitLease } from './application/deployments/run-under-commit-lease.js';
 import { createDeploymentRuntimeConfigSnapshotValidation } from './application/deployments/validate-runtime-config-snapshot.js';
 import { createRollbackVersionValidation } from './application/deployments/validate-rollback-version.js';
@@ -1425,14 +1426,17 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
       trace,
     });
 
-  const rollbackPreparation = await createRollbackActivationPreparationApplication(store, env, trace).prepare({
+  const rollbackResult = await createRollbackSiteApplication({ store, env, config, site, trace }).execute({
     environment: config.environment,
-    siteId: site.id,
+    site,
+    deployment: deploymentResult.deployment,
+    version,
     currentRoute,
+    exposure: normalizeExposureForDeployment(currentRoute.exposure),
   });
-  if (!rollbackPreparation.ok && rollbackPreparation.error.reason === 'acquire_failed') {
+  if (!rollbackResult.ok && rollbackResult.stage === 'prepare' && rollbackResult.error.reason === 'acquire_failed') {
     await finalizeFailedRollback(
-      rollbackActivationFailurePatch(version, currentRoute, {
+      rollbackActivationFailurePatch(version, rollbackResult.previousRoute, {
         errorCode: 'SITE_POLICY_LOCKED',
         errorMessage: 'Site policy lock could not be acquired.',
         failureStage: 'rollback_policy_lock',
@@ -1446,9 +1450,9 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
       'Refresh the site status and retry the rollback.'
     );
   }
-  if (!rollbackPreparation.ok && rollbackPreparation.error.reason === 'lease_unavailable') {
+  if (!rollbackResult.ok && rollbackResult.stage === 'prepare' && rollbackResult.error.reason === 'lease_unavailable') {
     await finalizeFailedRollback(
-      rollbackActivationFailurePatch(version, currentRoute, {
+      rollbackActivationFailurePatch(version, rollbackResult.previousRoute, {
         errorCode: 'SITE_POLICY_CONFLICT',
         errorMessage: 'Site policy changed while rollback was preparing.',
         failureStage: 'rollback_policy_lock',
@@ -1463,9 +1467,9 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
       'Refresh the site status and retry the rollback.'
     );
   }
-  if (!rollbackPreparation.ok && rollbackPreparation.error.reason === 'route_read_failed') {
+  if (!rollbackResult.ok && rollbackResult.stage === 'prepare' && rollbackResult.error.reason === 'route_read_failed') {
     await finalizeFailedRollback(
-      rollbackActivationFailurePatch(version, currentRoute, {
+      rollbackActivationFailurePatch(version, rollbackResult.previousRoute, {
         errorCode: 'ROLLBACK_ACTIVATION_FAILED',
         errorMessage: 'Rollback route state could not be read.',
         failureStage: 'rollback_activate_route',
@@ -1479,9 +1483,9 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
       'Retry the rollback with a new Idempotency-Key.'
     );
   }
-  if (!rollbackPreparation.ok) {
+  if (!rollbackResult.ok && rollbackResult.stage === 'prepare') {
     await finalizeFailedRollback(
-      rollbackActivationFailurePatch(version, currentRoute, {
+      rollbackActivationFailurePatch(version, rollbackResult.previousRoute, {
         errorCode: 'ROUTE_ACTIVATION_CONFLICT',
         errorMessage: 'Route changed while rollback was activating.',
         failureStage: 'rollback_activate_route',
@@ -1490,44 +1494,23 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
     );
     return jsonError('ROUTE_ACTIVATION_CONFLICT', 'Route changed while rollback was activating.', 409, 'Retry the rollback.');
   }
-  const rollbackLease = rollbackPreparation.lease;
-  const rollbackRouteBeforeActivation = rollbackPreparation.routeBeforeActivation;
-  const rollbackLatestRoute = rollbackPreparation.route;
-  currentRoute = rollbackLatestRoute;
-  let route;
-  let rollbackProvider;
-  try {
-    rollbackProvider = createDeploymentProvider(env, config, store, site);
-    const rollbackExposure = normalizeExposureForDeployment(currentRoute.exposure);
-    const activationResult = await createRollbackRouteCutoverApplication({
-      store,
-      env,
-      provider: rollbackProvider,
-      trace,
-    }).activate({
-      environment: config.environment,
-      siteId: site.id,
-      currentRoute,
-      version,
-      lease: rollbackLease,
-      exposure: rollbackExposure,
-      activation: {
-        visibility: currentRoute.visibility,
-        expectedRoute: {
-          ...rollbackLatestRoute,
-          exposure: normalizeExposureForDeployment(rollbackLatestRoute.exposure),
-        },
-      },
-    });
-    if (!activationResult.ok && activationResult.kind === 'office_net_failed') {
-      throw rollbackOfficeNetOperationError(activationResult.error);
-    }
-    route = activationResult.ok ? activationResult.route : null;
-  } catch (error) {
-    await releaseSiteCommitLeaseBestEffort(rollbackLease);
+  if (!rollbackResult.ok && rollbackResult.stage === 'activate' && rollbackResult.error.reason === 'office_net_failed') {
+    const error = rollbackOfficeNetOperationError(rollbackResult.error.officeNetError);
+    await finalizeFailedRollback(
+      rollbackActivationFailurePatch(version, rollbackResult.previousRoute, {
+        errorCode: error.code,
+        errorMessage: error.message,
+        failureStage: 'rollback_public_office_net',
+        errorClass: 'public_office_net_error',
+      })
+    );
+    return jsonError(error.code, error.message, error.status || 503, error.action);
+  }
+  if (!rollbackResult.ok && rollbackResult.stage === 'activate' && rollbackResult.error.reason === 'activation_error') {
+    const error = rollbackResult.error.cause;
     if (isPublicOfficeNetFailure(error)) {
       await finalizeFailedRollback(
-        rollbackActivationFailurePatch(version, rollbackRouteBeforeActivation, {
+        rollbackActivationFailurePatch(version, rollbackResult.previousRoute, {
           errorCode: error.code,
           errorMessage: error.message,
           failureStage: 'rollback_public_office_net',
@@ -1547,7 +1530,7 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
         ? 'Retry the rollback with a new Idempotency-Key.'
         : 'Refresh the site status and retry the rollback.';
     await finalizeFailedRollback(
-      rollbackActivationFailurePatch(version, rollbackRouteBeforeActivation, {
+      rollbackActivationFailurePatch(version, rollbackResult.previousRoute, {
         errorCode: code,
         errorMessage: message,
         failureStage: 'rollback_activate_route',
@@ -1556,13 +1539,11 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
     );
     return jsonError(code, message, status, action);
   }
-  if (!route) {
-    await releaseSiteCommitLeaseBestEffort(rollbackLease);
-    const latestVersion = await store.getSiteVersion(version.id, config.environment);
-    if (latestVersion?.artifactAvailability !== 'active') {
+  if (!rollbackResult.ok && rollbackResult.stage === 'activate') {
+    if (rollbackResult.error.reason === 'version_unavailable') {
       await finalizeFailedRollback({
         versionId: version.id,
-        previousVersionId: currentRoute.activeVersionId,
+        previousVersionId: rollbackResult.previousRoute.activeVersionId,
         errorCode: 'ROLLBACK_VERSION_UNAVAILABLE',
         errorMessage: 'Version is no longer available for rollback.',
         failureStage: 'rollback_version_availability',
@@ -1587,7 +1568,7 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
     }
     await finalizeFailedRollback({
       versionId: version.id,
-      previousVersionId: currentRoute.activeVersionId,
+      previousVersionId: rollbackResult.previousRoute.activeVersionId,
       errorCode: 'ROUTE_ACTIVATION_CONFLICT',
       errorMessage: 'Route changed while rollback was activating.',
       failureStage: 'rollback_activate_route',
@@ -1610,22 +1591,8 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
       'Check the latest site status and retry the rollback with a new Idempotency-Key.'
     );
   }
-  const finalization = await createRollbackRouteFinalizationApplication({
-    store,
-    env,
-    provider: rollbackProvider,
-    trace,
-  }).finalize({
-    site,
-    deployment: deploymentResult.deployment,
-    previousRoute: currentRoute,
-    route,
-    version,
-    lease: rollbackLease,
-    environment: config.environment,
-  });
-  if (!finalization.ok) {
-    const recovery = finalization.error.recovery;
+  if (!rollbackResult.ok && rollbackResult.stage === 'finalize') {
+    const recovery = rollbackResult.error.recovery;
     const { restoredRoute, routePointerCleared, repairRequired } = recovery;
     const restoredOfficeNetError = rollbackRouteSnapshotRecoveryError(recovery.failure);
     const failureError = restoredOfficeNetError;
@@ -1633,7 +1600,7 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
     const failureStage = failureError ? 'rollback_restore_public_office_net' : 'rollback_write_route_snapshot';
     await finalizeFailedRollback({
       versionId: version.id,
-      previousVersionId: currentRoute.activeVersionId,
+      previousVersionId: rollbackResult.previousRoute.activeVersionId,
       errorCode: failureCode,
       errorMessage: failureError?.message || 'Route snapshot write failed.',
       failureStage,
@@ -1664,7 +1631,7 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
     );
   }
 
-  const completed = finalization.completed;
+  const { completed, route } = rollbackResult;
 
   return jsonOk(await deploymentEnvelope(store, completed, { version, route }), 201);
 }
@@ -2698,6 +2665,29 @@ function createRollbackRouteFinalizationApplication({ store, env, provider, trac
   });
 }
 
+function createRollbackSiteApplication({ store, env, config, site, trace }) {
+  let provider = null;
+  const executionProvider = () => {
+    provider ||= createDeploymentProvider(env, config, store, site);
+    return provider;
+  };
+  return createRollbackSite({
+    preparation: createRollbackActivationPreparationApplication(store, env, trace),
+    cutover: {
+      activate: (command) =>
+        createRollbackRouteCutoverApplication({ store, env, trace, provider: executionProvider }).activate(command),
+    },
+    versions: {
+      get: (versionId, environment) => store.getSiteVersion(versionId, environment),
+    },
+    finalization: {
+      finalize: (command) =>
+        createRollbackRouteFinalizationApplication({ store, env, trace, provider: executionProvider() }).finalize(command),
+    },
+    leases: { release: releaseSiteCommitLeaseBestEffort },
+  });
+}
+
 function createDeploymentRouteSnapshotRecoveryApplication({ store, env, trace = null }) {
   return createDeploymentRouteSnapshotRecovery({
     routes: createDeploymentRecoveryPort(store),
@@ -3207,12 +3197,16 @@ function createDeploymentRouteCutoverApplication({ store, env, trace, provider }
 }
 
 function createRollbackRouteCutoverApplication({ store, env, trace, provider }) {
+  const resolveProvider = typeof provider === 'function' ? provider : () => provider;
   return createRollbackRouteCutover({
     routeSnapshots: {
       assertConverged: ({ route, environment }) => assertRouteSnapshotConverged(env, store, route, environment),
     },
     leases: { assertHealthy: assertCommitLeaseHealthy },
-    officeNet: createRollbackOfficeNetVerificationApplication({ store, provider, trace }),
+    officeNet: {
+      verify: (command) =>
+        createRollbackOfficeNetVerificationApplication({ store, provider: resolveProvider(), trace }).verify(command),
+    },
     routes: createDeploymentRouteActivationApplication(store, env, trace, {
       operation: 'rollback_route_activate',
       conflictMessage: 'Route changed while rollback was activating.',
