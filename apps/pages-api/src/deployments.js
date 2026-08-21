@@ -10,6 +10,7 @@ import { createDeploymentPreviousResourceCleanup } from './application/deploymen
 import { createDeploymentRouteSnapshotCommit } from './application/deployments/commit-route-snapshot.js';
 import { createDeploymentRuntimeConfigCommit } from './application/deployments/commit-runtime-config.js';
 import { createDeploymentVersionCreation } from './application/deployments/create-version.js';
+import { createDeploymentSucceededWebhook } from './application/deployments/deliver-succeeded-webhook.js';
 import { createDeploymentRecord } from './application/deployments/deployment-record.js';
 import { createPublicWorkerOfficeNetGuard } from './application/deployments/ensure-public-office-net.js';
 import { createDeploymentProviderOperations } from './application/deployments/provider-operations.js';
@@ -25,6 +26,7 @@ import { createDeploymentProviderPort } from './application/ports/deployment-pro
 import { createDeploymentRecordsPort } from './application/ports/deployment-records.js';
 import { createDeploymentRoutesPort } from './application/ports/deployment-routes.js';
 import { createDeploymentVersionsPort } from './application/ports/deployment-versions.js';
+import { createDeploymentWebhookTeamsPort } from './application/ports/deployment-webhooks.js';
 import { createRollbackSiteResolutionPort } from './application/ports/rollback-site-resolution.js';
 import {
   createDeploymentRuntimeConfigMutationPort,
@@ -50,6 +52,7 @@ import { jsonError, jsonOk } from './http.js';
 import { nextId } from './id.js';
 import { createSiteRouteSnapshots } from './infrastructure/route-snapshots/site-route-snapshots.js';
 import { createPublicOfficeNetSettings } from './infrastructure/providers/public-office-net-settings.js';
+import { createDeploymentWebhookDispatcher } from './infrastructure/integrations/webhooks/deployment-webhook-dispatcher.js';
 import {
   buildRouteSnapshot,
   clearRoutePointerIfCurrent,
@@ -62,7 +65,6 @@ import {
 import { createDeploymentProvider, normalizeWorkerBundle } from './execution-provider.js';
 import { notifyDeploymentCapacityExhausted } from './slack-alerts.js';
 import { buildSiteOwnerTransferAuditEvent, rejectUserExposureMutation } from './sites.js';
-import { deliverWebhookEventToSubscriptions } from './webhooks.js';
 import { emitSiteDisabledWebhook, emitSiteFailedWebhook } from './lifecycle-webhooks.js';
 import {
   createSiteCreationApplication,
@@ -1468,13 +1470,12 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
     trafficImpact: 'new_version_active',
   });
   const webhookDelivery = emitDeploymentSucceededWebhook({
-    store,
-    env,
-    config,
+    application: createDeploymentSucceededWebhookApplication({ store, env, config }),
     actor,
     site,
     route,
     deployment: completed,
+    environment: config.environment,
     trace,
   });
   if (ctx && typeof ctx.waitUntil === 'function') {
@@ -1487,88 +1488,25 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
   return jsonOk(await deploymentEnvelope(store, completed, { version, route, decision, ownerTransfer }), 201);
 }
 
-async function emitDeploymentSucceededWebhook({ store, env, config, actor, site, route, deployment, trace }) {
+async function emitDeploymentSucceededWebhook({ application, actor, site, route, deployment, environment, trace }) {
   const stage = trace
     ? startDeploymentStage(trace, {
         stage: 'webhook_delivery',
         operation: 'site_deployed',
       })
     : null;
-  try {
-    const team =
-      site.ownerType === 'team' && site.ownerId && typeof store.getTeam === 'function' ? await store.getTeam(site.ownerId) : null;
-    const deliveries = await deliverWebhookEventToSubscriptions({
-      store,
-      env,
-      config,
-      event: {
-        id: nextId(env, 'evt'),
-        type: 'site.deployed',
-        environment: config.environment,
-        occurredAt: deployment.completedAt || readNow(env),
-        actor: {
-          type: actor.type,
-          userId: actor.userId || null,
-          email: actor.email || null,
-          name: actor.name || null,
-        },
-        site: {
-          id: site.id,
-          slug: site.slug,
-          hostname: route.hostname,
-          ownerType: site.ownerType || 'user',
-          ownerId: site.ownerId || site.ownerUserId,
-          visibility: route.visibility || site.defaultVisibility,
-          status: route.routeStatus,
-        },
-        team: team
-          ? {
-              id: team.id,
-              name: team.name || null,
-              teamType: team.teamType || null,
-            }
-          : undefined,
-        deployment: {
-          id: deployment.id,
-          status: deployment.status,
-          source: deployment.source,
-          operation: deployment.operation,
-          createdAt: deployment.createdAt,
-          completedAt: deployment.completedAt || null,
-        },
-      },
-      fetchImpl: typeof env.WEBHOOK_FETCH === 'function' ? env.WEBHOOK_FETCH : undefined,
-      resolveHost: typeof env.resolveWebhookHost === 'function' ? env.resolveWebhookHost : undefined,
-      now: () => deployment.completedAt || readNow(env),
-    });
-    if (stage) {
-      if (deliveries.length === 0) {
-        await finishDeploymentStage(stage, { status: 'skipped' });
-      } else {
-        const failed = deliveries.some((delivery) => delivery?.deliveryStatus === 'failed');
-        await finishDeploymentStage(stage, {
-          status: failed ? 'failed' : 'succeeded',
-          ...(failed
-            ? {
-                errorCode: 'WEBHOOK_DELIVERY_FAILED',
-                errorMessage: 'Webhook delivery failed.',
-                diagnostics: { causeClass: 'webhook_delivery_error' },
-              }
-            : {}),
-        });
-      }
-    }
-  } catch {
-    if (stage) {
-      await finishDeploymentStage(stage, {
-        status: 'failed',
-        errorCode: 'WEBHOOK_DELIVERY_FAILED',
-        errorMessage: 'Webhook delivery failed.',
-        diagnostics: { causeClass: 'webhook_delivery_error' },
-      });
-    }
-    // Webhook delivery is best-effort and must not mask a committed deployment.
-  }
+  const outcome = await application.deliver({ actor, site, route, deployment, environment });
+  if (!stage) return;
+  await finishDeploymentStage(stage, {
+    status: outcome.status,
+    ...(outcome.status === 'failed'
+      ? {
+          errorCode: 'WEBHOOK_DELIVERY_FAILED',
+          errorMessage: 'Webhook delivery failed.',
+          diagnostics: { causeClass: outcome.causeClass },
+        }
+      : {}),
+  });
 }
 
 async function getDeployment(store, actor, deploymentId, environment, env) {
@@ -3229,6 +3167,15 @@ function createDeploymentPreviousResourceCleanupApplication({ store, env, provid
     config: {
       cleanupDrainSeconds: env?.WFP_WORKER_CLEANUP_DRAIN_SECONDS || env?.WFP_CLEANUP_DRAIN_SECONDS || 300,
     },
+  });
+}
+
+function createDeploymentSucceededWebhookApplication({ store, env, config }) {
+  return createDeploymentSucceededWebhook({
+    teams: createDeploymentWebhookTeamsPort(store),
+    webhooks: createDeploymentWebhookDispatcher({ store, env, config }),
+    clock: { now: () => readNow(env) },
+    ids: { next: (prefix) => nextId(env, prefix) },
   });
 }
 
