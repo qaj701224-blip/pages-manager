@@ -1,321 +1,90 @@
 import { buildSiteOwnerTransferAuditEvent } from '../../application/sites/build-owner-transfer-audit-event.js';
-import { canonicalRequestHash } from '../../crypto.js';
-import { runtimeConfigHashInput } from '../../deployment-runtime-config.js';
-import {
-  canonicalDeploymentContentHash,
-  decisionRequiresAssets,
-  decisionRequiresWorker,
-} from '../../deployment-plan.js';
-import {
-  bindDeploymentTrace,
-  recordDeploymentStage,
-  withDeploymentTraceHeader,
-} from '../../deployment-trace.js';
-import { validateAssetFiles } from '../../deployment-upload.js';
-import { isSiteVisibility } from '../../domain/sites/access-policy.js';
-import { actorCanDeploySite } from '../../domain/sites/authorization.js';
-import { normalizeWorkerBundle } from '../../execution-provider.js';
+import { decisionRequiresWorker } from '../../deployment-plan.js';
 import { jsonError, jsonOk } from '../../http.js';
 import { nextId } from '../../id.js';
-import { notifyDeploymentCapacityExhausted } from '../../slack-alerts.js';
-import {
-  deploySiteResolutionErrorResponse,
-  deploymentStateWriteFailed,
-} from '../shared/deployment-responses.js';
-import { createSiteCreationApplication, siteCreateErrorResponse } from '../shared/site-creation-application.js';
-import { rejectUserExposureMutation } from '../shared/site-input.js';
+import { deploymentStateWriteFailed } from '../shared/deployment-responses.js';
 import { isPublicOfficeNetFailure, publicOfficeNetOperationError } from '../shared/public-office-net-application.js';
 import {
   buildDeploymentFailureDiagnostics,
-  buildProviderFailureDiagnostics,
   deploymentStoreErrorCause,
-  providerFailureDisposition,
-  publicProviderErrorCode,
-  workerNameFor,
 } from './deployment-diagnostics.js';
 import {
   deploymentOperationError,
   deploymentOperationFailurePatch,
-  idempotencyConflict,
-  initialRuntimeConfigResolutionFailure,
-  runtimeConfigFailurePatch,
-  runtimeConfigResolutionErrorMessage,
-  runtimeConfigSnapshotFailure,
-  runtimeConfigUnavailable,
   siteNotFound,
 } from './deployment-errors.js';
+import { readDeploySiteRequest } from './deploy-site-intake.js';
+import { startDeploySite } from './deploy-site-start.js';
+import { prepareDeploymentUpload } from './deployment-upload-stage.js';
 import {
-  readDeploymentIntakeHeaders,
-  readDeploymentMultipart,
-} from './deployment-intake.js';
-import {
-  bindExistingDeploymentTrace,
   createDeploymentActivationFailureRecoveryApplication,
-  createDeploymentRecordApplication,
   createDeploymentRouteSnapshotRecoveryApplication,
   createSuccessfulDeploymentFinalizationApplication,
   createUploadedWorkerCompensationApplication,
-  normalizeExposureForDeployment,
   persistIntermediateDeploymentState,
   readNow,
-  reconcileCommittedDeployment,
   recordDeploymentStatePersistFailure,
-  recoverFailedDeploymentsForSite,
   updateDeploymentToFailedAndNotify,
 } from './deployment-lifecycle-runtime.js';
 import { deploymentEnvelope } from './deployment-projection.js';
-import {
-  clearRequestTraceStage,
-  discardReplayRequestTrace,
-  finishRequestAuthStageFromResponse,
-  finishValidatedRequestTrace,
-  queueRequestTraceSuccess,
-  setRequestTraceStage,
-  traceFailureResponse,
-} from './deployment-request-trace.js';
-import {
-  createDeploymentRuntimeConfigCommitApplication,
-  createDeploymentRuntimeConfigResolutionApplication,
-  validateDeploymentRuntimeConfigSnapshot,
-} from './deployment-runtime-config.js';
+import { validateDeploymentRuntimeConfigSnapshot } from './deployment-runtime-config.js';
 import {
   createDeploymentCommitLeaseApplication,
-  createDeploymentProviderApplication,
   createDeploymentRouteActivationPreparationApplication,
   createDeploymentRouteCutoverApplication,
   createDeploymentRouteSnapshotCommitApplication,
   createDeploymentVersionCreationApplication,
 } from './deployment-route-runtime.js';
-import {
-  createDeploySiteResolutionApplication,
-  normalizeOptionalSlug,
-  normalizeOptionalString,
-  validateDeployableSiteSlug,
-  validateDeploySiteSlug,
-} from './deployment-site-resolution.js';
-import { traceSucceeded } from './deployment-stage-trace.js';
 
 export async function createDeployment(request, env, config, store, actor, ctx, trace, authStage) {
-  setRequestTraceStage(trace, 'intake', 'read_deployment_request');
-  const headers = readDeploymentIntakeHeaders(request);
-  if (!headers.ok) return traceFailureResponse(trace, headers.response, headers.traceFailure);
-
-  setRequestTraceStage(trace, 'intake', 'parse_multipart');
-  const multipart = await readDeploymentMultipart(request);
-  if (!multipart.ok) {
-    return multipart.traceFailure
-      ? traceFailureResponse(trace, multipart.response, multipart.traceFailure)
-      : multipart.response;
-  }
-  queueRequestTraceSuccess(trace, 'intake', 'parse_multipart');
-  setRequestTraceStage(trace, 'payload_validation', 'validate_deployment_payload');
-
-  const { idempotencyKey } = headers;
-  const { body } = multipart;
-  const exposureError = rejectUserExposureMutation(body);
-  if (exposureError) return exposureError;
-
-  const requestedSiteId = normalizeOptionalString(body.siteId);
-  const requestedSiteSlug = normalizeOptionalSlug(body.siteSlug ?? body.slug);
-  const requestedTeamId = normalizeOptionalString(body.teamId);
-  const requestedVisibility = normalizeOptionalString(body.visibility);
-  const clientContentHash = typeof body.contentHash === 'string' ? body.contentHash : '';
-  const source = typeof body.source === 'string' ? body.source : 'api';
-  const decision = body.decision;
-  const workerRuntimeVarsProvided = decisionRequiresWorker(decision) && body.varsProvided;
-  const requestedRuntimeVars = workerRuntimeVarsProvided ? body.vars : undefined;
-  let runtimeVars = {};
-  let runtimeVarRecords = [];
-  let artifactBundle;
-  let assetManifest;
-  let assetFiles;
-  let canonicalContentHash;
-
-  if (!requestedSiteId && !requestedSiteSlug) {
-    return jsonError('SITE_REQUIRED', 'Site is required.', 400, 'Pass siteId or siteSlug.');
-  }
-  if (requestedSiteSlug) {
-    const slugError = validateDeploySiteSlug(requestedSiteSlug, config.environment, { allowReserved: true });
-    if (slugError) return slugError;
-  }
-  if (requestedVisibility && !isSiteVisibility(requestedVisibility)) {
-    return jsonError(
-      'SITE_VISIBILITY_INVALID',
-      'Site visibility is invalid.',
-      400,
-      'Use internal, org, acl, owner, or disabled.'
-    );
-  }
-  if (!clientContentHash.startsWith('sha256:')) {
-    return jsonError('CONTENT_HASH_INVALID', 'Content hash is invalid.', 400, 'Pass a sha256 content hash.');
-  }
-  if (decisionRequiresWorker(decision)) {
-    try {
-      artifactBundle = normalizeWorkerBundle(body.artifactBundle);
-    } catch {
-      return jsonError('PUBLISH_PLAN_INVALID', 'Publish plan is invalid.', 400, 'Run xd-cell deploy --dry-run and retry.');
-    }
-  }
-  if (decisionRequiresAssets(decision)) {
-    assetManifest = body.assetManifest;
-    assetFiles = body.assetFiles;
-    if (!assetManifest || typeof assetManifest !== 'object' || Array.isArray(assetManifest)) {
-      return jsonError('ASSET_MANIFEST_INVALID', 'Asset manifest is invalid.', 400, 'Run xd-cell deploy --dry-run and retry.');
-    }
-    if (!Array.isArray(assetFiles) || assetFiles.length === 0) {
-      return jsonError('ASSET_FILES_REQUIRED', 'Asset files are required.', 400, 'Upload at least one asset file.');
-    }
-    const assetFileError = validateAssetFiles(assetManifest, assetFiles);
-    if (assetFileError === 'ASSET_MANIFEST_INVALID') {
-      return jsonError('ASSET_MANIFEST_INVALID', 'Asset manifest is invalid.', 400, 'Send a valid assetManifest field.');
-    }
-    if (assetFileError === 'ASSET_FILES_REQUIRED') {
-      return jsonError('ASSET_FILES_REQUIRED', 'Asset files are required.', 400, 'Upload every file listed in assetManifest.');
-    }
-  }
-  try {
-    canonicalContentHash = await canonicalDeploymentContentHash({ decision, assetManifest, assetFiles, artifactBundle });
-  } catch (error) {
-    if (error?.code === 'ASSET_MANIFEST_INVALID') {
-      return jsonError('ASSET_MANIFEST_INVALID', 'Asset manifest is invalid.', 400, 'Run xd-cell deploy --dry-run and retry.');
-    }
-    if (error?.code === 'PUBLISH_PLAN_INVALID') {
-      return jsonError('PUBLISH_PLAN_INVALID', 'Publish plan is invalid.', 400, 'Run xd-cell deploy --dry-run and retry.');
-    }
-    throw error;
-  }
-  if (clientContentHash !== canonicalContentHash) {
-    return traceFailureResponse(
-      trace,
-      jsonError(
-        'CONTENT_HASH_MISMATCH',
-        'Content hash does not match uploaded files.',
-        400,
-        'Run xd-cell deploy --dry-run and retry.'
-      ),
-      {
-        stage: 'payload_validation',
-        operation: 'validate_content_hash',
-        errorCode: 'CONTENT_HASH_MISMATCH',
-        errorMessage: 'Content hash does not match uploaded files.',
-        diagnostics: { causeClass: 'payload_validation_error' },
-      }
-    );
-  }
-  queueRequestTraceSuccess(trace, 'payload_validation', 'validate_deployment_payload');
-  setRequestTraceStage(trace, 'auth_and_site_resolution', 'resolve_site');
-  const resolution = await createDeploySiteResolutionApplication({ store, env, config }).resolve({
-    actor,
-    environment: config.environment,
-    siteId: requestedSiteId,
-    siteSlug: requestedSiteSlug,
-    teamId: requestedTeamId,
-    visibility: requestedVisibility || 'org',
-    requestedVisibility,
-  });
-  if (!resolution.ok) {
-    const response = deploySiteResolutionErrorResponse(resolution.error);
-    await finishRequestAuthStageFromResponse(authStage, response, 'site_resolution_error');
-    return response;
-  }
-  let site = resolution.site;
+  const intake = await readDeploySiteRequest({ request, config, trace });
+  if (!intake.ok) return intake.response;
+  const {
+    decision,
+    workerRuntimeVarsProvided,
+    requestedRuntimeVars,
+    artifactBundle,
+    assetManifest,
+    assetFiles,
+    canonicalContentHash,
+  } = intake.input;
+  const started = await startDeploySite({ input: intake.input, env, config, store, actor, ctx, trace, authStage });
+  if (!started.ok) return started.response;
+  let { site } = started;
+  const { siteId, deployment } = started;
   let ownerTransfer = null;
-  const routeSlugError = validateDeployableSiteSlug(site.slug, config.environment);
-  if (routeSlugError) {
-    await finishRequestAuthStageFromResponse(authStage, routeSlugError, 'site_resolution_error');
-    return routeSlugError;
-  }
-  const siteId = site.id;
-  if (!actorCanDeploySite(actor, site, 'deploy:site')) {
-    const response = jsonError('DEPLOY_FORBIDDEN', 'Actor cannot deploy this site.', 403, 'Use a token scoped to this site.');
-    await finishRequestAuthStageFromResponse(authStage, response, 'authorization_error');
-    return response;
-  }
-  await recoverFailedDeploymentsForSite({ store, env, config, ctx, actor, site });
-  setRequestTraceStage(trace, 'runtime_config', 'build_request_hash');
-  let requestHash;
-  try {
-    requestHash = await canonicalRequestHash({
-      operation: 'deploy',
-      siteId,
-      decision,
-      contentHash: canonicalContentHash,
-      artifactBundle,
-      assetManifest,
-      source,
-      teamId: requestedTeamId || null,
-      visibility: requestedVisibility || null,
-      vars: workerRuntimeVarsProvided ? await runtimeConfigHashInput(env, requestedRuntimeVars, []) : undefined,
-    });
-  } catch {
-    return jsonError(
-      'RUNTIME_CONFIG_UNSUPPORTED',
-      'Runtime configuration is unavailable.',
-      503,
-      'Check runtime configuration and retry with a new Idempotency-Key.'
-    );
-  }
-  setRequestTraceStage(trace, 'deployment_record', 'create_deployment');
-  let deploymentResult;
-  try {
-    deploymentResult = await createDeploymentRecordApplication(store, env).createPending({
-      environment: config.environment,
-      actor,
-      source,
-      siteId,
-      operation: 'deploy',
-      idempotencyKey,
-      requestHash,
-      traceId: trace?.traceId || null,
-      visibility: site.pendingOwnerTransfer?.visibility || site.defaultVisibility,
-      previousVersionId: site.route?.activeVersionId || null,
-    });
-  } catch {
-    await finishValidatedRequestTrace(trace, authStage);
-    return traceFailureResponse(trace, deploymentStateWriteFailed(), {
-      stage: 'deployment_record',
-      operation: 'create_deployment',
-      errorCode: 'DEPLOYMENT_STATE_WRITE_FAILED',
-      errorMessage: 'Deployment state could not be persisted.',
-      diagnostics: { causeClass: 'deployment_store_error' },
-    });
-  }
-
-  if (deploymentResult.kind === 'conflict') {
-    await finishValidatedRequestTrace(trace, authStage);
-    return traceFailureResponse(trace, idempotencyConflict(), {
-      stage: 'payload_validation',
-      operation: 'idempotency_conflict',
-      errorCode: 'IDEMPOTENCY_CONFLICT',
-      errorMessage: 'Idempotency-Key conflicts with an existing deployment.',
-      diagnostics: { causeClass: 'idempotency_conflict' },
-    });
-  }
-  if (deploymentResult.kind === 'existing') {
-    const traceBinding = await bindExistingDeploymentTrace(trace, store, deploymentResult.deployment, config.environment);
-    const existingDeployment = traceBinding.deployment;
-    discardReplayRequestTrace(trace, authStage);
-    if (traceBinding.claimFailed) {
-      await recordDeploymentStage(trace, {
-        stage: 'deployment_record',
-        operation: 'claim_deployment_trace',
-        status: 'failed',
-        errorCode: 'DEPLOYMENT_STATE_WRITE_FAILED',
-        errorMessage: 'Deployment state could not be persisted.',
-        diagnostics: { causeClass: 'deployment_store_error' },
-      });
-    }
-    await traceSucceeded(trace, { stage: 'deployment_record', operation: 'idempotency_replay' });
-    clearRequestTraceStage(trace);
-    const reconciled = await reconcileCommittedDeployment(store, existingDeployment, config.environment, env, trace);
-    return withDeploymentTraceHeader(jsonOk(await deploymentEnvelope(store, reconciled, {}, config.environment)), trace.traceId);
-  }
-
-  const deployment = deploymentResult.deployment;
-  bindDeploymentTrace(trace, { deploymentId: deployment.id, siteId });
-  await finishValidatedRequestTrace(trace, authStage);
-  await traceSucceeded(trace, { stage: 'deployment_record', operation: 'create_deployment' });
-  clearRequestTraceStage(trace);
+  const prepared = await prepareDeploymentUpload({
+    site,
+    siteId,
+    deployment,
+    decision,
+    workerRuntimeVarsProvided,
+    requestedRuntimeVars,
+    artifactBundle,
+    assetManifest,
+    assetFiles,
+    canonicalContentHash,
+    env,
+    config,
+    store,
+    actor,
+    ctx,
+    trace,
+  });
+  if (!prepared.ok) return prepared.response;
+  site = prepared.site;
+  const {
+    runtimeVars,
+    runtimeVarRecords,
+    originalRuntimeVarRecords,
+    runtimeSecrets,
+    versionId,
+    provider,
+    uploaded,
+    workerName,
+    committedRuntimeVarRecords,
+    uploadExposure,
+  } = prepared;
   const finalizeFailedDeployment = (patch) =>
     updateDeploymentToFailedAndNotify({
       store,
@@ -328,373 +97,6 @@ export async function createDeployment(request, env, config, store, actor, ctx, 
       site,
       trace,
     });
-  if (site.pendingSiteCreation) {
-    const creationResult = await applyPendingDeploySiteCreation(env, config, store, actor, site);
-    if (creationResult instanceof Response) {
-      await finalizeFailedDeployment(
-        deploymentOperationFailurePatch({
-          errorCode: 'SITE_CREATE_FAILED',
-          errorMessage: 'Site creation failed.',
-        })
-      );
-      return creationResult;
-    }
-    site = creationResult.site;
-  }
-
-  let runtimeSecrets = [];
-  let originalRuntimeVarRecords = [];
-  const runtimeConfigResult = await createDeploymentRuntimeConfigResolutionApplication(store, env, trace).resolve({
-    environment: config.environment,
-    siteId,
-    workerRequired: decisionRequiresWorker(decision),
-    varsProvided: workerRuntimeVarsProvided,
-    requestedVars: requestedRuntimeVars,
-  });
-  if (!runtimeConfigResult.ok) {
-    const errorCode = runtimeConfigResult.error.code;
-    const errorMessage = runtimeConfigResolutionErrorMessage(errorCode);
-    await finalizeFailedDeployment(runtimeConfigFailurePatch({ errorCode, errorMessage }));
-    return initialRuntimeConfigResolutionFailure(runtimeConfigResult.error);
-  }
-  runtimeVars = runtimeConfigResult.runtimeVars;
-  runtimeVarRecords = runtimeConfigResult.runtimeVarRecords;
-  originalRuntimeVarRecords = runtimeConfigResult.originalRuntimeVarRecords;
-  runtimeSecrets = runtimeConfigResult.runtimeSecrets;
-  const runtimeBindings = runtimeConfigResult.runtimeBindings;
-  const versionId = nextId(env, 'ver');
-  const plannedWorkerName = workerNameFor(site, versionId, config.environment);
-  const providerApplication = createDeploymentProviderApplication({ env, config, store, trace });
-  const providerResult = providerApplication.prepare({ site });
-  if (!providerResult.ok) {
-    await recordDeploymentStage(trace, {
-      stage: 'provider_upload',
-      operation: 'create_deployment_provider',
-      status: 'failed',
-      errorCode: 'DEPLOYMENT_PLATFORM_CONFIG_INVALID',
-      errorMessage: 'Deployment platform configuration is invalid.',
-      diagnostics: { causeClass: 'provider_config_error' },
-    });
-    await finalizeFailedDeployment({
-      errorCode: 'DEPLOYMENT_PLATFORM_CONFIG_INVALID',
-      errorMessage: 'Deployment platform configuration is invalid.',
-      failureStage: 'provider_config',
-      failureDiagnostics: buildDeploymentFailureDiagnostics({
-        stage: 'provider_config',
-        executionProvider: 'unknown',
-        deploymentShape: decision.deploymentShape,
-        plannedVersionId: versionId,
-        plannedWorkerName,
-        cause: { code: 'DEPLOYMENT_PLATFORM_CONFIG_INVALID', class: 'provider_config_error' },
-      }),
-      completedAt: readNow(env),
-    });
-    return jsonError(
-      'DEPLOYMENT_PLATFORM_CONFIG_INVALID',
-      'Deployment platform configuration is invalid.',
-      500,
-      'Check the Pages deployment platform configuration and retry with a new Idempotency-Key.'
-    );
-  }
-  const provider = providerResult.provider;
-
-  try {
-    await store.updateDeployment(deployment.id, { status: 'uploading' });
-  } catch (error) {
-    await recordDeploymentStatePersistFailure({
-      trace,
-      env,
-      deploymentId: deployment.id,
-      operation: 'persist_uploading_deployment',
-      cause: error,
-    });
-    await finalizeFailedDeployment(
-      {
-        errorCode: 'DEPLOYMENT_STATE_WRITE_FAILED',
-        errorMessage: 'Deployment state could not be persisted.',
-        failureStage: 'persist_deployment_state',
-        failureDiagnostics: buildDeploymentFailureDiagnostics({
-          stage: 'persist_deployment_state',
-          executionProvider: 'unknown',
-          plannedVersionId: null,
-          routePointerCommitted: false,
-          cause: deploymentStoreErrorCause(error),
-        }),
-        completedAt: readNow(env),
-      }
-    );
-    return deploymentStateWriteFailed();
-  }
-  const runtimeSnapshotError = decisionRequiresWorker(decision)
-    ? await validateDeploymentRuntimeConfigSnapshot(store, {
-        environment: config.environment,
-        siteId,
-        expectedVars: workerRuntimeVarsProvided ? originalRuntimeVarRecords : runtimeVarRecords,
-        expectedSecrets: runtimeSecrets,
-      })
-    : null;
-  if (runtimeSnapshotError) {
-    await recordDeploymentStage(trace, {
-      stage: 'runtime_config',
-      operation: 'validate_runtime_snapshot_before_upload',
-      status: 'failed',
-      errorCode: runtimeSnapshotError.code,
-      errorMessage: runtimeSnapshotError.message,
-      diagnostics: { causeClass: 'runtime_config_changed' },
-    });
-    await finalizeFailedDeployment({
-      errorCode: runtimeSnapshotError.code,
-      errorMessage: runtimeSnapshotError.message,
-      failureStage: 'runtime_config_snapshot',
-      failureDiagnostics: buildDeploymentFailureDiagnostics({
-        stage: 'runtime_config_snapshot',
-        executionProvider: provider.executionProvider || 'wfp',
-        deploymentShape: decision.deploymentShape,
-        plannedVersionId: versionId,
-        plannedWorkerName,
-        uploadCompleted: false,
-        verifyCompleted: false,
-        routePointerCommitted: false,
-        cause: { code: runtimeSnapshotError.code, class: 'runtime_config_changed' },
-      }),
-      completedAt: readNow(env),
-    });
-    return jsonError(
-      runtimeSnapshotError.code,
-      runtimeSnapshotError.message,
-      runtimeSnapshotError.status,
-      runtimeSnapshotError.action
-    );
-  }
-  const uploadExposure = normalizeExposureForDeployment(site.route?.exposure || site.defaultExposure);
-  const providerUploadResult = await providerApplication.upload({
-    provider,
-    site,
-    exposure: uploadExposure,
-    workerName: plannedWorkerName,
-    versionId,
-    decision,
-    contentHash: canonicalContentHash,
-    artifactBundle,
-    assetManifest,
-    assetFiles,
-    runtimeBindings,
-  });
-  const uploaded = providerUploadResult.ok ? providerUploadResult.uploaded : null;
-  if (!providerUploadResult.ok) {
-    const error = providerUploadResult.error?.cause;
-    const code = publicProviderErrorCode(error, 'upload');
-    const executionProvider = provider.executionProvider || 'wfp';
-    const providerDiagnostics = buildProviderFailureDiagnostics(error, executionProvider);
-    const disposition = providerFailureDisposition(error, 'upload', providerDiagnostics);
-    await finalizeFailedDeployment({
-      errorCode: code,
-      errorMessage: 'Deployment upload failed.',
-      failureStage: 'upload_worker',
-      failureDiagnostics: buildDeploymentFailureDiagnostics({
-        stage: 'upload_worker',
-        executionProvider,
-        deploymentShape: decision.deploymentShape,
-        plannedVersionId: versionId,
-        plannedWorkerName,
-        uploadCompleted: false,
-        verifyCompleted: false,
-        routePointerCommitted: false,
-        retryable: disposition.retryable,
-        operatorAction: disposition.operatorAction,
-        cause: { code, class: 'provider_upload_error' },
-        provider: providerDiagnostics,
-      }),
-      completedAt: readNow(env),
-    });
-    const status = code === 'DEPLOYMENT_CAPACITY_EXHAUSTED' ? 503 : disposition.responseStatus;
-    const action =
-      code === 'DEPLOYMENT_CAPACITY_EXHAUSTED'
-        ? 'Ask a Pages maintainer to expand platform deployment capacity.'
-        : disposition.responseAction;
-    if (code === 'DEPLOYMENT_CAPACITY_EXHAUSTED') {
-      await notifyDeploymentCapacityExhausted(env, config, { store });
-    }
-    return jsonError(code, disposition.responseMessage, status, action);
-  }
-
-  const workerName = uploaded.workerName || plannedWorkerName;
-  const postUploadRuntimeSnapshotError = decisionRequiresWorker(decision)
-    ? await validateDeploymentRuntimeConfigSnapshot(store, {
-        environment: config.environment,
-        siteId,
-        expectedVars: workerRuntimeVarsProvided ? originalRuntimeVarRecords : runtimeVarRecords,
-        expectedSecrets: runtimeSecrets,
-      })
-    : null;
-  if (postUploadRuntimeSnapshotError) {
-    await recordDeploymentStage(trace, {
-      stage: 'runtime_config',
-      operation: 'validate_runtime_snapshot_after_upload',
-      status: 'failed',
-      errorCode: postUploadRuntimeSnapshotError.code,
-      errorMessage: postUploadRuntimeSnapshotError.message,
-      diagnostics: { causeClass: 'runtime_config_changed' },
-    });
-    await createUploadedWorkerCompensationApplication({ store, provider, trace }).cleanup({
-      uploaded,
-      originalFailure: { stage: 'runtime_config', code: postUploadRuntimeSnapshotError.code },
-      trafficImpact: 'old_version_retained',
-    });
-    await finalizeFailedDeployment({
-      errorCode: postUploadRuntimeSnapshotError.code,
-      errorMessage: postUploadRuntimeSnapshotError.message,
-      failureStage: 'runtime_config_post_upload',
-      failureDiagnostics: buildDeploymentFailureDiagnostics({
-        stage: 'runtime_config_post_upload',
-        executionProvider: uploaded.executionProvider || provider.executionProvider || 'wfp',
-        deploymentShape: decision.deploymentShape,
-        plannedVersionId: versionId,
-        plannedWorkerName: workerName,
-        uploadCompleted: true,
-        verifyCompleted: false,
-        routePointerCommitted: false,
-        uploadedWorkerCleanup: 'attempted',
-        cause: { code: postUploadRuntimeSnapshotError.code, class: 'runtime_config_changed' },
-      }),
-      completedAt: readNow(env),
-    });
-    return jsonError(
-      postUploadRuntimeSnapshotError.code,
-      postUploadRuntimeSnapshotError.message,
-      postUploadRuntimeSnapshotError.status,
-      postUploadRuntimeSnapshotError.action
-    );
-  }
-  try {
-    await store.updateDeployment(deployment.id, { status: 'uploaded' });
-  } catch (error) {
-    await recordDeploymentStatePersistFailure({
-      trace,
-      env,
-      deploymentId: deployment.id,
-      operation: 'persist_uploaded_deployment',
-      cause: error,
-    });
-    await createUploadedWorkerCompensationApplication({ store, provider, trace }).cleanup({
-      uploaded,
-      originalFailure: { stage: 'deployment_state_persist', code: 'DEPLOYMENT_STATE_WRITE_FAILED' },
-      trafficImpact: 'old_version_retained',
-    });
-    await finalizeFailedDeployment(
-      {
-        errorCode: 'DEPLOYMENT_STATE_WRITE_FAILED',
-        errorMessage: 'Deployment state could not be persisted.',
-        failureStage: 'persist_deployment_state',
-        failureDiagnostics: buildDeploymentFailureDiagnostics({
-          stage: 'persist_deployment_state',
-          executionProvider: 'unknown',
-          plannedVersionId: versionId,
-          routePointerCommitted: false,
-          cause: deploymentStoreErrorCause(error),
-        }),
-        completedAt: readNow(env),
-      }
-    );
-    return deploymentStateWriteFailed();
-  }
-  const providerVerifyResult = await providerApplication.verify({
-    provider,
-    site,
-    workerName,
-    versionId,
-    artifactRef: uploaded.artifactRef,
-    ...uploaded,
-  });
-  if (!providerVerifyResult.ok) {
-    const error = providerVerifyResult.error?.cause;
-    const code = publicProviderErrorCode(null, 'verify');
-    const executionProvider = uploaded.executionProvider || provider.executionProvider || 'wfp';
-    const disposition = providerFailureDisposition(error, 'verify');
-    await createUploadedWorkerCompensationApplication({ store, provider, trace }).cleanup({
-      uploaded,
-      originalFailure: { stage: 'provider_verify', code },
-      trafficImpact: 'old_version_retained',
-    });
-    await finalizeFailedDeployment({
-      errorCode: code,
-      errorMessage: 'Deployment verification failed.',
-      failureStage: 'verify_worker',
-      failureDiagnostics: buildDeploymentFailureDiagnostics({
-        stage: 'verify_worker',
-        executionProvider,
-        deploymentShape: decision.deploymentShape,
-        plannedVersionId: versionId,
-        plannedWorkerName: workerName,
-        uploadCompleted: true,
-        verifyCompleted: false,
-        routePointerCommitted: false,
-        uploadedWorkerCleanup: 'attempted',
-        retryable: disposition.retryable,
-        operatorAction: disposition.operatorAction,
-        cause: { code, class: 'provider_verify_error' },
-        provider: buildProviderFailureDiagnostics(error, executionProvider),
-      }),
-      completedAt: readNow(env),
-    });
-    return jsonError(code, disposition.responseMessage, disposition.responseStatus, disposition.responseAction);
-  }
-
-  const runtimeConfigCommitResult = await createDeploymentRuntimeConfigCommitApplication(store, env, trace).commit({
-    environment: config.environment,
-    siteId,
-    actorId: actor.userId,
-    enabled: workerRuntimeVarsProvided,
-    requestedVars: requestedRuntimeVars,
-    expectedVars: originalRuntimeVarRecords,
-    expectedSecrets: runtimeSecrets,
-  });
-  if (!runtimeConfigCommitResult.ok && runtimeConfigCommitResult.error.reason === 'snapshot_validation_failed') {
-    const preCommitRuntimeSnapshotError = runtimeConfigSnapshotFailure(runtimeConfigCommitResult.error);
-    await createUploadedWorkerCompensationApplication({ store, provider, trace }).cleanup({
-      uploaded,
-      originalFailure: { stage: 'runtime_config_commit', code: preCommitRuntimeSnapshotError.code },
-      trafficImpact: 'old_version_retained',
-    });
-    await finalizeFailedDeployment({
-      errorCode: preCommitRuntimeSnapshotError.code,
-      errorMessage: preCommitRuntimeSnapshotError.message,
-      failureStage: 'runtime_config_precommit',
-      failureDiagnostics: buildDeploymentFailureDiagnostics({
-        stage: 'runtime_config_precommit',
-        executionProvider: uploaded.executionProvider || provider.executionProvider || 'wfp',
-        deploymentShape: decision.deploymentShape,
-        plannedVersionId: versionId,
-        plannedWorkerName: workerName,
-        uploadCompleted: true,
-        verifyCompleted: true,
-        routePointerCommitted: false,
-        uploadedWorkerCleanup: 'attempted',
-        cause: { code: preCommitRuntimeSnapshotError.code, class: 'runtime_config_changed' },
-      }),
-      completedAt: readNow(env),
-    });
-    return jsonError(
-      preCommitRuntimeSnapshotError.code,
-      preCommitRuntimeSnapshotError.message,
-      preCommitRuntimeSnapshotError.status,
-      preCommitRuntimeSnapshotError.action
-    );
-  }
-  if (!runtimeConfigCommitResult.ok) {
-    await createUploadedWorkerCompensationApplication({ store, provider, trace }).cleanup({
-      uploaded,
-      originalFailure: { stage: 'runtime_config_commit', code: 'RUNTIME_CONFIG_UNSUPPORTED' },
-      trafficImpact: 'old_version_retained',
-    });
-    await finalizeFailedDeployment(runtimeConfigFailurePatch());
-    return runtimeConfigUnavailable();
-  }
-  if (runtimeConfigCommitResult.kind === 'committed') {
-    runtimeVarRecords = runtimeConfigCommitResult.runtimeVarRecords;
-    runtimeVars = runtimeConfigCommitResult.runtimeVars;
-  }
-  const committedRuntimeVarRecords = runtimeVarRecords;
 
   let version;
   let previousRoute;
@@ -1234,25 +636,3 @@ async function applyPendingDeployOwnerTransfer(store, actor, config, env, site, 
     ownerTransfer: auditEvent.metadata,
   };
 }
-
-async function applyPendingDeploySiteCreation(env, config, store, actor, site) {
-  try {
-    const created = await createSiteCreationApplication({ store, env, config }).commit({
-      actor,
-      siteInput: site.pendingSiteCreation,
-      allowLegacyV1Takeover: true,
-    });
-    return {
-      site: {
-        ...created,
-        hostname: site.pendingSiteCreation.hostname,
-        managementRole: site.managementRole || null,
-      },
-    };
-  } catch (error) {
-    const response = siteCreateErrorResponse(error);
-    if (response) return response;
-    throw error;
-  }
-}
-
