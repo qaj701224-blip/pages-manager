@@ -13,6 +13,7 @@ import { createDeploymentRouteSnapshotCommit } from './application/deployments/c
 import { createDeploymentRuntimeConfigCommit } from './application/deployments/commit-runtime-config.js';
 import { createDeploymentVersionCreation } from './application/deployments/create-version.js';
 import { createDeploymentSucceededWebhook } from './application/deployments/deliver-succeeded-webhook.js';
+import { createDeploymentFailedWebhook } from './application/deployments/deliver-failed-webhook.js';
 import { createDeploymentRecord } from './application/deployments/deployment-record.js';
 import { createPublicWorkerOfficeNetGuard } from './application/deployments/ensure-public-office-net.js';
 import { createRollbackOfficeNetVerification } from './application/deployments/ensure-rollback-office-net.js';
@@ -76,7 +77,7 @@ import {
 import { createDeploymentProvider, normalizeWorkerBundle } from './execution-provider.js';
 import { notifyDeploymentCapacityExhausted } from './slack-alerts.js';
 import { buildSiteOwnerTransferAuditEvent, rejectUserExposureMutation } from './sites.js';
-import { emitSiteDisabledWebhook, emitSiteFailedWebhook } from './lifecycle-webhooks.js';
+import { emitSiteDisabledWebhook } from './lifecycle-webhooks.js';
 import {
   createSiteCreationApplication,
   siteCreateErrorResponse,
@@ -1496,6 +1497,40 @@ async function emitDeploymentSucceededWebhook({ application, actor, site, route,
         }
       : {}),
   });
+}
+
+async function emitDeploymentFailedWebhook({ application, actor, site, deployment, environment, trace, ctx }) {
+  const stage = trace
+    ? startDeploymentStage(trace, {
+        stage: 'webhook_delivery',
+        operation: 'site_failed',
+      })
+    : null;
+  const delivery = Promise.resolve()
+    .then(async () => {
+      const outcome = await application.deliver({ actor, site, deployment, environment });
+      if (!stage) return;
+      await finishDeploymentStage(stage, {
+        status: outcome.status,
+        ...(outcome.status === 'failed'
+          ? {
+              errorCode: 'WEBHOOK_DELIVERY_FAILED',
+              errorMessage: 'Webhook delivery failed.',
+              diagnostics: { causeClass: outcome.causeClass },
+            }
+          : {}),
+      });
+    })
+    .catch(() => undefined);
+  if (ctx && typeof ctx.waitUntil === 'function') {
+    try {
+      ctx.waitUntil(delivery);
+    } catch {
+      // Best-effort delivery must not alter the deployment response.
+    }
+    return;
+  }
+  await delivery;
 }
 
 async function getDeployment(store, actor, deploymentId, environment, env) {
@@ -2940,6 +2975,7 @@ function createDeploymentCompletionApplication(store) {
 }
 
 function createDeploymentFailureCompletionApplication({ store, env, config, ctx, trace }) {
+  const failedWebhook = createDeploymentFailedWebhookApplication({ store, env, config });
   return createDeploymentFailureCompletion({
     deployments: createDeploymentFailurePort(store),
     telemetry: {
@@ -2982,7 +3018,15 @@ function createDeploymentFailureCompletionApplication({ store, env, config, ctx,
     },
     webhooks: {
       emitFailed: ({ actor, site, deployment }) =>
-        emitSiteFailedWebhook({ store, env, config, ctx, actor, site, deployment, trace }),
+        emitDeploymentFailedWebhook({
+          application: failedWebhook,
+          actor,
+          site,
+          deployment,
+          environment: config.environment,
+          trace,
+          ctx,
+        }),
     },
     clock: { now: () => readNow(env) },
   });
@@ -3049,6 +3093,15 @@ function rollbackRouteSnapshotRecoveryError(failure) {
 
 function createDeploymentSucceededWebhookApplication({ store, env, config }) {
   return createDeploymentSucceededWebhook({
+    teams: createDeploymentWebhookTeamsPort(store),
+    webhooks: createDeploymentWebhookDispatcher({ store, env, config }),
+    clock: { now: () => readNow(env) },
+    ids: { next: (prefix) => nextId(env, prefix) },
+  });
+}
+
+function createDeploymentFailedWebhookApplication({ store, env, config }) {
+  return createDeploymentFailedWebhook({
     teams: createDeploymentWebhookTeamsPort(store),
     webhooks: createDeploymentWebhookDispatcher({ store, env, config }),
     clock: { now: () => readNow(env) },

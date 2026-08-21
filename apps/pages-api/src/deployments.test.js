@@ -1577,7 +1577,10 @@ test('successful deployments deliver site.deployed webhooks for matching subscri
   assert.equal(payload.site.hostname, 'guide.pages.xd.team');
   assert.equal(payload.deployment.id, 'dep_1');
   assert.equal(payload.deployment.status, 'succeeded');
-  const deliveries = await store.listWebhookDeliveries({ environment: 'production', subscriptionId: 'wh_1' });
+  const deliveries = await store.listWebhookDeliveries({
+    environment: 'production',
+    subscriptionId: 'wh_1',
+  });
   assert.equal(deliveries.length, 1);
   assert.equal(deliveries[0].deliveryStatus, 'succeeded');
   assert.equal(deliveries[0].eventType, 'site.deployed');
@@ -1643,6 +1646,68 @@ test('first persisted deployment failure delivers site.failed with safe failure 
   assert.equal(replay.status, 200, await replay.clone().text());
   assert.equal((await replay.json()).deployment.status, 'failed');
   assert.equal(requests.length, 1);
+});
+
+test('failed deployment schedules site.failed delivery with waitUntil without blocking the response', async () => {
+  const store = await createSeededStore();
+  await seedLifecycleWebhook(store, 'site.failed');
+  let releaseWebhook;
+  const waitUntilPromises = [];
+  const env = testEnv(store, createSnapshotStore(), {
+    WEBHOOK_URL_ENCRYPTION_KEY: TEST_WEBHOOK_URL_ENCRYPTION_KEY,
+    resolveWebhookHost: async () => ['8.8.8.8'],
+    WEBHOOK_FETCH: async () =>
+      new Promise((resolve) => {
+        releaseWebhook = () => resolve(new Response('ok', { status: 200 }));
+      }),
+    WFP_PROVIDER: {
+      upload: async () => {
+        throw new Error('upload failed');
+      },
+      verify: async () => assert.fail('verify must not run'),
+    },
+  });
+
+  const responsePromise = worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'failed_webhook_wait_until',
+    }),
+    env,
+    {
+      waitUntil(promise) {
+        waitUntilPromises.push(promise);
+      },
+    }
+  );
+  const earlyResult = await Promise.race([
+    responsePromise.then(() => 'response'),
+    new Promise((resolve) => setTimeout(() => resolve('blocked'), 20)),
+  ]);
+  if (earlyResult === 'blocked') {
+    for (let attempt = 0; attempt < 10 && !releaseWebhook; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    releaseWebhook?.();
+  }
+  const response = await responsePromise;
+
+  assert.equal(earlyResult, 'response');
+  assert.equal(response.status, 502, await response.clone().text());
+  assert.equal(waitUntilPromises.length, 1);
+  if (!releaseWebhook) {
+    for (let attempt = 0; attempt < 10 && !releaseWebhook; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+  assert.equal(typeof releaseWebhook, 'function');
+  releaseWebhook();
+  await waitUntilPromises[0];
+  const deliveries = await store.listWebhookDeliveries({
+    environment: 'production',
+    subscriptionId: 'wh_site_failed',
+  });
+  assert.equal(deliveries[0].deliveryStatus, 'succeeded');
+  assert.equal(deliveries[0].eventType, 'site.failed');
 });
 
 test('team-owned deployments include team fields in webhook payloads', async () => {
