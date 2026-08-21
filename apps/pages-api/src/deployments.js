@@ -1,5 +1,3 @@
-import { validateSiteSlug } from '@xd/pages-runtime-protocol';
-
 import { isManagedWfpWorkerName } from './admin-resource-governance.js';
 import { createRollbackLeaseAcquisition } from './application/deployments/acquire-rollback-lease.js';
 import { createDeploymentRouteActivation } from './application/deployments/activate-route.js';
@@ -28,13 +26,9 @@ import { createFailedDeploymentsRecovery } from './application/deployments/recov
 import { createUnexpectedRequestFailureRecovery } from './application/deployments/recover-unexpected-request-failure.js';
 import { createDeploymentRouteSnapshotRecovery } from './application/deployments/recover-route-snapshot.js';
 import { createRollbackRouteSnapshotRecovery } from './application/deployments/recover-rollback-route-snapshot.js';
-import { createDeploySiteResolution } from './application/deployments/resolve-deploy-site.js';
-import { createRollbackSiteResolution } from './application/deployments/resolve-rollback-site.js';
 import { createDeploymentOwnerTransferRestoration } from './application/deployments/restore-owner-transfer.js';
 import { createRollbackSite } from './application/deployments/rollback-site.js';
 import { createDeploymentCommitLease } from './application/deployments/run-under-commit-lease.js';
-import { createRollbackVersionValidation } from './application/deployments/validate-rollback-version.js';
-import { createDeploySiteResolutionPort } from './application/ports/deploy-site-resolution.js';
 import { createDeploymentCleanupTasksPort } from './application/ports/deployment-cleanup.js';
 import { createDeploymentCommitReconciliationPort } from './application/ports/deployment-commit-reconciliation.js';
 import { createDeploymentCompletionPort } from './application/ports/deployment-completion.js';
@@ -50,7 +44,6 @@ import { createDeploymentWebhookTeamsPort } from './application/ports/deployment
 import { createRollbackLeasePort } from './application/ports/rollback-lease.js';
 import { createRollbackOfficeNetVersionsPort } from './application/ports/rollback-office-net-versions.js';
 import { createRollbackRouteStatePort } from './application/ports/rollback-route-state.js';
-import { createRollbackSiteResolutionPort } from './application/ports/rollback-site-resolution.js';
 import { createUnexpectedDeploymentRecoveryPort } from './application/ports/unexpected-deployment-recovery.js';
 import { canonicalRequestHash } from './crypto.js';
 import { runtimeConfigHashInput, runtimeSecretSnapshotRecords } from './deployment-runtime-config.js';
@@ -141,12 +134,20 @@ import {
   createDeploymentRuntimeConfigRestorationApplication,
   validateDeploymentRuntimeConfigSnapshot,
 } from './transport/public/deployment-runtime-config.js';
+import {
+  createDeploySiteResolutionApplication,
+  createRollbackSiteResolutionApplication,
+  createRollbackVersionValidationApplication,
+  normalizeOptionalSlug,
+  normalizeOptionalString,
+  validateDeployableSiteSlug,
+  validateDeploySiteSlug,
+} from './transport/public/deployment-site-resolution.js';
 import { deploymentEnvelope, inactiveRouteVersion } from './transport/public/deployment-projection.js';
 import {
   deploySiteResolutionErrorResponse,
   deploymentRequestFailed,
   deploymentStateWriteFailed,
-  RESERVED_SITE_SLUG_ACTION,
   rollbackSiteResolutionErrorResponse,
 } from './transport/shared/deployment-responses.js';
 import {
@@ -2727,56 +2728,6 @@ function createDeploymentFailureRecoveryMarkersInfrastructure(env, config) {
     },
     clock: { now: () => readNow(env) },
   });
-}
-
-function createDeploySiteResolutionApplication({ store, env, config }) {
-  const resolve = createDeploySiteResolution({
-    sites: createDeploySiteResolutionPort(store),
-    prepareSite: (command) => createSiteCreationApplication({ store, env, config }).prepare(command),
-  });
-  return { resolve };
-}
-
-function createRollbackSiteResolutionApplication(store) {
-  const resolve = createRollbackSiteResolution({
-    sites: createRollbackSiteResolutionPort(store),
-  });
-  return { resolve };
-}
-
-function createRollbackVersionValidationApplication(store) {
-  return createRollbackVersionValidation({
-    deployments: {
-      get: (deploymentId, environment) => store.getDeployment(deploymentId, environment),
-    },
-  });
-}
-
-function normalizeOptionalString(value) {
-  return typeof value === 'string' ? value.trim() : '';
-}
-
-function normalizeOptionalSlug(value) {
-  return typeof value === 'string' ? value.trim().toLowerCase() : '';
-}
-
-function validateDeploySiteSlug(siteSlug, environment, { allowReserved = false } = {}) {
-  const validation = validateSiteSlug(siteSlug, { environment });
-  if (validation.ok) return null;
-  if (validation.error.code === 'RESERVED_SLUG') {
-    if (allowReserved) return null;
-    return jsonError('SITE_SLUG_RESERVED', 'Site slug is reserved.', 400, RESERVED_SITE_SLUG_ACTION);
-  }
-  return jsonError(
-    'SITE_SLUG_INVALID',
-    'Site slug is invalid.',
-    400,
-    'Use 2-50 lowercase letters, numbers, and hyphens; the first and last characters must be alphanumeric.'
-  );
-}
-
-function validateDeployableSiteSlug(siteSlug, environment) {
-  return validateDeploySiteSlug(siteSlug, environment);
 }
 
 function readNow(env) {
