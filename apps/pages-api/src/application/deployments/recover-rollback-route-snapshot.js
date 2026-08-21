@@ -1,4 +1,4 @@
-export function createRollbackRouteSnapshotRecovery({ routes, officeNet, routeSnapshots, clock }) {
+export function createRollbackRouteSnapshotRecovery({ routes, officeNet, routeSnapshots, telemetry, repairs, clock }) {
   if (typeof routes?.restore !== 'function') throw new TypeError('routes.restore is required');
   if (typeof routes?.getVersion !== 'function') throw new TypeError('routes.getVersion is required');
   if (typeof routes?.updateAccessPolicy !== 'function') throw new TypeError('routes.updateAccessPolicy is required');
@@ -12,6 +12,8 @@ export function createRollbackRouteSnapshotRecovery({ routes, officeNet, routeSn
   if (typeof routeSnapshots?.clearCurrent !== 'function') {
     throw new TypeError('routeSnapshots.clearCurrent is required');
   }
+  if (typeof telemetry?.record !== 'function') throw new TypeError('telemetry.record is required');
+  if (typeof repairs?.report !== 'function') throw new TypeError('repairs.report is required');
   if (typeof clock?.now !== 'function') throw new TypeError('clock.now is required');
 
   return { recover };
@@ -85,12 +87,22 @@ export function createRollbackRouteSnapshotRecovery({ routes, officeNet, routeSn
       ? false
       : await routeSnapshots.clearCurrent(restoredRoute || command.failedRoute);
 
-    return {
+    const result = {
       restoredRoute,
       failure,
       restoredSnapshotWritten,
       routePointerCleared,
       repairRequired: !restoredSnapshotWritten,
     };
+    await telemetry.record(result);
+    if (result.repairRequired) {
+      await repairs.report({
+        environment: command.environment,
+        siteId: command.site.id,
+        deploymentId: command.deploymentId,
+        reason: 'route_snapshot_repair_failed',
+      });
+    }
+    return result;
   }
 }

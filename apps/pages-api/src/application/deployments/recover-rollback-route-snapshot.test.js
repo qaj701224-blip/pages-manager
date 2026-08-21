@@ -20,10 +20,13 @@ const restoredVersion = {
   executionProvider: 'wfp',
   deploymentShape: 'worker',
 };
+const telemetry = { record: async () => null };
+const repairs = { report: async () => null };
 
 function command(overrides = {}) {
   return {
     environment: 'production',
+    deploymentId: 'dep_1',
     site,
     previousRoute,
     failedRoute,
@@ -45,6 +48,8 @@ function createApplication(overrides = {}) {
       writeSafeDisabled: async () => true,
       clearCurrent: async () => false,
     },
+    telemetry,
+    repairs,
     clock: { now: () => '2026-08-21T00:00:00.000Z' },
     ...overrides,
   });
@@ -221,7 +226,47 @@ test('rollback snapshot recovery clears the failed pointer when route restoratio
 
 test('rollback snapshot recovery requires its narrow fail-closed capabilities', () => {
   assert.throws(
-    () => createRollbackRouteSnapshotRecovery({ routes: {}, officeNet: {}, routeSnapshots: {}, clock: {} }),
+    () => createRollbackRouteSnapshotRecovery({ routes: {}, officeNet: {}, routeSnapshots: {}, telemetry, repairs, clock: {} }),
     /routes\.restore is required/
   );
+});
+
+test('rollback snapshot recovery records compensation before reporting required repair', async () => {
+  const calls = [];
+  const application = createApplication({
+    routes: {
+      restore: async () => null,
+      getVersion: async () => null,
+      updateAccessPolicy: async () => null,
+    },
+    routeSnapshots: {
+      writeRestored: async () => false,
+      writeSafeDisabled: async () => false,
+      clearCurrent: async () => true,
+    },
+    telemetry: {
+      async record(result) {
+        calls.push(['telemetry', result]);
+      },
+    },
+    repairs: {
+      async report(input) {
+        calls.push(['repair', input]);
+      },
+    },
+  });
+
+  const result = await application.recover(command());
+  assert.deepEqual(calls, [
+    ['telemetry', result],
+    [
+      'repair',
+      {
+        environment: 'production',
+        siteId: 'site_1',
+        deploymentId: 'dep_1',
+        reason: 'route_snapshot_repair_failed',
+      },
+    ],
+  ]);
 });

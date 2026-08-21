@@ -1618,8 +1618,10 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
       store,
       env,
       provider: rollbackProvider,
+      trace,
     }).recover({
       site,
+      deploymentId: deploymentResult.deployment.id,
       previousRoute: currentRoute,
       failedRoute: route,
       environment: config.environment,
@@ -1627,36 +1629,6 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
     });
     const { restoredRoute, routePointerCleared, repairRequired } = recovery;
     const restoredOfficeNetError = rollbackRouteSnapshotRecoveryError(recovery.failure);
-    await recordDeploymentStage(trace, {
-      stage: 'cleanup_or_compensation',
-      operation: 'rollback_restore_route_after_snapshot_failure',
-      status: repairRequired ? 'failed' : 'compensated',
-      ...(repairRequired
-        ? {
-            errorCode: 'ROUTE_SNAPSHOT_WRITE_FAILED',
-            errorMessage: 'Rollback route snapshot compensation failed.',
-          }
-        : {}),
-      diagnostics: {
-        causeClass: repairRequired ? 'route_snapshot_compensation_error' : 'route_snapshot_compensated',
-        routePointerCommitted: false,
-        trafficImpact: repairRequired
-          ? routePointerCleared
-            ? 'site_unavailable'
-            : 'public_route_state_unknown'
-          : 'old_version_retained',
-        cleanupStatus: repairRequired ? 'failed' : 'succeeded',
-        operatorAction: repairRequired ? 'repair_route_snapshot' : undefined,
-      },
-    });
-    if (repairRequired) {
-      logDeploymentRepairRequired(env, {
-        environment: config.environment,
-        siteId: site.id,
-        deploymentId: deploymentResult.deployment.id,
-        reason: 'route_snapshot_repair_failed',
-      });
-    }
     await releaseSiteCommitLeaseBestEffort(rollbackLease);
     const failureError = restoredOfficeNetError;
     const failureCode = failureError?.code || 'ROUTE_SNAPSHOT_WRITE_FAILED';
@@ -2811,7 +2783,7 @@ function createDeploymentRouteSnapshotRecoveryApplication({ store, env, trace = 
   });
 }
 
-function createRollbackRouteSnapshotRecoveryApplication({ store, env, provider }) {
+function createRollbackRouteSnapshotRecoveryApplication({ store, env, provider, trace = null }) {
   return createRollbackRouteSnapshotRecovery({
     routes: createRollbackRecoveryPort(store),
     officeNet: {
@@ -2822,6 +2794,38 @@ function createRollbackRouteSnapshotRecoveryApplication({ store, env, provider }
       routeSnapshots: createDeploymentRouteSnapshotInfrastructure(store, env),
       routePointers: { clearIfCurrent: (pointer) => clearRoutePointerIfCurrent(env, pointer) },
     }),
+    telemetry: {
+      record: (result) =>
+        trace
+          ? recordDeploymentStage(trace, {
+              stage: 'cleanup_or_compensation',
+              operation: 'rollback_restore_route_after_snapshot_failure',
+              status: result.repairRequired ? 'failed' : 'compensated',
+              ...(result.repairRequired
+                ? {
+                    errorCode: 'ROUTE_SNAPSHOT_WRITE_FAILED',
+                    errorMessage: 'Rollback route snapshot compensation failed.',
+                  }
+                : {}),
+              diagnostics: {
+                causeClass: result.repairRequired
+                  ? 'route_snapshot_compensation_error'
+                  : 'route_snapshot_compensated',
+                routePointerCommitted: false,
+                trafficImpact: result.repairRequired
+                  ? result.routePointerCleared
+                    ? 'site_unavailable'
+                    : 'public_route_state_unknown'
+                  : 'old_version_retained',
+                cleanupStatus: result.repairRequired ? 'failed' : 'succeeded',
+                operatorAction: result.repairRequired ? 'repair_route_snapshot' : undefined,
+              },
+            })
+          : undefined,
+    },
+    repairs: {
+      report: (input) => logDeploymentRepairRequired(env, input),
+    },
     clock: { now: () => readNow(env) },
   });
 }
