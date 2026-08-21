@@ -2,6 +2,10 @@ import { validateSiteSlug } from '@xd/pages-runtime-protocol';
 
 import { isManagedWfpWorkerName } from './admin-resource-governance.js';
 import { createDeploymentRouteActivation } from './application/deployments/activate-route.js';
+import {
+  createDeploymentCompletion,
+  synthesizeSucceededDeployment,
+} from './application/deployments/complete-deployment.js';
 import { createDeploymentRouteSnapshotCommit } from './application/deployments/commit-route-snapshot.js';
 import { createDeploymentRuntimeConfigCommit } from './application/deployments/commit-runtime-config.js';
 import { createDeploymentVersionCreation } from './application/deployments/create-version.js';
@@ -13,6 +17,7 @@ import { createDeploymentRuntimeConfigResolution } from './application/deploymen
 import { createDeploymentRuntimeConfigRestoration } from './application/deployments/restore-runtime-config.js';
 import { createDeploymentRuntimeConfigSnapshotValidation } from './application/deployments/validate-runtime-config-snapshot.js';
 import { createDeploySiteResolutionPort } from './application/ports/deploy-site-resolution.js';
+import { createDeploymentCompletionPort } from './application/ports/deployment-completion.js';
 import { createDeploymentProviderPort } from './application/ports/deployment-provider.js';
 import { createDeploymentRecordsPort } from './application/ports/deployment-records.js';
 import { createDeploymentRoutesPort } from './application/ports/deployment-routes.js';
@@ -1434,30 +1439,16 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
         operation: 'persist_succeeded_deployment',
       })
     : null;
-  let completed;
-  try {
-    completed = await store.updateDeployment(deployment.id, {
-      status: 'succeeded',
-      versionId: version.id,
-      previousVersionId: previousRoute?.activeVersionId || null,
-      completedAt,
-    });
-    if (deploymentStateStage) await finishDeploymentStage(deploymentStateStage, { status: 'succeeded' });
-  } catch (cause) {
-    await recordDeploymentStatePersistFailure({
-      trace,
-      env,
-      deploymentId: deployment.id,
-      operation: 'persist_succeeded_deployment',
-      stageHandle: deploymentStateStage,
-      cause,
-    });
-    completed = synthesizeSucceededDeployment(deployment, {
-      versionId: version.id,
-      previousVersionId: previousRoute?.activeVersionId || null,
-      completedAt,
-    });
-  }
+  const completed = await completeCommittedDeployment({
+    store,
+    env,
+    trace,
+    deployment,
+    versionId: version.id,
+    previousVersionId: previousRoute?.activeVersionId || null,
+    completedAt,
+    stageHandle: deploymentStateStage,
+  });
 
   await recordCleanupOutcome(trace, await cleanupPreviousNormalWorkerSlot(provider, previousRoute, route, env), {
     trafficImpact: 'new_version_active',
@@ -2200,30 +2191,16 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
         operation: 'persist_succeeded_deployment',
       })
     : null;
-  let completed;
-  try {
-    completed = await store.updateDeployment(deploymentResult.deployment.id, {
-      status: 'succeeded',
-      versionId: version.id,
-      previousVersionId: currentRoute.activeVersionId,
-      completedAt,
-    });
-    if (rollbackStateStage) await finishDeploymentStage(rollbackStateStage, { status: 'succeeded' });
-  } catch (cause) {
-    await recordDeploymentStatePersistFailure({
-      trace,
-      env,
-      deploymentId: deploymentResult.deployment.id,
-      operation: 'persist_succeeded_deployment',
-      stageHandle: rollbackStateStage,
-      cause,
-    });
-    completed = synthesizeSucceededDeployment(deploymentResult.deployment, {
-      versionId: version.id,
-      previousVersionId: currentRoute.activeVersionId,
-      completedAt,
-    });
-  }
+  const completed = await completeCommittedDeployment({
+    store,
+    env,
+    trace,
+    deployment: deploymentResult.deployment,
+    versionId: version.id,
+    previousVersionId: currentRoute.activeVersionId,
+    completedAt,
+    stageHandle: rollbackStateStage,
+  });
   await recordDeploymentStage(trace, {
     stage: 'webhook_delivery',
     operation: 'rollback_no_webhook',
@@ -2727,18 +2704,6 @@ async function traceForStoredDeployment(store, deployment, environment, env) {
     attempt: await nextDeploymentTraceAttempt(store, environment, deployment.id),
   });
   return trace;
-}
-
-function synthesizeSucceededDeployment(deployment, patch) {
-  return {
-    ...deployment,
-    ...patch,
-    status: 'succeeded',
-    errorCode: null,
-    errorMessage: null,
-    failureStage: null,
-    failureDiagnostics: null,
-  };
 }
 
 function buildDeploymentFailureDiagnostics({
@@ -3351,6 +3316,60 @@ function createDeploymentRecordApplication(store, env) {
   return createDeploymentRecord({
     deploymentRecords: createDeploymentRecordsPort(store),
     ids: { next: (prefix) => nextId(env, prefix) },
+  });
+}
+
+function createDeploymentCompletionApplication(store) {
+  return createDeploymentCompletion({
+    deployments: createDeploymentCompletionPort(store),
+  });
+}
+
+async function completeCommittedDeployment({
+  store,
+  env,
+  trace,
+  deployment,
+  versionId,
+  previousVersionId,
+  completedAt,
+  stageHandle,
+}) {
+  const command = { deployment, versionId, previousVersionId, completedAt };
+  let result;
+  try {
+    result = await createDeploymentCompletionApplication(store).complete(command);
+  } catch (cause) {
+    await recordCompletedDeploymentPersistFailure({ trace, env, deployment, stageHandle, cause });
+    return synthesizeSucceededDeployment(deployment, { versionId, previousVersionId, completedAt });
+  }
+  if (result.ok) {
+    try {
+      if (stageHandle) await finishDeploymentStage(stageHandle, { status: 'succeeded' });
+      return result.deployment;
+    } catch (cause) {
+      await recordCompletedDeploymentPersistFailure({ trace, env, deployment, stageHandle, cause });
+      return synthesizeSucceededDeployment(deployment, { versionId, previousVersionId, completedAt });
+    }
+  }
+  await recordCompletedDeploymentPersistFailure({
+    trace,
+    env,
+    deployment,
+    stageHandle,
+    cause: result.error.cause,
+  });
+  return result.deployment;
+}
+
+function recordCompletedDeploymentPersistFailure({ trace, env, deployment, stageHandle, cause }) {
+  return recordDeploymentStatePersistFailure({
+    trace,
+    env,
+    deploymentId: deployment.id,
+    operation: 'persist_succeeded_deployment',
+    stageHandle,
+    cause,
   });
 }
 
