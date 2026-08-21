@@ -1,24 +1,25 @@
 import { validateSiteSlug } from '@xd/pages-runtime-protocol';
 
 import { isManagedWfpWorkerName } from './admin-resource-governance.js';
+import { createDeploymentRuntimeConfigCommit } from './application/deployments/commit-runtime-config.js';
 import { createDeploymentRecord } from './application/deployments/deployment-record.js';
 import { createDeploySiteResolution } from './application/deployments/resolve-deploy-site.js';
 import { createRollbackSiteResolution } from './application/deployments/resolve-rollback-site.js';
 import { createDeploymentRuntimeConfigResolution } from './application/deployments/resolve-runtime-config.js';
+import { createDeploymentRuntimeConfigRestoration } from './application/deployments/restore-runtime-config.js';
 import { createDeploymentRuntimeConfigSnapshotValidation } from './application/deployments/validate-runtime-config-snapshot.js';
 import { createDeploySiteResolutionPort } from './application/ports/deploy-site-resolution.js';
 import { createDeploymentRecordsPort } from './application/ports/deployment-records.js';
 import { createRollbackSiteResolutionPort } from './application/ports/rollback-site-resolution.js';
 import {
+  createDeploymentRuntimeConfigMutationPort,
   createDeploymentRuntimeConfigResolutionPort,
   createDeploymentRuntimeConfigSnapshotPort,
 } from './application/ports/runtime-config.js';
 import { canonicalRequestHash } from './crypto.js';
 import {
-  restoreSiteVarsAfterFailedDeployment,
   runtimeConfigHashInput,
   runtimeSecretSnapshotRecords,
-  runtimeVarsFromRecords,
 } from './deployment-runtime-config.js';
 import { canonicalDeploymentContentHash, decisionRequiresAssets, decisionRequiresWorker } from './deployment-plan.js';
 import {
@@ -706,93 +707,73 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
     await finishDeploymentStage(runtimeConfigCommitStage, { status: 'skipped' });
     runtimeConfigCommitStage = null;
   }
-  if (workerRuntimeVarsProvided) {
-    if (typeof store.replaceSiteVars !== 'function') {
-      if (runtimeConfigCommitStage) {
-        await finishDeploymentStage(runtimeConfigCommitStage, {
-          status: 'failed',
-          errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
-          errorMessage: 'Runtime configuration is unavailable.',
-          diagnostics: { causeClass: 'runtime_config_error' },
-        });
-      }
-      await cleanupUploadedWorkerAndRecord(trace, provider, uploaded, {
-        originalFailure: { stage: 'runtime_config_commit', code: 'RUNTIME_CONFIG_UNSUPPORTED' },
-        trafficImpact: 'old_version_retained',
-      });
-      await finalizeFailedDeployment(runtimeConfigFailurePatch());
-      return runtimeConfigUnavailable();
-    }
-    const preCommitRuntimeSnapshotError = await validateDeploymentRuntimeConfigSnapshot(store, {
-      environment: config.environment,
-      siteId,
-      expectedVars: originalRuntimeVarRecords,
-      expectedSecrets: runtimeSecrets,
-    });
-    if (preCommitRuntimeSnapshotError) {
-      if (runtimeConfigCommitStage) {
-        await finishDeploymentStage(runtimeConfigCommitStage, {
-          status: 'failed',
-          errorCode: preCommitRuntimeSnapshotError.code,
-          errorMessage: preCommitRuntimeSnapshotError.message,
-          diagnostics: { causeClass: 'runtime_config_changed' },
-        });
-      }
-      await cleanupUploadedWorkerAndRecord(trace, provider, uploaded, {
-        originalFailure: { stage: 'runtime_config_commit', code: preCommitRuntimeSnapshotError.code },
-        trafficImpact: 'old_version_retained',
-      });
-      await finalizeFailedDeployment({
+  const runtimeConfigCommitResult = await createDeploymentRuntimeConfigCommitApplication(store, env).commit({
+    environment: config.environment,
+    siteId,
+    actorId: actor.userId,
+    enabled: workerRuntimeVarsProvided,
+    requestedVars: requestedRuntimeVars,
+    expectedVars: originalRuntimeVarRecords,
+    expectedSecrets: runtimeSecrets,
+  });
+  if (!runtimeConfigCommitResult.ok && runtimeConfigCommitResult.error.reason === 'snapshot_validation_failed') {
+    const preCommitRuntimeSnapshotError = runtimeConfigSnapshotFailure(runtimeConfigCommitResult.error);
+    if (runtimeConfigCommitStage) {
+      await finishDeploymentStage(runtimeConfigCommitStage, {
+        status: 'failed',
         errorCode: preCommitRuntimeSnapshotError.code,
         errorMessage: preCommitRuntimeSnapshotError.message,
-        failureStage: 'runtime_config_precommit',
-        failureDiagnostics: buildDeploymentFailureDiagnostics({
-          stage: 'runtime_config_precommit',
-          executionProvider: uploaded.executionProvider || provider.executionProvider || 'wfp',
-          deploymentShape: decision.deploymentShape,
-          plannedVersionId: versionId,
-          plannedWorkerName: workerName,
-          uploadCompleted: true,
-          verifyCompleted: true,
-          routePointerCommitted: false,
-          uploadedWorkerCleanup: 'attempted',
-          cause: { code: preCommitRuntimeSnapshotError.code, class: 'runtime_config_changed' },
-        }),
-        completedAt: readNow(env),
+        diagnostics: { causeClass: 'runtime_config_changed' },
       });
-      return jsonError(
-        preCommitRuntimeSnapshotError.code,
-        preCommitRuntimeSnapshotError.message,
-        preCommitRuntimeSnapshotError.status,
-        preCommitRuntimeSnapshotError.action
-      );
     }
-    try {
-      runtimeVarRecords = await store.replaceSiteVars({
-        environment: config.environment,
-        siteId,
-        vars: requestedRuntimeVars,
-        actorId: actor.userId,
-        updatedAt: readNow(env),
-        createId: () => nextId(env, 'var'),
+    await cleanupUploadedWorkerAndRecord(trace, provider, uploaded, {
+      originalFailure: { stage: 'runtime_config_commit', code: preCommitRuntimeSnapshotError.code },
+      trafficImpact: 'old_version_retained',
+    });
+    await finalizeFailedDeployment({
+      errorCode: preCommitRuntimeSnapshotError.code,
+      errorMessage: preCommitRuntimeSnapshotError.message,
+      failureStage: 'runtime_config_precommit',
+      failureDiagnostics: buildDeploymentFailureDiagnostics({
+        stage: 'runtime_config_precommit',
+        executionProvider: uploaded.executionProvider || provider.executionProvider || 'wfp',
+        deploymentShape: decision.deploymentShape,
+        plannedVersionId: versionId,
+        plannedWorkerName: workerName,
+        uploadCompleted: true,
+        verifyCompleted: true,
+        routePointerCommitted: false,
+        uploadedWorkerCleanup: 'attempted',
+        cause: { code: preCommitRuntimeSnapshotError.code, class: 'runtime_config_changed' },
+      }),
+      completedAt: readNow(env),
+    });
+    return jsonError(
+      preCommitRuntimeSnapshotError.code,
+      preCommitRuntimeSnapshotError.message,
+      preCommitRuntimeSnapshotError.status,
+      preCommitRuntimeSnapshotError.action
+    );
+  }
+  if (!runtimeConfigCommitResult.ok) {
+    if (runtimeConfigCommitStage) {
+      await finishDeploymentStage(runtimeConfigCommitStage, {
+        status: 'failed',
+        errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+        errorMessage: 'Runtime configuration is unavailable.',
+        diagnostics: { causeClass: 'runtime_config_error' },
       });
-      runtimeVars = runtimeVarsFromRecords(runtimeVarRecords);
-    } catch {
-      if (runtimeConfigCommitStage) {
-        await finishDeploymentStage(runtimeConfigCommitStage, {
-          status: 'failed',
-          errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
-          errorMessage: 'Runtime configuration is unavailable.',
-          diagnostics: { causeClass: 'runtime_config_error' },
-        });
-      }
-      await cleanupUploadedWorkerAndRecord(trace, provider, uploaded, {
-        originalFailure: { stage: 'runtime_config_commit', code: 'RUNTIME_CONFIG_UNSUPPORTED' },
-        trafficImpact: 'old_version_retained',
-      });
-      await finalizeFailedDeployment(runtimeConfigFailurePatch());
-      return runtimeConfigUnavailable();
     }
+    await cleanupUploadedWorkerAndRecord(trace, provider, uploaded, {
+      originalFailure: { stage: 'runtime_config_commit', code: 'RUNTIME_CONFIG_UNSUPPORTED' },
+      trafficImpact: 'old_version_retained',
+    });
+    await finalizeFailedDeployment(runtimeConfigFailurePatch());
+    return runtimeConfigUnavailable();
+  }
+  if (runtimeConfigCommitResult.kind === 'committed') {
+    runtimeVarRecords = runtimeConfigCommitResult.runtimeVarRecords;
+    runtimeVars = runtimeConfigCommitResult.runtimeVars;
     if (runtimeConfigCommitStage) {
       await finishDeploymentStage(runtimeConfigCommitStage, { status: 'succeeded' });
       runtimeConfigCommitStage = null;
@@ -824,14 +805,12 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
         originalFailure: { stage: 'runtime_config', code: preActivationRuntimeSnapshotError.code },
         trafficImpact: 'old_version_retained',
       });
-      await restoreSiteVarsAfterFailedDeployment(store, {
+      await restoreDeploymentRuntimeConfigAfterFailure(store, env, {
         environment: config.environment,
         siteId,
         restoreVars: originalRuntimeVarRecords,
         expectedVars: committedRuntimeVarRecords,
         actorId: actor.userId,
-        updatedAt: readNow(env),
-        createId: () => nextId(env, 'var'),
         enabled: workerRuntimeVarsProvided,
       });
       await finalizeFailedDeployment({
@@ -867,14 +846,12 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
           originalFailure: { stage: 'auth_and_site_resolution', code: 'SITE_TRANSFER_FAILED' },
           trafficImpact: 'old_version_retained',
         });
-        await restoreSiteVarsAfterFailedDeployment(store, {
+        await restoreDeploymentRuntimeConfigAfterFailure(store, env, {
           environment: config.environment,
           siteId,
           restoreVars: originalRuntimeVarRecords,
           expectedVars: committedRuntimeVarRecords,
           actorId: actor.userId,
-          updatedAt: readNow(env),
-          createId: () => nextId(env, 'var'),
           enabled: workerRuntimeVarsProvided,
         });
         await finalizeFailedDeployment(
@@ -1109,14 +1086,12 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
             restorationError = error;
           }
           try {
-            await restoreSiteVarsAfterFailedDeployment(store, {
+            await restoreDeploymentRuntimeConfigAfterFailure(store, env, {
               environment: config.environment,
               siteId,
               restoreVars: originalRuntimeVarRecords,
               expectedVars: committedRuntimeVarRecords,
               actorId: actor.userId,
-              updatedAt: readNow(env),
-              createId: () => nextId(env, 'var'),
               enabled: workerRuntimeVarsProvided,
             });
           } catch (error) {
@@ -1257,14 +1232,12 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
             : { stage: 'version_create', code: 'DEPLOYMENT_STATE_WRITE_FAILED' },
       trafficImpact: 'old_version_retained',
     });
-    await restoreSiteVarsAfterFailedDeployment(store, {
+    await restoreDeploymentRuntimeConfigAfterFailure(store, env, {
       environment: config.environment,
       siteId,
       restoreVars: originalRuntimeVarRecords,
       expectedVars: committedRuntimeVarRecords,
       actorId: actor.userId,
-      updatedAt: readNow(env),
-      createId: () => nextId(env, 'var'),
       enabled: workerRuntimeVarsProvided,
     });
     site =
@@ -1370,14 +1343,12 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
         originalFailure: { stage: 'runtime_config', code: 'RUNTIME_CONFIG_CHANGED' },
         trafficImpact: 'old_version_retained',
       });
-      await restoreSiteVarsAfterFailedDeployment(store, {
+      await restoreDeploymentRuntimeConfigAfterFailure(store, env, {
         environment: config.environment,
         siteId,
         restoreVars: originalRuntimeVarRecords,
         expectedVars: committedRuntimeVarRecords,
         actorId: actor.userId,
-        updatedAt: readNow(env),
-        createId: () => nextId(env, 'var'),
         enabled: workerRuntimeVarsProvided,
       });
       site =
@@ -1418,14 +1389,12 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
       originalFailure: { stage: 'route_activate', code: 'ROUTE_ACTIVATION_CONFLICT' },
       trafficImpact: 'old_version_retained',
     });
-    await restoreSiteVarsAfterFailedDeployment(store, {
+    await restoreDeploymentRuntimeConfigAfterFailure(store, env, {
       environment: config.environment,
       siteId,
       restoreVars: originalRuntimeVarRecords,
       expectedVars: committedRuntimeVarRecords,
       actorId: actor.userId,
-      updatedAt: readNow(env),
-      createId: () => nextId(env, 'var'),
       enabled: workerRuntimeVarsProvided,
     });
     site =
@@ -3427,6 +3396,28 @@ function createDeploymentRuntimeConfigResolutionApplication(store, env) {
       hashInput: (vars, secrets) => runtimeConfigHashInput(env, vars, secrets),
     }),
   });
+}
+
+function createDeploymentRuntimeConfigCommitApplication(store, env) {
+  const runtimeConfig = createDeploymentRuntimeConfigMutationPort(store);
+  return createDeploymentRuntimeConfigCommit({
+    runtimeConfig,
+    snapshotValidation: createDeploymentRuntimeConfigSnapshotValidation({ runtimeConfig }),
+    clock: { now: () => readNow(env) },
+    ids: { next: (prefix) => nextId(env, prefix) },
+  });
+}
+
+function createDeploymentRuntimeConfigRestorationApplication(store, env) {
+  return createDeploymentRuntimeConfigRestoration({
+    runtimeConfig: createDeploymentRuntimeConfigMutationPort(store),
+    clock: { now: () => readNow(env) },
+    ids: { next: (prefix) => nextId(env, prefix) },
+  });
+}
+
+function restoreDeploymentRuntimeConfigAfterFailure(store, env, command) {
+  return createDeploymentRuntimeConfigRestorationApplication(store, env).restore(command);
 }
 
 async function validateDeploymentRuntimeConfigSnapshot(store, command) {

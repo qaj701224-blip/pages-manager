@@ -21,6 +21,13 @@ export function createDeploymentRuntimeConfigSnapshotPort(store) {
   };
 }
 
+export function createDeploymentRuntimeConfigMutationPort(store) {
+  return {
+    ...createDeploymentRuntimeConfigSnapshotPort(store),
+    replaceVars: bindOptional(store, 'replaceSiteVars'),
+  };
+}
+
 function bindOptional(target, name) {
   return typeof target?.[name] === 'function' ? target[name].bind(target) : null;
 }
