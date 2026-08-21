@@ -9,13 +9,17 @@ import {
   MAX_SITE_SECRET_VALUE_BYTES,
   normalizeRuntimeSecretName,
   normalizeRuntimeVars,
-  runtimeVarsObject,
 } from './runtime-config.js';
 import { logRuntimeConfigFailure, readRuntimeConfigErrorDiagnostic } from './runtime-config-diagnostics.js';
+import { createRuntimeConfigSync } from './infrastructure/providers/runtime-config-sync.js';
 import { buildRouteSnapshot, writeRouteSnapshot } from './route-snapshot.js';
 import { createDeploymentProvider as createWfpDeploymentProvider } from './wfp-provider.js';
 import { createSiteWithLegacyV1Takeover } from './legacy-v1/takeover.js';
 import { emitSiteDeletedWebhook, emitSiteDisabledWebhook } from './lifecycle-webhooks.js';
+import {
+  createRuntimeConfigApplication,
+  runtimeConfigSyncErrorResponse,
+} from './transport/shared/runtime-config-application.js';
 
 const VISIBILITIES = new Set(['internal', 'org', 'acl', 'owner', 'disabled']);
 const ACL_SUBJECT_TYPES = new Set(['email', 'department']);
@@ -25,7 +29,6 @@ const MAX_RUNTIME_VAR_BODY_BYTES = 64 * 1024;
 const VISIBILITY_ACTION = '请使用 internal、org、acl、owner 或 disabled。';
 const RESERVED_SITE_SLUG_ACTION = '该站点名是 XD Cell 平台保留项，请换一个业务站点名。';
 const DEFAULT_REUSE_HOLD_SECONDS = 300;
-const RUNTIME_CONFIG_PROVIDER_TIMEOUT_MS = 15 * 1000;
 
 export async function handleSitesApi(request, env, config, store, ctx) {
   const auth = await authenticateApiRequest(request, env, store, config, readNow(env));
@@ -112,17 +115,21 @@ async function putSiteVar(request, env, config, store, actor, siteSlug) {
   }
 
   let mutation;
+  let syncResult;
   try {
-    mutation = await store.mutateSiteVar({
+    const result = await createRuntimeConfigApplication({ store, env, config }).mutateVar({
       environment: config.environment,
-      siteId: site.id,
+      site,
+      actor,
       operation: 'put',
       name,
       value: normalized[name],
-      actorId: actor.userId,
-      updatedAt: readNow(env),
     });
+    mutation = result.mutation;
+    syncResult = result.syncResult;
   } catch (error) {
+    const syncResponse = runtimeConfigSyncErrorResponse(error, { env, config, site, kind: 'var' });
+    if (syncResponse) return syncResponse;
     const response = runtimeVarMutationError(error);
     if (response.status >= 500) {
       const diagnostic = readRuntimeConfigErrorDiagnostic(error, {
@@ -139,9 +146,9 @@ async function putSiteVar(request, env, config, store, actor, siteSlug) {
     }
     return response;
   }
-  const syncResult = await syncActiveWfpPlainTextBindings(store, env, config, site, mutation);
-  if (syncResult instanceof Response) return syncResult;
-  return jsonOk({ var: formatVar(site.slug, mutation.record, { deleted: false, appliesTo: syncResult.appliesTo }) });
+  return jsonOk({
+    var: formatVar(site.slug, mutation.record, { deleted: false, appliesTo: syncResult.appliesTo }),
+  });
 }
 
 async function deleteSiteVar(request, env, config, store, actor, siteSlug) {
@@ -174,16 +181,20 @@ async function deleteSiteVar(request, env, config, store, actor, siteSlug) {
   }
 
   let mutation;
+  let syncResult;
   try {
-    mutation = await store.mutateSiteVar({
+    const result = await createRuntimeConfigApplication({ store, env, config }).mutateVar({
       environment: config.environment,
-      siteId: site.id,
+      site,
+      actor,
       operation: 'delete',
       name,
-      actorId: actor.userId,
-      updatedAt: readNow(env),
     });
+    mutation = result.mutation;
+    syncResult = result.syncResult;
   } catch (error) {
+    const syncResponse = runtimeConfigSyncErrorResponse(error, { env, config, site, kind: 'var' });
+    if (syncResponse) return syncResponse;
     const response = runtimeVarMutationError(error);
     if (response.status >= 500) {
       const diagnostic = readRuntimeConfigErrorDiagnostic(error, {
@@ -200,9 +211,9 @@ async function deleteSiteVar(request, env, config, store, actor, siteSlug) {
     }
     return response;
   }
-  const syncResult = await syncActiveWfpPlainTextBindings(store, env, config, site, mutation);
-  if (syncResult instanceof Response) return syncResult;
-  return jsonOk({ var: formatVar(site.slug, mutation.record, { deleted: true, appliesTo: syncResult.appliesTo }) });
+  return jsonOk({
+    var: formatVar(site.slug, mutation.record, { deleted: true, appliesTo: syncResult.appliesTo }),
+  });
 }
 
 async function putSiteSecret(request, env, config, store, actor, siteSlug) {
@@ -235,27 +246,17 @@ async function putSiteSecret(request, env, config, store, actor, siteSlug) {
     return jsonError('SECRET_VALUE_TOO_LARGE', 'Secret value is too large.', 413, 'Use a secret value no larger than 8 KiB.');
   }
   try {
-    const secret = await putSiteSecretWithAudit(store, env, {
-      id: nextId(env, 'sec'),
+    const { secret } = await createRuntimeConfigApplication({ store, env, config }).putSecret({
       environment: config.environment,
-      siteId: site.id,
-      siteSlug: site.slug,
-      name,
-      value: body.value,
-      actorId: actor.userId,
-      actorType: actor.type,
-      routeId: site.route?.id || null,
-      auditId: nextId(env, 'aud'),
-      updatedAt: readNow(env),
-    });
-    const syncError = await syncActiveWfpSecret(store, env, config, site, {
-      operation: 'put',
+      site,
+      actor,
       name,
       value: body.value,
     });
-    if (syncError) return syncError;
     return jsonOk({ secret: formatSecret(site.slug, secret, { deleted: false }) });
   } catch (error) {
+    const syncResponse = runtimeConfigSyncErrorResponse(error, { env, config, site, kind: 'secret' });
+    if (syncResponse) return syncResponse;
     if (error?.message === 'RUNTIME_BINDING_NAME_CONFLICT') {
       return jsonError(
         'RUNTIME_BINDING_NAME_CONFLICT',
@@ -321,24 +322,16 @@ async function deleteSiteSecret(request, env, config, store, actor, siteSlug) {
   const name = normalizeSecretNameForResponse(body.name);
   if (name instanceof Response) return name;
   try {
-    const secret = await deleteSiteSecretWithAudit(store, env, {
+    const { secret } = await createRuntimeConfigApplication({ store, env, config }).deleteSecret({
       environment: config.environment,
-      siteId: site.id,
-      siteSlug: site.slug,
-      name,
-      actorId: actor.userId,
-      actorType: actor.type,
-      routeId: site.route?.id || null,
-      auditId: nextId(env, 'aud'),
-      deletedAt: readNow(env),
-    });
-    const syncError = await syncActiveWfpSecret(store, env, config, site, {
-      operation: 'delete',
+      site,
+      actor,
       name,
     });
-    if (syncError) return syncError;
     return jsonOk({ secret: formatSecret(site.slug, secret || { name }, { deleted: true }) });
   } catch (error) {
+    const syncResponse = runtimeConfigSyncErrorResponse(error, { env, config, site, kind: 'secret' });
+    if (syncResponse) return syncResponse;
     if (isRuntimeConfigConflict(error)) {
       return jsonError(
         'RUNTIME_CONFIG_CHANGED',
@@ -364,341 +357,28 @@ async function deleteSiteSecret(request, env, config, store, actor, siteSlug) {
   }
 }
 
-async function putSiteSecretWithAudit(store, env, input) {
-  if (typeof store.putSiteSecretWithAudit === 'function') return store.putSiteSecretWithAudit(input);
-  void env;
-  throw new Error('RUNTIME_SECRET_STORE_UNAVAILABLE');
-}
-
-async function deleteSiteSecretWithAudit(store, env, input) {
-  if (typeof store.deleteSiteSecretWithAudit === 'function') return store.deleteSiteSecretWithAudit(input);
-  void env;
-  throw new Error('RUNTIME_SECRET_STORE_UNAVAILABLE');
-}
-
 export async function syncActiveWfpSecret(store, env, config, site, input) {
-  if (typeof store.getRouteBySiteId !== 'function' || typeof store.getSiteVersion !== 'function') return null;
-
-  let route;
-  let version;
   try {
-    route = await store.getRouteBySiteId(site.id, config.environment);
-    if (!route || route.routeStatus !== 'active' || !route.activeVersionId) return null;
-    version = await store.getSiteVersion(route.activeVersionId, config.environment);
-  } catch {
-    return runtimeSecretSyncFailed(env, config, site, {
-      stage: 'route_state_read',
-      reason: 'store_operation_failed',
+    return await runtimeConfigSync(store, env, config).syncSecret({
+      site,
+      mutation: input,
     });
-  }
-  if (!version || (!isWfpRoute(route) && !isWfpVersion(version))) return null;
-  if (!versionRequiresWorker(version)) return null;
-  const workerName = route.workerName || version.workerName;
-  if (!workerName) return null;
-
-  let provider;
-  try {
-    provider = createWfpDeploymentProvider(env, config);
-  } catch {
-    return runtimeSecretSyncFailed(env, config, site, {
-      stage: 'provider_setup',
-      reason: 'provider_configuration_failed',
-      action: 'Check platform Worker provider configuration and retry the secret command.',
-    });
-  }
-  try {
-    const syncUnderSiteLease = async ({ signal: siteSignal } = {}) => {
-      const activeTarget = await resolveActiveWfpWorker(store, config, site);
-      if (!activeTarget) return null;
-      const syncOnce = async ({ signal: runtimeSignal } = {}) => {
-        const latestTarget = await resolveActiveWfpWorker(store, config, site);
-        if (!latestTarget || latestTarget.workerName !== activeTarget.workerName) {
-          throw new Error('RUNTIME_CONFIG_LOCKED');
-        }
-        const current = await currentSiteSecretMutation(store, config.environment, site.id, input);
-        const signal = combineAbortSignals(siteSignal, runtimeSignal);
-        if (current.operation === 'put') {
-          if (typeof provider.putSecret !== 'function') return;
-          await provider.putSecret({ workerName: latestTarget.workerName, name: current.name, value: current.value, signal });
-        } else {
-          if (typeof provider.deleteSecret !== 'function') return;
-          try {
-            await provider.deleteSecret({ workerName: latestTarget.workerName, name: current.name, signal });
-          } catch (error) {
-            if (!isNotFoundError(error)) throw error;
-          }
-        }
-        const verifiedTarget = await resolveActiveWfpWorker(store, config, site);
-        if (!verifiedTarget || verifiedTarget.workerName !== latestTarget.workerName) {
-          throw new Error('RUNTIME_CONFIG_LOCKED');
-        }
-      };
-      await withRuntimeConfigSyncLock(store, config.environment, site.id, syncOnce);
-      return null;
-    };
-    if (typeof store.withSiteCommitLock === 'function') {
-      return await store.withSiteCommitLock(config.environment, site.id, syncUnderSiteLease, {
-        bestEffortRelease: true,
-        waitForLockMs: typeof store.withRuntimeConfigLock === 'function' ? RUNTIME_CONFIG_PROVIDER_TIMEOUT_MS : 50,
-      });
-    }
-    return await syncUnderSiteLease();
   } catch (error) {
-    if (isRuntimeConfigLockError(error)) return runtimeConfigChanged('Runtime config changed while syncing a secret.');
-    if (isSiteCommitLockError(error)) return runtimeConfigChanged('Runtime config changed while syncing a secret.');
-    return runtimeSecretSyncFailed(env, config, site);
+    return runtimeConfigSyncErrorResponse(error, { env, config, site, kind: 'secret' });
   }
 }
 
 export async function syncActiveWfpPlainTextBindings(store, env, config, site, snapshot) {
-  if (typeof store.getRouteBySiteId !== 'function' || typeof store.getSiteVersion !== 'function') {
-    return { appliesTo: 'next_deployment' };
-  }
-
-  let target;
   try {
-    target = await resolveActiveWfpWorker(store, config, site);
-  } catch {
-    return runtimeVarSyncFailed(env, config, site, {
-      stage: 'route_state_read',
-      reason: 'store_operation_failed',
+    return await runtimeConfigSync(store, env, config).syncPlainText({
+      site,
+      snapshot,
     });
-  }
-  if (!target) return { appliesTo: 'next_deployment' };
-
-  let provider;
-  try {
-    provider = createWfpDeploymentProvider(env, config);
-  } catch {
-    logRuntimeConfigFailure(env, {
-      operation: 'plain_text_sync',
-      environment: config.environment,
-      siteId: site.id,
-      stage: 'provider_setup',
-      reason: 'provider_configuration_failed',
-      errorCode: 'RUNTIME_VAR_ACTIVE_WORKER_SYNC_FAILED',
-    });
-    return jsonError(
-      'RUNTIME_VAR_ACTIVE_WORKER_SYNC_FAILED',
-      'Runtime var was saved but the active Worker could not be updated.',
-      502,
-      'Check platform Worker provider configuration and retry the runtime config change.'
-    );
-  }
-  if (typeof provider.replacePlainTextBindings !== 'function') return { appliesTo: 'next_deployment' };
-
-  const syncUnderSiteLease = async ({ signal: siteSignal } = {}) => {
-    let activeTarget;
-    try {
-      activeTarget = await resolveActiveWfpWorker(store, config, site);
-    } catch {
-      return runtimeVarSyncFailed(env, config, site, {
-        stage: 'route_state_read',
-        reason: 'store_operation_failed',
-      });
-    }
-    if (!activeTarget) return { appliesTo: 'next_deployment' };
-
-    const syncOnce = async ({ signal: runtimeSignal } = {}) => {
-      const latestTarget = await resolveActiveWfpWorker(store, config, site);
-      if (!latestTarget || latestTarget.workerName !== activeTarget.workerName) {
-        throw new Error('RUNTIME_CONFIG_LOCKED');
-      }
-      const vars =
-        typeof store.listEnabledSiteVars === 'function'
-          ? runtimeVarsObject(await store.listEnabledSiteVars(config.environment, site.id))
-          : runtimeVarsObject(snapshot?.vars || []);
-      await provider.replacePlainTextBindings({
-        workerName: latestTarget.workerName,
-        vars,
-        signal: combineAbortSignals(siteSignal, runtimeSignal),
-      });
-      const verifiedTarget = await resolveActiveWfpWorker(store, config, site);
-      if (!verifiedTarget || verifiedTarget.workerName !== latestTarget.workerName) {
-        throw new Error('RUNTIME_CONFIG_LOCKED');
-      }
-      return { appliesTo: 'active_worker' };
-    };
-
-    if (typeof store.withRuntimeConfigLock === 'function') {
-      return store.withRuntimeConfigLock(config.environment, site.id, syncOnce);
-    }
-
-    if (!Array.isArray(snapshot?.vars)) {
-      await withRuntimeConfigSyncLock(store, config.environment, site.id, syncOnce);
-      return { appliesTo: 'active_worker' };
-    }
-
-    let current = snapshot;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      await withRuntimeConfigSyncLock(store, config.environment, site.id, async ({ signal } = {}) => {
-        const latestTarget = await resolveActiveWfpWorker(store, config, site);
-        if (!latestTarget || latestTarget.workerName !== activeTarget.workerName) {
-          throw new Error('RUNTIME_CONFIG_LOCKED');
-        }
-        await provider.replacePlainTextBindings({
-          workerName: latestTarget.workerName,
-          vars: runtimeVarsObject(current.vars),
-          signal: combineAbortSignals(siteSignal, signal),
-        });
-      });
-      const routeState = await readRuntimeConfigRouteState(store, config.environment, site.id);
-      const generation = Number(routeState?.runtimeConfigGeneration || 0);
-      const verifiedTarget = await resolveActiveWfpWorker(store, config, site);
-      if (!verifiedTarget || verifiedTarget.workerName !== activeTarget.workerName) {
-        throw new Error('RUNTIME_CONFIG_LOCKED');
-      }
-      if (generation === Number(current.generation || 0)) return { appliesTo: 'active_worker' };
-      current = {
-        vars: await store.listEnabledSiteVars(config.environment, site.id),
-        generation,
-      };
-    }
-    return jsonError('RUNTIME_CONFIG_CHANGED', 'Runtime config changed while syncing.', 409, 'Retry the runtime config change.');
-  };
-
-  try {
-    if (typeof store.withSiteCommitLock === 'function') {
-      return await store.withSiteCommitLock(config.environment, site.id, syncUnderSiteLease, {
-        bestEffortRelease: true,
-        waitForLockMs: typeof store.withRuntimeConfigLock === 'function' ? RUNTIME_CONFIG_PROVIDER_TIMEOUT_MS : 50,
-      });
-    }
-    return await syncUnderSiteLease();
   } catch (error) {
-    if (isRuntimeConfigLockError(error)) return runtimeConfigChanged('Runtime config changed while syncing.');
-    if (isSiteCommitLockError(error)) return { appliesTo: 'next_deployment' };
-    return runtimeVarSyncFailed(env, config, site);
+    return runtimeConfigSyncErrorResponse(error, { env, config, site, kind: 'var' });
   }
 }
 
-async function withRuntimeConfigSyncLock(store, environment, siteId, callback) {
-  if (typeof store.withRuntimeConfigLock !== 'function') return withProviderTimeout(callback);
-  return store.withRuntimeConfigLock(environment, siteId, callback);
-}
-
-async function withProviderTimeout(callback) {
-  const controller = new globalThis.AbortController();
-  const timer = globalThis.setTimeout(() => {
-    controller.abort(new Error('RUNTIME_CONFIG_PROVIDER_TIMEOUT'));
-  }, RUNTIME_CONFIG_PROVIDER_TIMEOUT_MS);
-  try {
-    return await callback({ signal: controller.signal });
-  } finally {
-    globalThis.clearTimeout(timer);
-  }
-}
-
-function combineAbortSignals(...signals) {
-  const activeSignals = signals.filter(Boolean);
-  if (activeSignals.length === 0) return undefined;
-  if (activeSignals.length === 1) return activeSignals[0];
-  if (typeof globalThis.AbortSignal?.any === 'function') return globalThis.AbortSignal.any(activeSignals);
-  const controller = new globalThis.AbortController();
-  for (const activeSignal of activeSignals) {
-    if (activeSignal.aborted) {
-      controller.abort(activeSignal.reason);
-      break;
-    }
-    activeSignal.addEventListener('abort', () => controller.abort(activeSignal.reason), { once: true });
-  }
-  return controller.signal;
-}
-
-async function currentSiteSecretMutation(store, environment, siteId, input) {
-  if (typeof store.listEnabledSiteSecrets !== 'function') return input;
-  const secrets = await store.listEnabledSiteSecrets(environment, siteId);
-  const current = secrets.find((secret) => secret.name === input.name);
-  return current ? { operation: 'put', name: current.name, value: current.value } : { operation: 'delete', name: input.name };
-}
-
-function isRuntimeConfigLockError(error) {
-  return error instanceof Error && error.message === 'RUNTIME_CONFIG_LOCKED';
-}
-
-function isSiteCommitLockError(error) {
-  return error?.code === 'SITE_POLICY_LOCKED' || error?.code === 'SITE_COMMIT_TIMEOUT';
-}
-
-function runtimeConfigChanged(message) {
-  return jsonError('RUNTIME_CONFIG_CHANGED', message, 409, 'Retry the runtime config change.');
-}
-
-async function resolveActiveWfpWorker(store, config, site) {
-  const route = await store.getRouteBySiteId(site.id, config.environment);
-  if (!route || route.routeStatus !== 'active' || !route.activeVersionId) return null;
-  const version = await store.getSiteVersion(route.activeVersionId, config.environment);
-  if (!version || (!isWfpRoute(route) && !isWfpVersion(version))) return null;
-  if (!versionRequiresWorker(version)) return null;
-  const workerName = route.workerName || version.workerName;
-  return workerName ? { workerName } : null;
-}
-
-async function readRuntimeConfigRouteState(store, environment, siteId) {
-  if (typeof store.getRuntimeConfigRouteState === 'function') {
-    return store.getRuntimeConfigRouteState(environment, siteId);
-  }
-  return store.getRouteBySiteId(siteId, environment);
-}
-
-function runtimeSecretSyncFailed(
-  env,
-  config,
-  site,
-  {
-    stage = 'provider_sync',
-    reason = 'provider_request_failed',
-    action = 'Retry the secret command before testing the current Worker.',
-  } = {}
-) {
-  logRuntimeConfigFailure(env, {
-    operation: 'secret_sync',
-    environment: config.environment,
-    siteId: site.id,
-    stage,
-    reason,
-    errorCode: 'SECRET_ACTIVE_WORKER_SYNC_FAILED',
-  });
-  return jsonError(
-    'SECRET_ACTIVE_WORKER_SYNC_FAILED',
-    'Runtime secret was saved but the active Worker could not be updated.',
-    502,
-    action
-  );
-}
-
-function runtimeVarSyncFailed(env, config, site, { stage = 'provider_sync', reason = 'provider_request_failed' } = {}) {
-  logRuntimeConfigFailure(env, {
-    operation: 'plain_text_sync',
-    environment: config.environment,
-    siteId: site.id,
-    stage,
-    reason,
-    errorCode: 'RUNTIME_VAR_ACTIVE_WORKER_SYNC_FAILED',
-  });
-  return jsonError(
-    'RUNTIME_VAR_ACTIVE_WORKER_SYNC_FAILED',
-    'Runtime var was saved but the active Worker could not be updated.',
-    502,
-    'Retry the runtime config change before testing the current Worker.'
-  );
-}
-
-function isNotFoundError(error) {
-  return Number(error?.status) === 404 || Number(error?.statusCode) === 404;
-}
-
-function isWfpRoute(route) {
-  return route.executionProvider === 'wfp' || route.runtime === 'wfp';
-}
-
-function isWfpVersion(version) {
-  return version.executionProvider === 'wfp' || version.runtime === 'wfp';
-}
-
-function versionRequiresWorker(version) {
-  return version.deploymentShape === 'worker-only' || version.deploymentShape === 'worker-with-assets';
-}
 
 async function listSites(store, actor, environment) {
   if (!actorCanReadSite(actor)) {
@@ -1835,6 +1515,14 @@ function nextSiteUuid(env) {
 function readNow(env) {
   if (typeof env?.now === 'function') return env.now();
   return new Date().toISOString();
+}
+
+function runtimeConfigSync(store, env, config) {
+  return createRuntimeConfigSync({
+    store,
+    environment: config.environment,
+    createProvider: () => createWfpDeploymentProvider(env, config),
+  });
 }
 
 function readReuseHoldSeconds(env) {

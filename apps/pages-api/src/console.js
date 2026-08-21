@@ -20,10 +20,12 @@ import {
   buildSiteOwnerTransferAuditEvent,
   enqueueDeletedSiteWfpCleanup,
   siteCreateErrorResponse,
-  syncActiveWfpPlainTextBindings,
-  syncActiveWfpSecret,
   validateSlug,
 } from './sites.js';
+import {
+  createRuntimeConfigApplication,
+  runtimeConfigSyncErrorResponse,
+} from './transport/shared/runtime-config-application.js';
 import { emitSiteDeletedWebhook, emitSiteDisabledWebhook } from './lifecycle-webhooks.js';
 
 const CONSOLE_PREFIX = '/.xd-pages/api/console';
@@ -522,17 +524,21 @@ export async function putSiteVar(request, env, config, store, session, siteId, n
   const normalized = normalizeVarPatch(name, body.value);
   if (normalized instanceof Response) return normalized;
   let mutation;
+  let syncResult;
   try {
-    mutation = await store.mutateSiteVar({
+    const result = await createRuntimeConfigApplication({ store, env, config }).mutateVar({
       environment: config.environment,
-      siteId: site.id,
+      site,
+      actor: consoleActor(session),
       operation: 'put',
       name: normalized.name,
       value: normalized.value,
-      actorId: session.userId,
-      updatedAt: readNow(env),
     });
+    mutation = result.mutation;
+    syncResult = result.syncResult;
   } catch (error) {
+    const syncResponse = runtimeConfigSyncErrorResponse(error, { env, config, site, kind: 'var' });
+    if (syncResponse) return syncResponse;
     const response = runtimeVarMutationError(error);
     if (response.status >= 500) {
       const diagnostic = readRuntimeConfigErrorDiagnostic(error, {
@@ -549,8 +555,6 @@ export async function putSiteVar(request, env, config, store, session, siteId, n
     }
     return response;
   }
-  const syncResult = await syncActiveWfpPlainTextBindings(store, env, config, site, mutation);
-  if (syncResult instanceof Response) return syncResult;
   return jsonOk({ var: formatSiteVarMutation(mutation.record, syncResult.appliesTo) });
 }
 
@@ -571,17 +575,19 @@ export async function deleteSiteVar(env, config, store, session, siteId, name, o
 
   const normalized = normalizeVarName(name);
   if (normalized instanceof Response) return normalized;
-  let mutation;
+  let syncResult;
   try {
-    mutation = await store.mutateSiteVar({
+    const result = await createRuntimeConfigApplication({ store, env, config }).mutateVar({
       environment: config.environment,
-      siteId: site.id,
+      site,
+      actor: consoleActor(session),
       operation: 'delete',
       name: normalized,
-      actorId: session.userId,
-      updatedAt: readNow(env),
     });
+    syncResult = result.syncResult;
   } catch (error) {
+    const syncResponse = runtimeConfigSyncErrorResponse(error, { env, config, site, kind: 'var' });
+    if (syncResponse) return syncResponse;
     const response = runtimeVarMutationError(error);
     if (response.status >= 500) {
       const diagnostic = readRuntimeConfigErrorDiagnostic(error, {
@@ -598,8 +604,6 @@ export async function deleteSiteVar(env, config, store, session, siteId, name, o
     }
     return response;
   }
-  const syncResult = await syncActiveWfpPlainTextBindings(store, env, config, site, mutation);
-  if (syncResult instanceof Response) return syncResult;
   return jsonOk({ var: formatDeletedSiteVarMutation(normalized, syncResult.appliesTo) });
 }
 
@@ -634,27 +638,17 @@ export async function putSiteSecret(request, env, config, store, session, siteId
   }
 
   try {
-    const secret = await store.putSiteSecretWithAudit({
-      id: nextId(env, 'sec'),
+    const { secret } = await createRuntimeConfigApplication({ store, env, config }).putSecret({
       environment: config.environment,
-      siteId: site.id,
-      siteSlug: site.slug,
-      name: normalizedName,
-      value: body.value,
-      actorId: session.userId,
-      actorType: 'user',
-      routeId: site.route?.id || null,
-      auditId: nextId(env, 'aud'),
-      updatedAt: readNow(env),
-    });
-    const syncError = await syncActiveWfpSecret(store, env, config, site, {
-      operation: 'put',
+      site,
+      actor: consoleActor(session),
       name: normalizedName,
       value: body.value,
     });
-    if (syncError) return syncError;
     return jsonOk({ secret: formatSiteSecret(secret) });
   } catch (error) {
+    const syncResponse = runtimeConfigSyncErrorResponse(error, { env, config, site, kind: 'secret' });
+    if (syncResponse) return syncResponse;
     if (error?.message === 'RUNTIME_BINDING_NAME_CONFLICT') {
       return jsonError(
         'RUNTIME_BINDING_NAME_CONFLICT',
@@ -714,24 +708,16 @@ export async function deleteSiteSecret(env, config, store, session, siteId, name
   if (normalizedName instanceof Response) return normalizedName;
 
   try {
-    await store.deleteSiteSecretWithAudit({
+    await createRuntimeConfigApplication({ store, env, config }).deleteSecret({
       environment: config.environment,
-      siteId: site.id,
-      siteSlug: site.slug,
-      name: normalizedName,
-      actorId: session.userId,
-      actorType: 'user',
-      routeId: site.route?.id || null,
-      auditId: nextId(env, 'aud'),
-      deletedAt: readNow(env),
-    });
-    const syncError = await syncActiveWfpSecret(store, env, config, site, {
-      operation: 'delete',
+      site,
+      actor: consoleActor(session),
       name: normalizedName,
     });
-    if (syncError) return syncError;
     return jsonOk({ secret: { name: normalizedName, deleted: true } });
   } catch (error) {
+    const syncResponse = runtimeConfigSyncErrorResponse(error, { env, config, site, kind: 'secret' });
+    if (syncResponse) return syncResponse;
     if (isRuntimeConfigConflict(error)) {
       return jsonError(
         'RUNTIME_CONFIG_CHANGED',
@@ -1021,6 +1007,10 @@ function nextSiteUuid(env) {
 function readNow(env) {
   if (typeof env?.now === 'function') return env.now();
   return new Date().toISOString();
+}
+
+function consoleActor(session) {
+  return { type: 'user', userId: session.userId };
 }
 
 function readReuseHoldSeconds(env) {

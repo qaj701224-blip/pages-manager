@@ -245,8 +245,8 @@ pnpm exec eslint apps/pages-auth/src packages/pages-metadata/src apps/pages-api/
 - [ ] delete site / enqueue deleted resources；
 - [ ] transfer owner；
 - [ ] update access policy + route snapshot compensation；
-- [ ] put/delete runtime var；
-- [ ] put/delete site secret。
+- [x] put/delete runtime var；
+- [x] put/delete site secret。
 
 每个动作先写 application orchestration tests，再将一个 transport 切到 use case，最后切其余入口并用 spy/fake 证明调用同一 factory 产物。Public/Console/Admin 差异只存在 actor/capability DTO 与响应 mapper。
 
