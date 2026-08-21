@@ -993,40 +993,17 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
         const activation = activationResolution.activation;
         const activationExposure = activation.exposure;
         assertCommitLeaseHealthy(activationLease);
-        const officeNetStage = trace
-          ? startDeploymentStage(trace, {
-              stage: 'office_net',
-              operation: 'verify_public_office_net_absent',
-            })
-          : null;
-        try {
-          await ensurePublicWorkerOfficeNetAbsent(provider, {
-            store,
-            environment: config.environment,
-            siteId,
-            workerName: version.workerName,
-            executionProvider: version.executionProvider,
-            deploymentShape: decision.deploymentShape,
-            exposure: activationExposure,
-            signal: activationLease.signal,
-          });
-          if (officeNetStage) {
-            await finishDeploymentStage(officeNetStage, {
-              status: activationExposure === 'public' ? 'succeeded' : 'skipped',
-            });
-          }
-        } catch (error) {
-          if (officeNetStage) {
-            await finishDeploymentStage(officeNetStage, {
-              status: 'failed',
-              error,
-              errorCode: error?.code || 'SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED',
-              errorMessage: error?.message || 'Public Worker OfficeNet verification failed.',
-              diagnostics: { causeClass: 'public_office_net_error' },
-            });
-          }
-          throw error;
-        }
+        await ensurePublicWorkerOfficeNetAbsent(provider, {
+          store,
+          trace,
+          environment: config.environment,
+          siteId,
+          workerName: version.workerName,
+          executionProvider: version.executionProvider,
+          deploymentShape: decision.deploymentShape,
+          exposure: activationExposure,
+          signal: activationLease.signal,
+        });
         assertCommitLeaseHealthy(activationLease);
         const activationResult = await routeActivationApplication.activate({
           siteId,
@@ -2620,26 +2597,31 @@ export async function ensurePublicWorkerOfficeNetAbsent(
   provider,
   command
 ) {
-  const result = await createPublicWorkerOfficeNetGuardApplication(command.store).ensure({
-    ...command,
+  const { store, trace, ...input } = command;
+  const result = await createPublicWorkerOfficeNetGuardApplication(store, trace).ensure({
+    ...input,
     provider,
   });
   if (result.ok) return result.result;
 
-  if (result.error.reason === 'deployment_shape_unknown') {
-    throw deploymentOperationError(result.error.code, {
+  throw publicOfficeNetOperationError(result.error);
+}
+
+function publicOfficeNetOperationError(error) {
+  if (error.reason === 'deployment_shape_unknown') {
+    return deploymentOperationError(error.code, {
       message: 'The public Worker deployment shape is not recognized.',
       action: 'Deploy a known Worker shape and retry the public activation.',
     });
   }
-  if (result.error.reason === 'execution_provider_unsupported') {
-    throw deploymentOperationError(result.error.code, {
+  if (error.reason === 'execution_provider_unsupported') {
+    return deploymentOperationError(error.code, {
       message: 'The public Worker execution provider cannot verify OfficeNet bindings.',
       action: 'Use a supported execution provider and retry the public activation.',
     });
   }
-  throw deploymentOperationError(result.error.code, {
-    cause: result.error.cause?.cause || result.error.cause,
+  return deploymentOperationError(error.code, {
+    cause: error.cause?.cause || error.cause,
   });
 }
 
@@ -3077,12 +3059,36 @@ function createDeploymentProviderApplication({ env, config, store }) {
   });
 }
 
-function createPublicWorkerOfficeNetGuardApplication(store) {
+function createPublicWorkerOfficeNetGuardApplication(store, trace = null) {
   return createPublicWorkerOfficeNetGuard({
     settings: createPublicOfficeNetSettings({
       withRuntimeConfigLock:
         typeof store?.withRuntimeConfigLock === 'function' ? store.withRuntimeConfigLock.bind(store) : undefined,
     }),
+    telemetry: {
+      start: () =>
+        trace
+          ? startDeploymentStage(trace, {
+              stage: 'office_net',
+              operation: 'verify_public_office_net_absent',
+            })
+          : null,
+      finish: (stage, outcome) => {
+        if (!stage) return undefined;
+        const error = outcome.error ? publicOfficeNetOperationError(outcome.error) : outcome.cause;
+        return finishDeploymentStage(stage, {
+          status: outcome.status,
+          ...(outcome.status === 'failed'
+            ? {
+                error,
+                errorCode: error?.code || 'SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED',
+                errorMessage: error?.message || 'Public Worker OfficeNet verification failed.',
+                diagnostics: { causeClass: 'public_office_net_error' },
+              }
+            : {}),
+        });
+      },
+    },
   });
 }
 
