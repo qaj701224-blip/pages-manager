@@ -60,3 +60,30 @@ test('deployment snapshot recovery adapter clears only the exact failed pointer 
     },
   ]);
 });
+
+test('deployment snapshot recovery adapter fail-closes the public route in a safe disabled snapshot', async () => {
+  const calls = [];
+  const adapter = createDeploymentRouteSnapshotRecoveryAdapter({
+    store: {
+      async getSiteVersion() {
+        return { id: 'ver_1' };
+      },
+    },
+    routeSnapshots: {
+      async commitDeployment(input) {
+        calls.push(input);
+      },
+    },
+    routePointers: {},
+  });
+  const site = { id: 'site_1' };
+  const route = { activeVersionId: 'ver_1', routeStatus: 'active', exposure: 'public', visibility: 'org' };
+
+  assert.equal(await adapter.writeSafeDisabled({ site, route, environment: 'production' }), true);
+  assert.deepEqual(calls[0].route, {
+    ...route,
+    exposure: 'internal',
+    visibility: 'disabled',
+    accessMode: 'disabled',
+  });
+});

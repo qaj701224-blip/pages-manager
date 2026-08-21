@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createDeploymentRecoveryPort } from './deployment-recovery.js';
+import { createDeploymentRecoveryPort, createRollbackRecoveryPort } from './deployment-recovery.js';
 
 test('deployment recovery port prefers the CAS route restoration capability', async () => {
   const calls = [];
@@ -18,8 +18,16 @@ test('deployment recovery port prefers the CAS route restoration capability', as
       calls.push(['owner', ...args]);
       return { id: 'site_1' };
     },
+    async getSiteVersion(...args) {
+      calls.push(['version', ...args]);
+      return { id: args[0] };
+    },
+    async updateSiteAccessPolicy(...args) {
+      calls.push(['policy', ...args]);
+      return { route: { id: 'route_1' } };
+    },
   };
-  const port = createDeploymentRecoveryPort(store);
+  const port = createRollbackRecoveryPort(store);
   const command = {
     siteId: 'site_1',
     previousRoute: { activeVersionId: 'ver_1' },
@@ -29,9 +37,13 @@ test('deployment recovery port prefers the CAS route restoration capability', as
 
   assert.deepEqual(await port.restore(command), { id: 'route_1' });
   assert.deepEqual(await port.restoreOwner('site_1', { ownerId: 'usr_1' }, 'production'), { id: 'site_1' });
+  assert.deepEqual(await port.getVersion('ver_1', 'production'), { id: 'ver_1' });
+  assert.deepEqual(await port.updateAccessPolicy({ siteId: 'site_1' }), { route: { id: 'route_1' } });
   assert.deepEqual(calls, [
     ['current', 'site_1', command.previousRoute, command.expectedRoute, 'production'],
     ['owner', 'site_1', { ownerId: 'usr_1' }, 'production'],
+    ['version', 'ver_1', 'production'],
+    ['policy', { siteId: 'site_1' }],
   ]);
 });
 
@@ -41,6 +53,12 @@ test('deployment recovery port retains the legacy route restoration fallback', a
     async restoreSiteRoute(...args) {
       calls.push(args);
       return { id: 'route_1' };
+    },
+    async getSiteVersion(versionId) {
+      return { id: versionId };
+    },
+    async updateSiteAccessPolicy() {
+      return null;
     },
   });
 

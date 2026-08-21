@@ -2,19 +2,19 @@ import { routeSnapshotKey } from '../../route-snapshot.js';
 
 export function createDeploymentRouteSnapshotRecoveryAdapter({ store, routeSnapshots, routePointers }) {
   return {
-    async writeRestored({ site, route, environment }) {
-      if (!route) return false;
-      try {
-        const version = route.activeVersionId
-          ? await store.getSiteVersion(route.activeVersionId, environment)
-          : inactiveRouteVersion(route);
-        if (!version && route.routeStatus === 'active') return false;
-        await routeSnapshots.commitDeployment({ site, route, version });
-        return true;
-      } catch {
-        return false;
-      }
-    },
+    writeRestored: (input) => writeRouteSnapshot(store, routeSnapshots, input),
+    writeSafeDisabled: ({ route, ...input }) =>
+      writeRouteSnapshot(store, routeSnapshots, {
+        ...input,
+        route: route
+          ? {
+              ...route,
+              exposure: 'internal',
+              visibility: 'disabled',
+              accessMode: 'disabled',
+            }
+          : null,
+      }),
     async clearCurrent(route) {
       if (!route || typeof routePointers?.clearIfCurrent !== 'function') return false;
       try {
@@ -35,6 +35,20 @@ export function createDeploymentRouteSnapshotRecoveryAdapter({ store, routeSnaps
       }
     },
   };
+}
+
+async function writeRouteSnapshot(store, routeSnapshots, { site, route, environment }) {
+  if (!route) return false;
+  try {
+    const version = route.activeVersionId
+      ? await store.getSiteVersion(route.activeVersionId, environment)
+      : inactiveRouteVersion(route);
+    if (!version && route.routeStatus === 'active') return false;
+    await routeSnapshots.commitDeployment({ site, route, version });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function inactiveRouteVersion(route) {

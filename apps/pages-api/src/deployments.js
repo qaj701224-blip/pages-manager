@@ -15,6 +15,7 @@ import { createDeploymentRecord } from './application/deployments/deployment-rec
 import { createPublicWorkerOfficeNetGuard } from './application/deployments/ensure-public-office-net.js';
 import { createDeploymentProviderOperations } from './application/deployments/provider-operations.js';
 import { createDeploymentRouteSnapshotRecovery } from './application/deployments/recover-route-snapshot.js';
+import { createRollbackRouteSnapshotRecovery } from './application/deployments/recover-rollback-route-snapshot.js';
 import { createDeploySiteResolution } from './application/deployments/resolve-deploy-site.js';
 import { createRollbackSiteResolution } from './application/deployments/resolve-rollback-site.js';
 import { createDeploymentRuntimeConfigResolution } from './application/deployments/resolve-runtime-config.js';
@@ -24,7 +25,7 @@ import { createDeploySiteResolutionPort } from './application/ports/deploy-site-
 import { createDeploymentCleanupTasksPort } from './application/ports/deployment-cleanup.js';
 import { createDeploymentCompletionPort } from './application/ports/deployment-completion.js';
 import { createDeploymentProviderPort } from './application/ports/deployment-provider.js';
-import { createDeploymentRecoveryPort } from './application/ports/deployment-recovery.js';
+import { createDeploymentRecoveryPort, createRollbackRecoveryPort } from './application/ports/deployment-recovery.js';
 import { createDeploymentRecordsPort } from './application/ports/deployment-records.js';
 import { createDeploymentRoutesPort } from './application/ports/deployment-routes.js';
 import { createDeploymentVersionsPort } from './application/ports/deployment-versions.js';
@@ -61,7 +62,6 @@ import {
   clearRoutePointerIfCurrent,
   deleteDeploymentFailureRecoveryRecord,
   listDeploymentFailureRecoveryRecords,
-  routeSnapshotKey,
   writeDeploymentFailureRecoveryRecord,
   writeRouteSnapshot,
 } from './route-snapshot.js';
@@ -1976,75 +1976,19 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
         diagnostics: { causeClass: 'route_snapshot_store_error' },
       });
     }
-    let restoredRoute = null;
-    let restoredOfficeNetError = null;
-    try {
-      restoredRoute = await restoreSiteRouteAfterSnapshotFailure(store, site.id, currentRoute, route, config.environment);
-    } catch (error) {
-      restoredOfficeNetError = deploymentOperationError('ROUTE_SNAPSHOT_WRITE_FAILED', {
-        message: 'The rollback route could not be restored after the snapshot write failed.',
-        action: 'Repair the route snapshot before retrying the rollback.',
-        cause: error,
-      });
-    }
-    try {
-      const restoredVersion = restoredRoute?.activeVersionId
-        ? await store.getSiteVersion(restoredRoute.activeVersionId, config.environment)
-        : null;
-      await ensurePublicWorkerOfficeNetAbsent(rollbackProvider, {
-        store,
-        environment: config.environment,
-        siteId: site.id,
-        workerName: restoredRoute?.workerName || restoredVersion?.workerName,
-        executionProvider: restoredRoute?.executionProvider || restoredVersion?.executionProvider,
-        deploymentShape: restoredVersion?.deploymentShape || 'inactive',
-        exposure: normalizeExposureForDeployment(restoredRoute?.exposure),
-        signal: rollbackLease.signal,
-      });
-    } catch (error) {
-      restoredOfficeNetError = error;
-    }
-    if (restoredOfficeNetError && restoredRoute?.exposure === 'public') {
-      try {
-        const compensated = await store.updateSiteAccessPolicy({
-          environment: config.environment,
-          siteId: site.id,
-          exposure: 'internal',
-          accessMode: 'disabled',
-          expected: {
-            policyVersion: restoredRoute.policyVersion,
-            routeGeneration: restoredRoute.routeGeneration,
-            activeVersionId: restoredRoute.activeVersionId,
-            runtimeConfigGeneration: restoredRoute.runtimeConfigGeneration,
-          },
-          lease: rollbackLease,
-          updatedAt: readNow(env),
-        });
-        restoredRoute = compensated?.route || restoredRoute;
-      } catch (error) {
-        restoredOfficeNetError = deploymentOperationError('SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED', {
-          message: 'The public rollback could not be compensated to a safe internal route.',
-          action: 'Keep the site unavailable and repair the route before retrying the rollback.',
-          cause: error,
-        });
-      }
-    }
-    let restoredSnapshotWritten = false;
-    if (restoredOfficeNetError && restoredRoute?.exposure === 'public') {
-      restoredSnapshotWritten = await writeSafeDisabledRouteSnapshotAfterFailure(
-        env,
-        store,
-        site,
-        restoredRoute,
-        config.environment
-      );
-    } else {
-      restoredSnapshotWritten = await writeRestoredRouteSnapshotAfterFailure(env, store, site, restoredRoute, config.environment);
-    }
-    const routePointerCleared = restoredSnapshotWritten
-      ? false
-      : await clearRoutePointerAfterSnapshotFailure(env, restoredRoute || route);
-    const repairRequired = Boolean(!restoredSnapshotWritten);
+    const recovery = await createRollbackRouteSnapshotRecoveryApplication({
+      store,
+      env,
+      provider: rollbackProvider,
+    }).recover({
+      site,
+      previousRoute: currentRoute,
+      failedRoute: route,
+      environment: config.environment,
+      lease: rollbackLease,
+    });
+    const { restoredRoute, routePointerCleared, repairRequired } = recovery;
+    const restoredOfficeNetError = rollbackRouteSnapshotRecoveryError(recovery.failure);
     await recordDeploymentStage(trace, {
       stage: 'cleanup_or_compensation',
       operation: 'rollback_restore_route_after_snapshot_failure',
@@ -2320,71 +2264,6 @@ function formatRoute(route) {
     routeGeneration: route.routeGeneration,
     routeStatus: route.routeStatus,
   };
-}
-
-async function writeSnapshot(env, store, input) {
-  return createDeploymentRouteSnapshotInfrastructure(store, env).commitDeployment(input);
-}
-
-async function restoreSiteRouteAfterSnapshotFailure(store, siteId, previousRoute, expectedRoute, environment) {
-  if (typeof store.restoreSiteRouteIfCurrent === 'function') {
-    return store.restoreSiteRouteIfCurrent(siteId, previousRoute, expectedRoute, environment);
-  }
-  return store.restoreSiteRoute(siteId, previousRoute, environment);
-}
-
-async function writeRestoredRouteSnapshotAfterFailure(env, store, site, route, environment) {
-  if (!route) return false;
-  try {
-    const version = route.activeVersionId
-      ? await store.getSiteVersion(route.activeVersionId, environment)
-      : inactiveRouteVersion(route);
-    if (!version && route.routeStatus === 'active') return false;
-    await writeSnapshot(env, store, { site, route, version });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function writeSafeDisabledRouteSnapshotAfterFailure(env, store, site, route, environment) {
-  if (!route) return false;
-  const safeRoute = {
-    ...route,
-    exposure: 'internal',
-    visibility: 'disabled',
-    accessMode: 'disabled',
-  };
-  try {
-    const version = safeRoute.activeVersionId
-      ? await store.getSiteVersion(safeRoute.activeVersionId, environment)
-      : inactiveRouteVersion(safeRoute);
-    if (!version && safeRoute.routeStatus === 'active') return false;
-    await writeSnapshot(env, store, { site, route: safeRoute, version });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function clearRoutePointerAfterSnapshotFailure(env, route) {
-  if (!route || !env?.ROUTE_SNAPSHOTS) return false;
-  try {
-    return await clearRoutePointerIfCurrent(env, {
-      hostname: route.hostname,
-      environment: route.environment,
-      routeGeneration: Number(route.routeGeneration || 0),
-      policyVersion: Number(route.policyVersion || 0),
-      snapshotKey: routeSnapshotKey(
-        route.environment,
-        route.hostname,
-        Number(route.routeGeneration || 0),
-        Number(route.policyVersion || 0)
-      ),
-    });
-  } catch {
-    return false;
-  }
 }
 
 function inactiveRouteVersion(route) {
@@ -3161,6 +3040,40 @@ function createDeploymentRouteSnapshotRecoveryApplication({ store, env }) {
       routePointers: { clearIfCurrent: (pointer) => clearRoutePointerIfCurrent(env, pointer) },
     }),
   });
+}
+
+function createRollbackRouteSnapshotRecoveryApplication({ store, env, provider }) {
+  return createRollbackRouteSnapshotRecovery({
+    routes: createRollbackRecoveryPort(store),
+    officeNet: {
+      ensure: (command) => ensurePublicWorkerOfficeNetAbsent(provider, { store, ...command }),
+    },
+    routeSnapshots: createDeploymentRouteSnapshotRecoveryAdapter({
+      store,
+      routeSnapshots: createDeploymentRouteSnapshotInfrastructure(store, env),
+      routePointers: { clearIfCurrent: (pointer) => clearRoutePointerIfCurrent(env, pointer) },
+    }),
+    clock: { now: () => readNow(env) },
+  });
+}
+
+function rollbackRouteSnapshotRecoveryError(failure) {
+  if (!failure) return null;
+  if (failure.kind === 'route_restore') {
+    return deploymentOperationError('ROUTE_SNAPSHOT_WRITE_FAILED', {
+      message: 'The rollback route could not be restored after the snapshot write failed.',
+      action: 'Repair the route snapshot before retrying the rollback.',
+      cause: failure.error,
+    });
+  }
+  if (failure.kind === 'safe_route_update') {
+    return deploymentOperationError('SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED', {
+      message: 'The public rollback could not be compensated to a safe internal route.',
+      action: 'Keep the site unavailable and repair the route before retrying the rollback.',
+      cause: failure.error,
+    });
+  }
+  return failure.error;
 }
 
 function createDeploymentSucceededWebhookApplication({ store, env, config }) {
