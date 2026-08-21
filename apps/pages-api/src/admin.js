@@ -28,6 +28,7 @@ import {
   createSiteOwnershipApplication,
   siteTransferErrorResponse,
 } from './transport/shared/site-ownership-application.js';
+import { createAdminDashboardQuery } from './application/governance/get-admin-dashboard.js';
 import { buildRouteSnapshot, clearRoutePointerIfCurrent, readRouteSnapshotState } from './route-snapshot.js';
 import { createDeploymentProvider } from './execution-provider.js';
 import { sanitizeDeploymentTraceDiagnostics } from './deployment-trace.js';
@@ -322,22 +323,16 @@ export async function handleConsoleAdminApi(request, env, config, store, ctx) {
 }
 
 async function getAdminDashboard(env, config, store) {
-  const dashboard = await store.getAdminDashboard({ environment: config.environment });
-  const oldestPendingAt = dashboard.resourceCleanup?.oldestPendingAt || null;
-  return jsonOk({
-    dashboard: {
-      environment: dashboard.environment,
-      counts: dashboard.counts,
-      resourceCleanup: {
-        pendingTasks: dashboard.resourceCleanup?.pendingTasks || 0,
-        failedTasks: dashboard.resourceCleanup?.failedTasks || 0,
-        oldestPendingAt,
-        oldestPendingAgeSeconds: cleanupBacklogAgeSeconds(oldestPendingAt, readNow(env)),
-        orphanCandidates: null,
-        v1Sites: null,
-      },
-      failedDeployments: dashboard.failedDeployments.map(formatAdminDashboardDeployment),
-    },
+  const dashboard = await createAdminDashboardQueryApplication({ env, store }).get({
+    environment: config.environment,
+  });
+  return jsonOk({ dashboard });
+}
+
+function createAdminDashboardQueryApplication({ env, store }) {
+  return createAdminDashboardQuery({
+    dashboards: { read: (query) => store.getAdminDashboard(query) },
+    clock: { now: () => readNow(env) },
   });
 }
 
@@ -3107,12 +3102,6 @@ function formatAdminDeployment(deployment) {
   return formatted;
 }
 
-function formatAdminDashboardDeployment(deployment) {
-  const summary = formatAdminDeployment(deployment);
-  delete summary.failureDiagnostics;
-  return summary;
-}
-
 async function getAdminDeploymentTrace(config, store, deploymentId) {
   const deployment = await store.getDeployment(deploymentId, config.environment);
   if (!deployment) {
@@ -3339,13 +3328,6 @@ function normalizeRequiredString(value) {
 function readNow(env) {
   if (typeof env?.now === 'function') return env.now();
   return new Date().toISOString();
-}
-
-function cleanupBacklogAgeSeconds(oldestPendingAt, now) {
-  if (!oldestPendingAt) return null;
-  const ageMs = Date.parse(now) - Date.parse(oldestPendingAt);
-  if (!Number.isFinite(ageMs)) return null;
-  return Math.max(0, Math.floor(ageMs / 1000));
 }
 
 function normalizeNullableString(value) {
