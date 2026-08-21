@@ -350,9 +350,9 @@ node --test apps/pages-api/src/index.test.js apps/pages-api/src/legacy-v1/takeov
 
 **Steps**
 
-- [ ] production callers 只依赖新层级入口。
-- [ ] repo-wide search 无跨 transport handler 业务 import、无 pages-auth 跨 app import、无完整 Store port。
-- [ ] 手写 production 业务模块通常小于 800 行；超过 1000 行逐个给出单一职责证据或继续拆分。
+- [x] production callers 只依赖新层级入口。
+- [x] repo-wide search 无跨 transport handler 业务 import、无 pages-auth 跨 app import、无完整 Store port。
+- [x] 手写 production 业务模块通常小于 800 行；唯一超过 1000 行的是单一职责 API 合约 `openapi.js`。
 
 ### Task 7.2：同步 OpenAPI 与文档
 
@@ -363,9 +363,9 @@ node --test apps/pages-api/src/index.test.js apps/pages-api/src/legacy-v1/takeov
 
 **Steps**
 
-- [ ] 如拆合约文件，稳定入口继续组合并导出相同行为。
-- [ ] CLI/skill/help 无行为变化；只修正结构描述和已确认的旧配置漂移。
-- [ ] `docs/superpowers/**` 继续作为历史记录，不充当运行态真相源。
+- [x] 未拆合约文件，`openapi.js` 与 `public-docs.js` 稳定入口及行为保持不变。
+- [x] CLI/skill/help 无行为变化；只修正结构描述和已确认的旧配置漂移。
+- [x] `docs/superpowers/**` 继续作为历史记录，不充当运行态真相源。
 
 ### Task 7.3：最终 requirement-by-requirement audit
 
@@ -397,15 +397,17 @@ pnpm test
 
 **Manual diff audit**
 
-- [ ] production/staging Wrangler template 拓扑与资源隔离没有变化；
-- [ ] D1 migrations/schema 与 route snapshot schema 没有变化；
-- [ ] OpenAPI snapshot 和 route/error characterization 无变化；
-- [ ] workflow 没有新增 production 自动部署；
-- [ ] `index.js` 为薄 composition root；
-- [ ] 四个热点 God files 和完整 TestPagesStore 已退出；
-- [ ] Public/Console/Admin 六类共享 mutation 都有统一 application service 证据；
-- [ ] application 不读取 env、不处理 HTTP、不导入 infrastructure/transport；
-- [ ] pages-auth 不导入 pages-api 源码，仓库不再有 production 跨 app source import exception。
+- [x] production/staging Wrangler template 拓扑与资源隔离没有变化；
+- [x] D1 migrations/schema 与 route snapshot schema 没有变化；
+- [x] OpenAPI snapshot 和 route/error characterization 无变化；
+- [x] workflow 没有新增 production 自动部署；
+- [x] `index.js` 为薄 composition root；
+- [x] 四个热点 God files 和完整 TestPagesStore 已退出；
+- [x] Public/Console/Admin 六类共享 mutation 都有统一 application service 证据；
+- [x] application 不读取 env、不处理 HTTP、不导入 infrastructure/transport；
+- [x] pages-auth 不导入 pages-api 源码，仓库不再有 production 跨 app source import exception。
+
+最终本地验收：pages-api 1249 tests、pages-auth 145 tests、pages-console 206 tests、pages-router 102 tests、pages-metadata 3 tests、仓库全量 2902 tests 全部通过；`pnpm lint` 0 error，`git diff --check` 通过。
 
 ## 提交与回滚策略
 
