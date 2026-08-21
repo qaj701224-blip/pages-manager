@@ -281,7 +281,7 @@ node --test apps/pages-api/src/route-snapshot.test.js apps/pages-api/src/runtime
 
 **Migration order**
 
-- [ ] multipart/intake 与 response mapping；
+- [x] multipart/intake 与 response mapping；
 - [ ] auth/site resolution/idempotency；
 - [ ] runtime config snapshot；
 - [ ] Provider upload/verify；

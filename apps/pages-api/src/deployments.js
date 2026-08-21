@@ -20,7 +20,7 @@ import {
   startDeploymentStage,
   withDeploymentTraceHeader,
 } from './deployment-trace.js';
-import { isMultipartRequest, readMultipartDeploymentBody, validateAssetFiles } from './deployment-upload.js';
+import { validateAssetFiles } from './deployment-upload.js';
 import { isSiteVisibility, teamOwnerSupportsVisibility } from './domain/sites/access-policy.js';
 import { actorCanDeploySite, actorCanManageSite, actorCanReadSite } from './domain/sites/authorization.js';
 import { jsonError, jsonOk } from './http.js';
@@ -46,11 +46,15 @@ import {
 } from './transport/shared/site-creation-application.js';
 import { createDeploymentsHttpHandlers } from './transport/public/deployments-handler.js';
 import {
+  readDeploymentIntakeHeaders,
+  readDeploymentMultipart,
+  readRollbackIntake,
+} from './transport/public/deployment-intake.js';
+import {
   deploymentRequestFailed,
   deploymentStateWriteFailed,
 } from './transport/shared/deployment-responses.js';
 
-const encoder = new globalThis.TextEncoder();
 const PROVIDER_DIAGNOSTIC_CLIENT_CODES = new Set(['WFP_API_ERROR', 'WFP_API_INVALID_JSON', 'WFP_NETWORK_ERROR']);
 const PROVIDER_DIAGNOSTIC_OPERATIONS = new Set(['assets_upload_session', 'assets_upload', 'worker_put', 'worker_get']);
 const TERMINAL_DEPLOYMENT_STATUSES = new Set(['succeeded', 'failed']);
@@ -82,130 +86,21 @@ export function handleVersionsApi(request, env, config, store, ctx) {
 
 async function createDeployment(request, env, config, store, actor, ctx, trace, authStage) {
   setRequestTraceStage(trace, 'intake', 'read_deployment_request');
-  const idempotencyKey = readIdempotencyKey(request);
-  if (!idempotencyKey) {
-    return traceFailureResponse(trace, idempotencyKeyRequired(), {
-      stage: 'intake',
-      operation: 'read_idempotency_key',
-      errorCode: 'IDEMPOTENCY_KEY_REQUIRED',
-      errorMessage: 'Idempotency-Key is required.',
-      diagnostics: { causeClass: 'request_validation_error' },
-    });
-  }
-  if (!isMultipartRequest(request)) {
-    return traceFailureResponse(trace, cliUploadProtocolRequired(), {
-      stage: 'intake',
-      operation: 'parse_multipart',
-      errorCode: 'CLI_UPLOAD_PROTOCOL_REQUIRED',
-      errorMessage: 'Deployment uploads must use the CLI protocol.',
-      diagnostics: { causeClass: 'payload_validation_error' },
-    });
-  }
+  const headers = readDeploymentIntakeHeaders(request);
+  if (!headers.ok) return traceFailureResponse(trace, headers.response, headers.traceFailure);
 
   setRequestTraceStage(trace, 'intake', 'parse_multipart');
-  let body;
-  try {
-    body = await readMultipartDeploymentBody(request);
-  } catch (error) {
-    if (error?.code === 'PAYLOAD_TOO_LARGE') {
-      return jsonError(
-        'PAYLOAD_TOO_LARGE',
-        'Deployment payload is too large.',
-        413,
-        'Reduce artifact size or use an asset store backed deployment path.'
-      );
-    }
-    if (error?.code === 'ASSET_MANIFEST_INVALID') {
-      return jsonError('ASSET_MANIFEST_INVALID', 'Asset manifest is invalid.', 400, 'Send a valid assetManifest field.');
-    }
-    if (error?.code === 'ASSET_FILES_REQUIRED') {
-      return jsonError('ASSET_FILES_REQUIRED', 'Asset files are required.', 400, 'Upload every file listed in assetManifest.');
-    }
-    if (error?.code === 'FALLBACK_REQUIRES_ASSETS') {
-      return jsonError(
-        'FALLBACK_REQUIRES_ASSETS',
-        'Fallback can only be set for deployments with assets.',
-        400,
-        'Remove fallback for worker-only deployments or upload assets.'
-      );
-    }
-    if (error?.code === 'FALLBACK_INDEX_REQUIRES_INDEX_HTML') {
-      return jsonError(
-        'FALLBACK_INDEX_REQUIRES_INDEX_HTML',
-        'Index fallback requires /index.html.',
-        400,
-        'Upload index.html or set assets.not_found_handling to 404-page.'
-      );
-    }
-    if (error?.code === 'PUBLISH_PLAN_VERSION_UNSUPPORTED') {
-      return jsonError(
-        'PUBLISH_PLAN_VERSION_UNSUPPORTED',
-        'Publish plan version is unsupported.',
-        400,
-        'Upgrade the XD Cell CLI and retry.'
-      );
-    }
-    if (error?.code === 'PUBLISH_PLAN_INVALID') {
-      return jsonError('PUBLISH_PLAN_INVALID', 'Publish plan is invalid.', 400, 'Run xd-cell deploy --dry-run and retry.');
-    }
-    if (error?.code === 'CONTENT_HASH_MISMATCH') {
-      return traceFailureResponse(
-        trace,
-        jsonError(
-          'CONTENT_HASH_MISMATCH',
-          'Content hash does not match uploaded files.',
-          400,
-          'Run xd-cell deploy --dry-run and retry.'
-        ),
-        {
-          stage: 'payload_validation',
-          operation: 'validate_content_hash',
-          errorCode: 'CONTENT_HASH_MISMATCH',
-          errorMessage: 'Content hash does not match uploaded files.',
-          diagnostics: { causeClass: 'payload_validation_error' },
-        }
-      );
-    }
-    if (error?.code === 'RUNTIME_VARS_INVALID') {
-      return jsonError(
-        'RUNTIME_VARS_INVALID',
-        'Runtime vars are invalid.',
-        400,
-        'Use non-sensitive string vars with valid Worker binding names.'
-      );
-    }
-    if (error?.code === 'RUNTIME_VARS_LIMIT_EXCEEDED') {
-      return jsonError(
-        'RUNTIME_BINDINGS_LIMIT_EXCEEDED',
-        'Runtime bindings exceed platform limits.',
-        400,
-        'Reduce vars or secret size/count and retry.'
-      );
-    }
-    if (error?.code === 'CLI_UPLOAD_PROTOCOL_REQUIRED') {
-      return traceFailureResponse(trace, cliUploadProtocolRequired(), {
-        stage: 'intake',
-        operation: 'parse_multipart',
-        errorCode: 'CLI_UPLOAD_PROTOCOL_REQUIRED',
-        errorMessage: 'Deployment uploads must use the CLI protocol.',
-        diagnostics: { causeClass: 'payload_validation_error' },
-      });
-    }
-    return traceFailureResponse(
-      trace,
-      jsonError('INVALID_MULTIPART', 'Invalid multipart body.', 400, 'Run xd-cell deploy --dry-run and retry.'),
-      {
-        stage: 'intake',
-        operation: 'parse_multipart',
-        errorCode: 'INVALID_MULTIPART',
-        errorMessage: 'Invalid multipart body.',
-        diagnostics: { causeClass: 'payload_validation_error' },
-      }
-    );
+  const multipart = await readDeploymentMultipart(request);
+  if (!multipart.ok) {
+    return multipart.traceFailure
+      ? traceFailureResponse(trace, multipart.response, multipart.traceFailure)
+      : multipart.response;
   }
   queueRequestTraceSuccess(trace, 'intake', 'parse_multipart');
   setRequestTraceStage(trace, 'payload_validation', 'validate_deployment_payload');
 
+  const { idempotencyKey } = headers;
+  const { body } = multipart;
   const exposureError = rejectUserExposureMutation(body);
   if (exposureError) return exposureError;
 
@@ -1832,32 +1727,12 @@ function deploymentReadForbidden() {
 
 async function rollbackVersion(request, env, config, store, actor, versionId, ctx, trace, authStage) {
   setRequestTraceStage(trace, 'intake', 'read_rollback_request');
-  const idempotencyKey = readIdempotencyKey(request);
-  if (!idempotencyKey) {
-    return traceFailureResponse(trace, idempotencyKeyRequired(), {
-      stage: 'intake',
-      operation: 'read_idempotency_key',
-      errorCode: 'IDEMPOTENCY_KEY_REQUIRED',
-      errorMessage: 'Idempotency-Key is required.',
-      diagnostics: { causeClass: 'request_validation_error' },
-    });
-  }
-
-  let body;
-  try {
-    body = await readOptionalJsonBody(request, { maxBytes: 32 * 1024 });
-  } catch {
-    return traceFailureResponse(trace, jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.'), {
-      stage: 'intake',
-      operation: 'parse_json',
-      errorCode: 'INVALID_JSON',
-      errorMessage: 'Invalid JSON body.',
-      diagnostics: { causeClass: 'payload_validation_error' },
-    });
-  }
+  const intake = await readRollbackIntake(request);
+  if (!intake.ok) return traceFailureResponse(trace, intake.response, intake.traceFailure);
   queueRequestTraceSuccess(trace, 'intake', 'parse_json');
   setRequestTraceStage(trace, 'payload_validation', 'rollback_validate');
 
+  const { body, idempotencyKey } = intake;
   const exposureError = rejectUserExposureMutation(body);
   if (exposureError) return exposureError;
 
@@ -3786,11 +3661,6 @@ function boundedNamePart(value, maxLength) {
   return normalized.slice(0, maxLength).replace(/-+$/g, '') || normalized.slice(-maxLength);
 }
 
-function readIdempotencyKey(request) {
-  const value = request.headers.get('Idempotency-Key');
-  return typeof value === 'string' && value.trim() ? value.trim() : null;
-}
-
 function normalizeOptionalString(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
@@ -3825,15 +3695,6 @@ function siteNotFound(action) {
 function readNow(env) {
   if (typeof env?.now === 'function') return env.now();
   return new Date().toISOString();
-}
-
-async function readOptionalJsonBody(request, { maxBytes }) {
-  const text = await request.text();
-  if (encoder.encode(text).byteLength > maxBytes) throw new Error('JSON body is too large');
-  if (!text.trim()) return {};
-  const parsed = JSON.parse(text);
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('JSON object is required');
-  return parsed;
 }
 
 async function finishRequestAuthStage(handle, input) {
@@ -4416,10 +4277,6 @@ function withRequestTraceHeader(response, trace) {
   return withDeploymentTraceHeader(response, response.headers.get('X-Deployment-Trace-Id') || trace.traceId);
 }
 
-function idempotencyKeyRequired() {
-  return jsonError('IDEMPOTENCY_KEY_REQUIRED', 'Idempotency-Key is required.', 400, 'Send an Idempotency-Key header.');
-}
-
 async function unexpectedRequestResponse(store, deployment, environment) {
   if (deployment?.status === 'succeeded') {
     try {
@@ -4437,14 +4294,5 @@ function idempotencyConflict() {
     'Idempotency-Key was already used with a different request.',
     409,
     'Retry with the original request or use a new Idempotency-Key.'
-  );
-}
-
-function cliUploadProtocolRequired() {
-  return jsonError(
-    'CLI_UPLOAD_PROTOCOL_REQUIRED',
-    'Deployment uploads must be generated by the XD Cell CLI.',
-    400,
-    'Run `xd-cell deploy` or `xd-cell deploy --dry-run --json` and retry.'
   );
 }
