@@ -12,9 +12,7 @@ import {
   readSiteConfig,
   updateSiteAccess,
 } from './console.js';
-import { departmentTeamDisplayName } from './department-path.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
-import { formatConsoleUser } from './console-users.js';
 import { newId, nextId } from './id.js';
 import { handleConsoleAdminWebhooksApi } from './webhooks.js';
 import {
@@ -41,6 +39,14 @@ import { createNormalWorkersQuery } from './application/governance/list-normal-w
 import { createNormalWorkerRetirement } from './application/governance/retire-normal-workers.js';
 import { createV1SitesQuery } from './application/governance/list-v1-sites.js';
 import { createV1SiteRetirement } from './application/governance/retire-v1-sites.js';
+import {
+  createAdminSitesQuery,
+  createAdminTeamsQuery,
+  createAdminUsersQuery,
+  projectAdminSiteDetail as formatAdminSiteDetail,
+  projectAdminTeam as formatAdminTeam,
+  projectAdminTeamMember as formatAdminTeamMember,
+} from './application/governance/list-admin-resources.js';
 import { createNormalWorkerAdminClient } from './infrastructure/providers/normal-worker-admin-client.js';
 import {
   createV1SitesAdminClient as createInfrastructureV1SitesAdminClient,
@@ -1624,7 +1630,9 @@ function createNormalWorkerRetirementApplication(env, store) {
 }
 
 async function listAdminUsers(url, config, store) {
-  const result = await store.listAdminUsers({
+  const result = await createAdminUsersQuery({
+    users: { list: (query) => store.listAdminUsers(query) },
+  }).list({
     environment: config.environment,
     query: normalizeNullableString(url.searchParams.get('query')),
     limit: url.searchParams.get('limit'),
@@ -1632,14 +1640,7 @@ async function listAdminUsers(url, config, store) {
     admin: url.searchParams.get('admin'),
     status: url.searchParams.get('status'),
   });
-  return jsonOk({
-    users: result.users.map(formatAdminUser),
-    pagination: {
-      total: result.total,
-      limit: result.limit,
-      offset: result.offset,
-    },
-  });
+  return jsonOk(result);
 }
 
 function normalWorkerDeleteResultResponse(result) {
@@ -1735,8 +1736,10 @@ async function listAdminSites(url, config, store) {
   if (exposure && exposure !== 'public' && exposure !== 'internal') {
     return jsonError('SITE_EXPOSURE_INVALID', 'Site exposure filter is invalid.', 400, 'Use public or internal.');
   }
-  const sites = await store.listAdminSites({ environment: config.environment, exposure });
-  return jsonOk({ sites: sites.map(formatAdminSite) });
+  const sites = await createAdminSitesQuery({
+    sites: { list: (query) => store.listAdminSites(query) },
+  }).list({ environment: config.environment, exposure });
+  return jsonOk({ sites });
 }
 
 async function updateAdminSiteExposure(request, env, config, store, session, site) {
@@ -2101,12 +2104,14 @@ async function listAdminTeams(url, config, store) {
   const teamType = normalizeNullableString(url.searchParams.get('teamType'));
   const statusFilter = normalizeNullableString(url.searchParams.get('status'));
   const status = statusFilter === 'all' ? null : statusFilter || 'active';
-  const teams = await store.listAdminTeams({
+  const teams = await createAdminTeamsQuery({
+    teams: { list: (query) => store.listAdminTeams(query) },
+  }).list({
     environment: config.environment,
     teamType,
     status,
   });
-  return jsonOk({ teams: teams.map(formatAdminTeam) });
+  return jsonOk({ teams });
 }
 
 async function getAdminTeam(config, store, teamId) {
@@ -2419,89 +2424,6 @@ function createDeploymentTraceQueryApplication(store) {
     },
     diagnostics: { sanitize: sanitizeDeploymentTraceDiagnostics },
   });
-}
-
-function formatAdminUser(user) {
-  return {
-    id: user.id,
-    email: user.email,
-    realname: user.realname || null,
-    employeeStatus: user.employeeStatus,
-    departmentPath: user.departmentPath || null,
-    isPlatformAdmin: Boolean(user.isPlatformAdmin),
-    lastLoginAt: user.lastLoginAt || null,
-    createdAt: user.createdAt,
-    updatedAt: user.updatedAt,
-  };
-}
-
-function formatAdminSite(site) {
-  return {
-    id: site.id,
-    slug: site.slug,
-    hostname: site.route?.hostname || null,
-    owner: {
-      type: site.ownerType || 'user',
-      id: site.ownerId || site.ownerUserId,
-      email: site.ownerEmail || null,
-      displayName: site.ownerDisplayName || null,
-      departmentPath: site.ownerDepartmentPath || null,
-      teamType: site.ownerTeamType || null,
-    },
-    deploymentShape: site.deploymentShape ?? null,
-    exposure: site.route?.exposure || site.defaultExposure || 'internal',
-    visibility: site.route?.visibility || site.defaultVisibility,
-    status: site.route?.routeStatus || 'active',
-    createdAt: site.createdAt,
-    updatedAt: site.updatedAt,
-  };
-}
-
-function formatAdminSiteDetail(site) {
-  return {
-    ...formatAdminSite(site),
-    access: {
-      exposure: site.route?.exposure || site.defaultExposure || 'internal',
-      accessMode: site.route?.accessMode || accessModeFromVisibility(site.route?.visibility || site.defaultVisibility),
-      visibility: site.route?.visibility || site.defaultVisibility,
-    },
-    permissions: {
-      role: 'admin',
-      canManage: true,
-      canManageAccess: true,
-    },
-  };
-}
-
-function formatAdminTeam(team) {
-  return {
-    id: team.id,
-    name: departmentTeamDisplayName(team),
-    description: team.description || null,
-    teamType: team.teamType,
-    departmentPath: team.departmentPath || null,
-    status: team.status,
-    mergedIntoTeamId: team.mergedIntoTeamId || null,
-    mergedAt: team.mergedAt || null,
-    mergedByUserId: team.mergedByUserId || null,
-    mergeReason: team.mergeReason || null,
-    createdAt: team.createdAt,
-    updatedAt: team.updatedAt,
-  };
-}
-
-function formatAdminTeamMember(member) {
-  return {
-    teamId: member.teamId,
-    userId: member.userId,
-    user: member.user ? formatConsoleUser(member.user) : null,
-    role: member.role,
-    membershipSource: member.membershipSource,
-    departmentPath: member.departmentPath || null,
-    removedAt: member.removedAt || null,
-    createdAt: member.createdAt,
-    updatedAt: member.updatedAt,
-  };
 }
 
 function adminMergeErrorResponse(error) {
