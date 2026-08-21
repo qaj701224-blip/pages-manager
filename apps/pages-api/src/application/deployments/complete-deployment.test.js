@@ -24,6 +24,7 @@ function createApplication(overrides = {}) {
   return createDeploymentCompletion({
     deployments: { update: async () => null },
     telemetry: {
+      startPersist: () => null,
       persistSucceeded: async () => null,
       persistFailed: async () => null,
     },
@@ -60,6 +61,7 @@ test('deployment completion persists the successful terminal patch through its n
 test('deployment completion preserves committed success when terminal persistence fails', async () => {
   const cause = new Error('deployment store unavailable');
   const failures = [];
+  const stage = { operation: 'persist_succeeded_deployment' };
   const application = createApplication({
     deployments: {
       update: async () => {
@@ -67,6 +69,7 @@ test('deployment completion preserves committed success when terminal persistenc
       },
     },
     telemetry: {
+      startPersist: () => stage,
       persistSucceeded: async () => assert.fail('state persistence did not succeed'),
       persistFailed: async (input) => failures.push(input),
     },
@@ -86,6 +89,7 @@ test('deployment completion preserves committed success when terminal persistenc
   assert.deepEqual(failures, [
     {
       deploymentId: 'dep_1',
+      stage,
       operation: 'persist_succeeded_deployment',
       cause,
     },
@@ -103,15 +107,23 @@ test('deployment completion records trace success after persistence', async () =
       },
     },
     telemetry: {
-      async persistSucceeded() {
-        calls.push('trace_succeeded');
+      startPersist(operation) {
+        calls.push(['trace_start', operation]);
+        return operation;
+      },
+      async persistSucceeded(stage) {
+        calls.push(['trace_succeeded', stage]);
       },
       persistFailed: async () => assert.fail('completion must succeed'),
     },
   });
 
   assert.equal(await application.complete(command), completed);
-  assert.deepEqual(calls, ['update', 'trace_succeeded']);
+  assert.deepEqual(calls, [
+    ['trace_start', 'persist_succeeded_deployment'],
+    'update',
+    ['trace_succeeded', 'persist_succeeded_deployment'],
+  ]);
 });
 
 test('deployment completion synthesizes committed success when trace completion fails', async () => {
@@ -120,6 +132,7 @@ test('deployment completion synthesizes committed success when trace completion 
   const application = createApplication({
     deployments: { update: async () => ({ ...deployment, status: 'succeeded' }) },
     telemetry: {
+      startPersist: () => null,
       persistSucceeded: async () => {
         throw cause;
       },
@@ -131,6 +144,22 @@ test('deployment completion synthesizes committed success when trace completion 
   assert.equal(result.status, 'succeeded');
   assert.equal(result.errorCode, null);
   assert.equal(failures[0].cause, cause);
+});
+
+test('deployment completion starts persistence telemetry synchronously', () => {
+  const startError = new Error('invalid trace');
+  const application = createApplication({
+    deployments: { update: async () => assert.fail('deployment update must not run') },
+    telemetry: {
+      startPersist() {
+        throw startError;
+      },
+      persistSucceeded: async () => assert.fail('success trace must not run'),
+      persistFailed: async () => assert.fail('failure trace must not run'),
+    },
+  });
+
+  assert.throws(() => application.complete(command), (error) => error === startError);
 });
 
 test('successful deployment synthesis clears stale failure fields', () => {

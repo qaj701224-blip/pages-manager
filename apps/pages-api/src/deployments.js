@@ -1402,12 +1402,6 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
     );
   }
   const completedAt = readNow(env);
-  const deploymentStateStage = trace
-    ? startDeploymentStage(trace, {
-        stage: 'deployment_state_persist',
-        operation: 'persist_succeeded_deployment',
-      })
-    : null;
   const completed = await completeCommittedDeployment({
     store,
     env,
@@ -1416,7 +1410,6 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
     versionId: version.id,
     previousVersionId: previousRoute?.activeVersionId || null,
     completedAt,
-    stageHandle: deploymentStateStage,
   });
 
   const previousResourceCleanup = createDeploymentPreviousResourceCleanupApplication({ store, env, provider, trace });
@@ -1948,12 +1941,6 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
   await releaseSiteCommitLeaseBestEffort(rollbackLease);
 
   const completedAt = readNow(env);
-  const rollbackStateStage = trace
-    ? startDeploymentStage(trace, {
-        stage: 'deployment_state_persist',
-        operation: 'persist_succeeded_deployment',
-      })
-    : null;
   const completed = await completeCommittedDeployment({
     store,
     env,
@@ -1962,7 +1949,6 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
     versionId: version.id,
     previousVersionId: currentRoute.activeVersionId,
     completedAt,
-    stageHandle: rollbackStateStage,
   });
   await recordDeploymentStage(trace, {
     stage: 'webhook_delivery',
@@ -2817,13 +2803,21 @@ function createCommittedDeploymentReconciliationApplication({ store, env }) {
   });
 }
 
-function createDeploymentCompletionApplication({ store, env, trace, stageHandle }) {
+function createDeploymentCompletionApplication({ store, env, trace }) {
   return createDeploymentCompletion({
     deployments: createDeploymentCompletionPort(store),
     telemetry: {
-      persistSucceeded: () =>
-        stageHandle ? finishDeploymentStage(stageHandle, { status: 'succeeded' }) : undefined,
-      persistFailed: (input) => recordDeploymentStatePersistFailure({ ...input, trace, env, stageHandle }),
+      startPersist(operation) {
+        return trace
+          ? startDeploymentStage(trace, {
+              stage: 'deployment_state_persist',
+              operation,
+            })
+          : null;
+      },
+      persistSucceeded: (stage) => (stage ? finishDeploymentStage(stage, { status: 'succeeded' }) : undefined),
+      persistFailed: ({ stage, ...input }) =>
+        recordDeploymentStatePersistFailure({ ...input, trace, env, stageHandle: stage }),
     },
   });
 }
@@ -3100,14 +3094,12 @@ async function completeCommittedDeployment({
   versionId,
   previousVersionId,
   completedAt,
-  stageHandle,
 }) {
   const command = { deployment, versionId, previousVersionId, completedAt };
   return createDeploymentCompletionApplication({
     store,
     trace,
     env,
-    stageHandle,
   }).complete(command);
 }
 
