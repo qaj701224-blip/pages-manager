@@ -372,5 +372,3 @@ function readReuseHoldSeconds(env) {
   const value = Number(env?.HOSTNAME_REUSE_HOLD_SECONDS || 300);
   return Number.isInteger(value) && value >= 0 && value <= 86_400 ? value : 300;
 }
-
-

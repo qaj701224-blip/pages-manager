@@ -546,5 +546,3 @@ function normalWorkerStateInconsistentError() {
     action: 'Retry deletion to finish D1 synchronization before the next manual router deploy.',
   };
 }
-
-

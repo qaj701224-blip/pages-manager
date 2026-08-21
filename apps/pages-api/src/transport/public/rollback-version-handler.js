@@ -378,4 +378,3 @@ export async function rollbackVersion(request, env, config, store, actor, versio
 
   return jsonOk(await deploymentEnvelope(store, completed, { version, route }), 201);
 }
-
