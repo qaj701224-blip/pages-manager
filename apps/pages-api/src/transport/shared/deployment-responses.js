@@ -25,3 +25,24 @@ export function deploymentAuthErrorResponse(error) {
 export function deploymentMethodNotAllowed() {
   return jsonError('METHOD_NOT_ALLOWED', 'Method not allowed.', 405, 'Use a supported HTTP method.');
 }
+
+export function rollbackSiteResolutionErrorResponse(error) {
+  if (error?.code === 'VERSION_NOT_FOUND') {
+    return jsonError('VERSION_NOT_FOUND', 'Version not found.', 404, 'Check the version id.');
+  }
+  if (error?.code === 'SITE_NOT_FOUND') {
+    return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site slug.');
+  }
+  if (error?.code === 'ROLLBACK_SITE_MISMATCH') {
+    return jsonError(
+      'ROLLBACK_SITE_MISMATCH',
+      'Rollback version does not belong to the requested site.',
+      409,
+      'Check the site name and version id.'
+    );
+  }
+  if (error?.code === 'ROLLBACK_FORBIDDEN') {
+    return jsonError('ROLLBACK_FORBIDDEN', 'Actor cannot rollback this site.', 403, 'Use a token scoped to this site.');
+  }
+  throw new TypeError(`Unknown rollback site resolution error: ${error?.code || 'UNKNOWN'}`);
+}

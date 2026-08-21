@@ -2,7 +2,9 @@ import { validateSiteSlug } from '@xd/pages-runtime-protocol';
 
 import { isManagedWfpWorkerName } from './admin-resource-governance.js';
 import { createDeploymentRecord } from './application/deployments/deployment-record.js';
+import { createRollbackSiteResolution } from './application/deployments/resolve-rollback-site.js';
 import { createDeploymentRecordsPort } from './application/ports/deployment-records.js';
+import { createRollbackSiteResolutionPort } from './application/ports/rollback-site-resolution.js';
 import { canonicalRequestHash } from './crypto.js';
 import {
   assertRuntimeConfigSnapshotUnchanged,
@@ -55,6 +57,7 @@ import {
 import {
   deploymentRequestFailed,
   deploymentStateWriteFailed,
+  rollbackSiteResolutionErrorResponse,
 } from './transport/shared/deployment-responses.js';
 
 const PROVIDER_DIAGNOSTIC_CLIENT_CODES = new Set(['WFP_API_ERROR', 'WFP_API_INVALID_JSON', 'WFP_NETWORK_ERROR']);
@@ -1735,23 +1738,23 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
   if (exposureError) return exposureError;
 
   setRequestTraceStage(trace, 'auth_and_site_resolution', 'resolve_rollback_site');
-  const version = await store.getSiteVersion(versionId, config.environment);
-  if (!version) {
-    const response = jsonError('VERSION_NOT_FOUND', 'Version not found.', 404, 'Check the version id.');
-    await finishRequestAuthStageFromResponse(authStage, response, 'site_resolution_error');
+  const resolution = await createRollbackSiteResolutionApplication(store).resolve({
+    versionId,
+    environment: config.environment,
+    actor,
+    siteId: body.siteId,
+    siteSlug: body.siteSlug,
+  });
+  if (!resolution.ok) {
+    const response = rollbackSiteResolutionErrorResponse(resolution.error);
+    await finishRequestAuthStageFromResponse(
+      authStage,
+      response,
+      resolution.error.code === 'ROLLBACK_FORBIDDEN' ? 'authorization_error' : 'site_resolution_error'
+    );
     return response;
   }
-  const requestedSiteError = await validateRequestedRollbackSite(store, version, body, config.environment);
-  if (requestedSiteError) {
-    await finishRequestAuthStageFromResponse(authStage, requestedSiteError, 'site_resolution_error');
-    return requestedSiteError;
-  }
-  const site = await store.getSiteForUser(version.siteId, actor.userId, actor, config.environment);
-  if (!site || !actorCanDeploySite(actor, site, 'rollback:site')) {
-    const response = jsonError('ROLLBACK_FORBIDDEN', 'Actor cannot rollback this site.', 403, 'Use a token scoped to this site.');
-    await finishRequestAuthStageFromResponse(authStage, response, 'authorization_error');
-    return response;
-  }
+  const { site, version } = resolution;
   await recoverFailedDeploymentsForSite({ store, env, config, ctx, actor, site });
 
   setRequestTraceStage(trace, 'payload_validation', 'rollback_validate');
@@ -2362,28 +2365,6 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
   });
 
   return jsonOk(await deploymentEnvelope(store, completed, { version, route }), 201);
-}
-
-async function validateRequestedRollbackSite(store, version, body, environment) {
-  const siteId = typeof body.siteId === 'string' ? body.siteId.trim() : '';
-  if (siteId && siteId !== version.siteId) return rollbackSiteMismatch();
-
-  const siteSlug = typeof body.siteSlug === 'string' ? body.siteSlug.trim().toLowerCase() : '';
-  if (!siteSlug) return null;
-  if (typeof store.findSiteBySlug !== 'function') return null;
-  const requestedSite = await store.findSiteBySlug(environment, siteSlug);
-  if (!requestedSite) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site slug.');
-  if (requestedSite.id !== version.siteId) return rollbackSiteMismatch();
-  return null;
-}
-
-function rollbackSiteMismatch() {
-  return jsonError(
-    'ROLLBACK_SITE_MISMATCH',
-    'Rollback version does not belong to the requested site.',
-    409,
-    'Check the site name and version id.'
-  );
 }
 
 async function resolveDeploySite(store, actor, config, env, { siteId, siteSlug, teamId, visibility, requestedVisibility }) {
@@ -3660,6 +3641,13 @@ function createDeploymentRecordApplication(store, env) {
     deploymentRecords: createDeploymentRecordsPort(store),
     ids: { next: (prefix) => nextId(env, prefix) },
   });
+}
+
+function createRollbackSiteResolutionApplication(store) {
+  const resolve = createRollbackSiteResolution({
+    sites: createRollbackSiteResolutionPort(store),
+  });
+  return { resolve };
 }
 
 function normalizeOptionalString(value) {
