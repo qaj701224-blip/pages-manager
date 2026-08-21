@@ -13,6 +13,7 @@ import { createDeploymentVersionCreation } from './application/deployments/creat
 import { createDeploymentSucceededWebhook } from './application/deployments/deliver-succeeded-webhook.js';
 import { createDeploymentFailedWebhook } from './application/deployments/deliver-failed-webhook.js';
 import { createDeploymentRecord } from './application/deployments/deployment-record.js';
+import { createSuccessfulDeploymentFinalization } from './application/deployments/finalize-successful-deployment.js';
 import { createPublicWorkerOfficeNetGuard } from './application/deployments/ensure-public-office-net.js';
 import { createRollbackOfficeNetVerification } from './application/deployments/ensure-rollback-office-net.js';
 import { createDeploymentProviderOperations } from './application/deployments/provider-operations.js';
@@ -1197,38 +1198,22 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
       'Check the latest site status and retry the deployment with a new Idempotency-Key.'
     );
   }
-  const completedAt = readNow(env);
-  const completed = await completeCommittedDeployment({
+  const completed = await createSuccessfulDeploymentFinalizationApplication({
     store,
     env,
+    config,
+    ctx,
+    provider,
     trace,
+  }).finalize({
     deployment,
-    versionId: version.id,
-    previousVersionId: previousRoute?.activeVersionId || null,
-    completedAt,
-  });
-
-  const previousResourceCleanup = createDeploymentPreviousResourceCleanupApplication({ store, env, provider, trace });
-  const cleanupCommand = {
-    environment: config.environment,
-    previousRoute,
-    activeRoute: route,
-    deployment: completed,
-  };
-  await previousResourceCleanup.cleanup(cleanupCommand);
-  const webhookDelivery = createDeploymentSucceededWebhookApplication({ store, env, config, trace }).deliver({
+    version,
     actor,
     site,
+    previousRoute,
     route,
-    deployment: completed,
     environment: config.environment,
   });
-  if (ctx && typeof ctx.waitUntil === 'function') {
-    ctx.waitUntil(webhookDelivery);
-  } else {
-    await webhookDelivery;
-  }
-  await emitSiteDisabledWebhook({ store, env, config, ctx, actor, site, previousRoute, route });
 
   return jsonOk(await deploymentEnvelope(store, completed, { version, route, decision, ownerTransfer }), 201);
 }
@@ -2736,6 +2721,24 @@ function createDeploymentPreviousResourceCleanupApplication({ store, env, provid
     config: {
       cleanupDrainSeconds: env?.WFP_WORKER_CLEANUP_DRAIN_SECONDS || env?.WFP_CLEANUP_DRAIN_SECONDS || 300,
     },
+  });
+}
+
+function createSuccessfulDeploymentFinalizationApplication({ store, env, config, ctx, provider, trace }) {
+  return createSuccessfulDeploymentFinalization({
+    completion: createDeploymentCompletionApplication({ store, env, trace }),
+    cleanup: createDeploymentPreviousResourceCleanupApplication({ store, env, provider, trace }),
+    webhooks: createDeploymentSucceededWebhookApplication({ store, env, config, trace }),
+    lifecycle: {
+      emitDisabled: (command) => emitSiteDisabledWebhook({ store, env, config, ctx, ...command }),
+    },
+    taskScheduler: {
+      schedule: (task) => {
+        if (ctx && typeof ctx.waitUntil === 'function') return ctx.waitUntil(task);
+        return task;
+      },
+    },
+    clock: { now: () => readNow(env) },
   });
 }
 
