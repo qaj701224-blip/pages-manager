@@ -19,7 +19,7 @@
 export const BRAND_NAME = 'Sites';
 ```
 
-Console 中承担品牌展示的 React 组件直接导入 `BRAND_NAME`。`index.html` 移除现有的静态 `XD Cell` title，UI 入口在 React 渲染前执行 `document.title = BRAND_NAME`，使运行时展示不再依赖独立的品牌字符串。
+Console 中承担品牌展示的 React 组件直接导入 `BRAND_NAME`。`index.html` 把原有的静态 `XD Cell` title 替换为 `Sites`，作为 JavaScript 加载前或加载失败时的回退；UI 入口仍在 React 渲染前执行 `document.title = BRAND_NAME`。聚焦测试必须断言静态 title 与 `BRAND_NAME` 相同，避免两个值发生漂移。
 
 本次覆盖以下用户可见位置：
 
@@ -34,7 +34,7 @@ Console 中承担品牌展示的 React 组件直接导入 `BRAND_NAME`。`index.
 
 - 增加聚焦测试，断言 `BRAND_NAME` 为 `Sites`。
 - 断言 Console 的品牌展示位置引用 `BRAND_NAME`，避免再次散落硬编码品牌名。
-- 断言 `index.html` 不再包含旧品牌 title，且 UI 入口在渲染前用 `BRAND_NAME` 设置 `document.title`。
+- 断言 `index.html` 的静态 title 与 `BRAND_NAME` 相同，且 UI 入口在渲染前用 `BRAND_NAME` 设置 `document.title`。
 - 运行 pages-console 相关测试和 lint；若聚焦命令不可用，则运行仓库现有对应测试入口。
 
 ## 风险与回滚

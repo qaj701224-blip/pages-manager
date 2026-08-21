@@ -27,5 +27,5 @@ test('console exposes one semantic brand name for user-visible branding', async 
   assert.match(sitesDirectory, /meta=\{BRAND_NAME\}/);
   assert.match(main, /document\.title = BRAND_NAME/);
   assert.ok(main.indexOf('document.title = BRAND_NAME') < main.indexOf('createRoot('));
-  assert.doesNotMatch(html, /<title>\s*XD Cell\s*<\/title>/);
+  assert.equal(html.match(/<title>([^<]+)<\/title>/)?.[1]?.trim(), BRAND_NAME);
 });
