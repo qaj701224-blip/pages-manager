@@ -17,6 +17,7 @@ import { createDeploymentFailedWebhook } from './application/deployments/deliver
 import { createDeploymentRecord } from './application/deployments/deployment-record.js';
 import { createSuccessfulRollbackFinalization } from './application/deployments/finalize-successful-rollback.js';
 import { createSuccessfulDeploymentFinalization } from './application/deployments/finalize-successful-deployment.js';
+import { createRollbackRouteFinalization } from './application/deployments/finalize-rollback-route.js';
 import { createPublicWorkerOfficeNetGuard } from './application/deployments/ensure-public-office-net.js';
 import { createRollbackOfficeNetVerification } from './application/deployments/ensure-rollback-office-net.js';
 import { createDeploymentProviderOperations } from './application/deployments/provider-operations.js';
@@ -1609,35 +1610,24 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
       'Check the latest site status and retry the rollback with a new Idempotency-Key.'
     );
   }
-  const rollbackRouteSnapshotApplication = createDeploymentRouteSnapshotCommitApplication(
+  const finalization = await createRollbackRouteFinalizationApplication({
     store,
     env,
+    provider: rollbackProvider,
     trace,
-    'rollback_route_snapshot'
-  );
-  const rollbackSnapshotResult = await rollbackRouteSnapshotApplication.commit({
+  }).finalize({
     site,
+    deployment: deploymentResult.deployment,
+    previousRoute: currentRoute,
     route,
     version,
     lease: rollbackLease,
+    environment: config.environment,
   });
-  if (!rollbackSnapshotResult.ok) {
-    const recovery = await createRollbackRouteSnapshotRecoveryApplication({
-      store,
-      env,
-      provider: rollbackProvider,
-      trace,
-    }).recover({
-      site,
-      deploymentId: deploymentResult.deployment.id,
-      previousRoute: currentRoute,
-      failedRoute: route,
-      environment: config.environment,
-      lease: rollbackLease,
-    });
+  if (!finalization.ok) {
+    const recovery = finalization.error.recovery;
     const { restoredRoute, routePointerCleared, repairRequired } = recovery;
     const restoredOfficeNetError = rollbackRouteSnapshotRecoveryError(recovery.failure);
-    await releaseSiteCommitLeaseBestEffort(rollbackLease);
     const failureError = restoredOfficeNetError;
     const failureCode = failureError?.code || 'ROUTE_SNAPSHOT_WRITE_FAILED';
     const failureStage = failureError ? 'rollback_restore_public_office_net' : 'rollback_write_route_snapshot';
@@ -1674,13 +1664,7 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
     );
   }
 
-  await releaseSiteCommitLeaseBestEffort(rollbackLease);
-
-  const completed = await createSuccessfulRollbackFinalizationApplication({ store, env, trace }).finalize({
-    deployment: deploymentResult.deployment,
-    version,
-    previousRoute: currentRoute,
-  });
+  const completed = finalization.completed;
 
   return jsonOk(await deploymentEnvelope(store, completed, { version, route }), 201);
 }
@@ -2702,6 +2686,15 @@ function createSuccessfulRollbackFinalizationApplication({ store, env, trace }) 
         }),
     },
     clock: { now: () => readNow(env) },
+  });
+}
+
+function createRollbackRouteFinalizationApplication({ store, env, provider, trace }) {
+  return createRollbackRouteFinalization({
+    routeSnapshots: createDeploymentRouteSnapshotCommitApplication(store, env, trace, 'rollback_route_snapshot'),
+    recovery: createRollbackRouteSnapshotRecoveryApplication({ store, env, provider, trace }),
+    leases: { release: releaseSiteCommitLeaseBestEffort },
+    completion: createSuccessfulRollbackFinalizationApplication({ store, env, trace }),
   });
 }
 
