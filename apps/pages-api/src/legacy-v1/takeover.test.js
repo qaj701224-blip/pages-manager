@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createTestPagesStore } from '../test-store.js';
+import { createTestPagesStore } from '../../test-support/pages-store-fixture.js';
 import { resolveLegacyV1SiteTarget } from './ownership.js';
 import { cleanupLegacyV1CloudflareSite } from './cloudflare-cleanup.js';
 import { createSiteWithLegacyV1Takeover } from './takeover.js';

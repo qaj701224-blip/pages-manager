@@ -1,0 +1,11 @@
+{
+  "name": "@xd/pages-metadata",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.js",
+    "./test-store": "./src/test-store.js"
+  }
+}

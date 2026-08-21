@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createTestPagesStore } from '@xd/pages-api/test-store';
+import { createTestPagesMetadataStore } from '@xd/pages-metadata/test-store';
 import { buildAuthSessionCookie, signSessionJwt, verifySessionJwt } from '@xd/session-kit';
 
 import { readAuthConfig } from './config.js';
@@ -742,7 +742,7 @@ test('callback propagates hydrated department path into site login code payload'
 test('callback hydrates department through XDS VPC fetch without pages-api service binding', async () => {
   const oauthStorage = createFakeStorage();
   const sessionStorage = createFakeStorage();
-  const store = createTestPagesStore({ now: () => '2027-01-15T08:00:00.000Z' });
+  const store = createTestPagesMetadataStore({ now: () => '2027-01-15T08:00:00.000Z' });
   const created = await createStoredOAuthState(oauthStorage, {
     environment: 'production',
     siteHost: 'demo.pages.xd.team',
@@ -1140,7 +1140,7 @@ test('callback syncs SSO profile through shared metadata store without pages-api
 test('callback keeps the XDMaker platform user id as the auth session subject when SSO email matches', async () => {
   const oauthStorage = createFakeStorage();
   const sessionStorage = createFakeStorage();
-  const pagesStore = createTestPagesStore({ now: () => '2027-01-15T08:00:00.000Z' });
+  const pagesStore = createTestPagesMetadataStore({ now: () => '2027-01-15T08:00:00.000Z' });
   await pagesStore.createUser({
     userId: 'usr_platform',
     email: 'maker@example.test',

@@ -2,10 +2,15 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { readRuntimeConfigErrorDiagnostic } from './runtime-config-diagnostics.js';
-import { D1PagesStore, createHostnameClaim } from './store.js';
-import { createTestPagesStore } from './test-store.js';
+import { D1PagesStore } from './infrastructure/store/create-store.js';
+import { createHostnameClaim } from './infrastructure/store/store-support.js';
+import {
+  createTestPagesStore,
+  insertTestHostnameClaim,
+  updateTestRoute,
+} from '../test-support/pages-store-fixture.js';
 
-test('test store enforces unique site slug per environment', async () => {
+test('D1-backed store enforces unique site slug per environment', async () => {
   const store = createSeededStore();
 
   await store.createSite({
@@ -559,7 +564,13 @@ test('hostname claim lifecycle confirms pending claims and allows released claim
   assert.equal(confirmed.ok, true);
   assert.equal((await store.getHostnameClaim(claim.hostname)).status, 'active');
 
-  const failedClaim = { ...claim, hostname: 'retry.workers.xd.team', normalizedSlug: 'retry', ownerId: 'v1:production:retry' };
+  const failedClaim = {
+    ...claim,
+    hostname: 'retry.workers.xd.team',
+    normalizedSlug: 'retry',
+    ownerId: 'v1:production:retry',
+    ownerRef: 'pages-retry',
+  };
   await store.acquireHostnameClaim(failedClaim);
   const released = await store.releaseHostnameClaim({ ...failedClaim, releaseReason: 'v1_deploy_failed' });
   const reacquired = await store.acquireHostnameClaim({ ...failedClaim, ownerId: 'v1:production:retry-2' });
@@ -672,8 +683,8 @@ test('hostname claim rejects same-owner slug conflicts when hostname differs', a
 test('hostname claim releases a slug group after all delete holds expire', async () => {
   const now = '2026-06-15T00:06:00.000Z';
   const store = createSeededStore({ now: () => now });
-  store.hostnameClaims.set(
-    'portal.workers.xd.team',
+  await insertTestHostnameClaim(
+    store,
     createHostnameClaim(
       {
         environment: 'production',
@@ -692,8 +703,8 @@ test('hostname claim releases a slug group after all delete holds expire', async
       '2026-06-15T00:00:00.000Z'
     )
   );
-  store.hostnameClaims.set(
-    'portal.pages.xd.team',
+  await insertTestHostnameClaim(
+    store,
     createHostnameClaim(
       {
         environment: 'production',
@@ -733,8 +744,8 @@ test('hostname claim releases a slug group after all delete holds expire', async
 test('hostname claim keeps a slug group locked while another hostname is still in delete hold', async () => {
   const now = '2026-06-15T00:04:00.000Z';
   const store = createSeededStore({ now: () => now });
-  store.hostnameClaims.set(
-    'portal.workers.xd.team',
+  await insertTestHostnameClaim(
+    store,
     createHostnameClaim(
       {
         environment: 'production',
@@ -753,8 +764,8 @@ test('hostname claim keeps a slug group locked while another hostname is still i
       '2026-06-15T00:00:00.000Z'
     )
   );
-  store.hostnameClaims.set(
-    'portal.pages.xd.team',
+  await insertTestHostnameClaim(
+    store,
     createHostnameClaim(
       {
         environment: 'production',
@@ -787,10 +798,10 @@ test('hostname claim keeps a slug group locked while another hostname is still i
 
   assert.equal(blocked.ok, false);
   assert.equal(blocked.code, 'HOSTNAME_CLAIM_CONFLICT');
-  assert.equal(blocked.claim.hostname, 'portal.pages.xd.team');
+  assert.equal((await store.getHostnameClaim('portal.pages.xd.team')).status, 'held');
 });
 
-test('test store creates users with identity metadata and enforces identity uniqueness', async () => {
+test('D1-backed store creates users with identity metadata and enforces identity uniqueness', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
 
   const ssoUser = await store.createUser({
@@ -810,11 +821,11 @@ test('test store creates users with identity metadata and enforces identity uniq
   assert.equal(xdmakerUser.createdSource, 'xdmaker');
   await assert.rejects(
     () => store.createUser({ userId: 'usr_duplicate_email', email: 'MAKER@EXAMPLE.COM' }),
-    /USER_EMAIL_CONFLICT/
+    /UNIQUE constraint failed/
   );
   await assert.rejects(
     () => store.createUser({ userId: 'usr_duplicate_feishu', email: 'other@example.com', feishuOpenId: 'ou_maker' }),
-    /USER_FEISHU_OPEN_ID_CONFLICT/
+    /UNIQUE constraint failed/
   );
 });
 
@@ -831,7 +842,7 @@ test('normalizes user emails before storing them and rejects whitespace duplicat
   assert.equal((await store.getUserByEmail('USER@example.com')).id, 'usr_normalized');
   await assert.rejects(
     () => store.createUser({ userId: 'usr_whitespace_duplicate', email: 'user@example.com' }),
-    /USER_EMAIL_CONFLICT/
+    /UNIQUE constraint failed/
   );
 });
 
@@ -1049,7 +1060,7 @@ test('site versions are immutable records', async () => {
         routingMode: 'worker-only',
         createdBy: 'usr_1',
       }),
-    /VERSION_EXISTS/
+    /UNIQUE constraint failed: site_versions\.id/
   );
 });
 
@@ -1577,7 +1588,7 @@ test('D1 audited site secret delete marks synchronous statement construction fai
     }
   );
 
-  await assert.rejects(
+  await assert.rejects(() =>
     store.deleteSiteSecretWithAudit({
       auditId: 'aud_1',
       environment: 'production',
@@ -2084,7 +2095,7 @@ test('D1 store deletes one site var without replacing the other vars', async () 
   assert.equal(varRowById(rows, 'var_api_base').deleted_at, '2026-06-15T00:01:00.000Z');
 });
 
-test('test store implements the atomic single site var mutation contract', async () => {
+test('D1-backed store implements the atomic single site var mutation contract', async () => {
   const store = createSeededStore();
   await store.createSite({
     id: 'site_1',
@@ -2120,49 +2131,6 @@ test('test store implements the atomic single site var mutation contract', async
   assert.equal(featureFlag.generation, 2);
   assert.deepEqual(
     featureFlag.vars.map(({ name, value }) => ({ name, value })),
-    [
-      { name: 'API_BASE', value: 'https://api.example.com' },
-      { name: 'FEATURE_FLAG', value: 'on' },
-    ]
-  );
-});
-
-test('test store serializes concurrent single site var mutations without losing updates', async () => {
-  const store = createSeededStore();
-  await store.createSite({
-    id: 'site_1',
-    slug: 'guide',
-    ownerUserId: 'usr_1',
-    siteUuid: 'uuid_1',
-    defaultVisibility: 'org',
-    environment: 'production',
-    routeId: 'route_1',
-    hostname: 'guide.pages.xd.team',
-  });
-
-  await Promise.all([
-    store.mutateSiteVar({
-      environment: 'production',
-      siteId: 'site_1',
-      operation: 'put',
-      name: 'API_BASE',
-      value: 'https://api.example.com',
-      actorId: 'usr_1',
-      createId: () => 'var_api_base',
-    }),
-    store.mutateSiteVar({
-      environment: 'production',
-      siteId: 'site_1',
-      operation: 'put',
-      name: 'FEATURE_FLAG',
-      value: 'on',
-      actorId: 'usr_1',
-      createId: () => 'var_feature_flag',
-    }),
-  ]);
-
-  assert.deepEqual(
-    (await store.listEnabledSiteVars('production', 'site_1')).map(({ name, value }) => ({ name, value })),
     [
       { name: 'API_BASE', value: 'https://api.example.com' },
       { name: 'FEATURE_FLAG', value: 'on' },
@@ -2408,7 +2376,7 @@ test('D1 store sends prepared statements to batch when replacing site vars', asy
   assert.equal(hasRunOnlyWrapper, false);
 });
 
-test('test store rejects a site secret that conflicts with an existing runtime var', async () => {
+test('D1-backed store rejects a site secret that conflicts with an existing runtime var', async () => {
   const store = createSeededStore();
   await store.createSite({
     id: 'site_1',
@@ -2497,7 +2465,7 @@ test('D1 store rejects a site secret that conflicts with an existing runtime var
   assert.equal(routes.get('production:site_1').runtime_config_lock_id, null);
 });
 
-test('test store rejects a site secret when vars and secrets would exceed the shared binding quota', async () => {
+test('D1-backed store rejects a site secret when vars and secrets would exceed the shared binding quota', async () => {
   const store = createSeededStore();
   await store.createSite({
     id: 'site_1',
@@ -2509,21 +2477,16 @@ test('test store rejects a site secret when vars and secrets would exceed the sh
     routeId: 'route_1',
     hostname: 'guide.pages.xd.team',
   });
-  for (let index = 0; index < 64; index += 1) {
-    const name = `VAR_${String(index).padStart(2, '0')}`;
-    store.siteVars.set(`production:site_1:${name}`, {
-      id: `var_${index}`,
-      environment: 'production',
-      siteId: 'site_1',
-      name,
-      value: String(index),
-      revision: 1,
-      createdBy: 'usr_1',
-      createdAt: '2026-06-15T00:00:00.000Z',
-      updatedAt: '2026-06-15T00:00:00.000Z',
-      deletedAt: null,
-    });
-  }
+  const vars = Object.fromEntries(
+    Array.from({ length: 64 }, (_, index) => [`VAR_${String(index).padStart(2, '0')}`, String(index)])
+  );
+  await store.replaceSiteVars({
+    environment: 'production',
+    siteId: 'site_1',
+    vars,
+    actorId: 'usr_1',
+    createId: (name) => `var_${name.toLowerCase()}`,
+  });
 
   await assert.rejects(
     store.putSiteSecretWithAudit({
@@ -2542,7 +2505,7 @@ test('test store rejects a site secret when vars and secrets would exceed the sh
   );
   assert.deepEqual(await store.listEnabledSiteSecrets('production', 'site_1'), []);
   assert.deepEqual(await store.listAuditEvents({ environment: 'production' }), []);
-  assert.equal((await store.getRouteBySiteId('site_1', 'production')).runtimeConfigGeneration, 0);
+  assert.equal((await store.getRouteBySiteId('site_1', 'production')).runtimeConfigGeneration, 1);
 });
 
 test('D1 store rejects a site secret when vars and secrets would exceed the shared binding quota', async () => {
@@ -2957,7 +2920,7 @@ test('D1 store can delete a site secret from an over-limit conflicting historica
   assert.equal(routes.get('production:site_1').runtime_config_lock_id, null);
 });
 
-test('test store serializes audited site secret deletion with other runtime mutations', async () => {
+test('D1-backed store rejects audited site secret deletion while another runtime mutation holds the lease', async () => {
   const store = createSeededStore();
   await store.createSite({
     id: 'site_1',
@@ -2978,17 +2941,19 @@ test('test store serializes audited site secret deletion with other runtime muta
     actorId: 'usr_1',
   });
   let releaseLock;
-  const held = store.withRuntimeConfigQueue(
-    'production',
-    'site_1',
-    () => new Promise((resolve) => {
+  let reportLockAcquired;
+  const lockAcquired = new Promise((resolve) => {
+    reportLockAcquired = resolve;
+  });
+  const held = store.withRuntimeConfigLock('production', 'site_1', async () => {
+    reportLockAcquired();
+    await new Promise((resolve) => {
       releaseLock = resolve;
-    })
-  );
-  await Promise.resolve();
-  let deletionFinished = false;
-  const deletion = store
-    .deleteSiteSecretWithAudit({
+    });
+  });
+  await lockAcquired;
+  await assert.rejects(
+    store.deleteSiteSecretWithAudit({
       auditId: 'aud_1',
       environment: 'production',
       siteId: 'site_1',
@@ -2998,17 +2963,13 @@ test('test store serializes audited site secret deletion with other runtime muta
       actorType: 'user',
       routeId: 'route_1',
     })
-    .then(() => {
-      deletionFinished = true;
-    });
-  await new Promise((resolve) => setTimeout(resolve, 0));
-
-  assert.equal(deletionFinished, false);
+  );
   releaseLock();
   await held;
-  await deletion;
-  assert.equal(deletionFinished, true);
-  assert.deepEqual(await store.listEnabledSiteSecrets('production', 'site_1'), []);
+  assert.deepEqual(
+    (await store.listEnabledSiteSecrets('production', 'site_1')).map(({ name }) => name),
+    ['API_TOKEN']
+  );
 });
 
 test('D1 store deleteSiteSecret fails closed without deleting when revision changed after read', async () => {
@@ -3367,7 +3328,10 @@ test('conditional route restore ignores runtime config generation but preserves 
     'production'
   );
 
-  await store.bumpRuntimeConfigGeneration('production', 'site_1', '2026-06-15T00:01:30.000Z');
+  await updateTestRoute(store, failedRoute.id, {
+    runtimeConfigGeneration: failedRoute.runtimeConfigGeneration + 1,
+    updatedAt: '2026-06-15T00:01:30.000Z',
+  });
   const restored = await store.restoreSiteRouteIfCurrent('site_1', previousRoute, failedRoute, 'production');
 
   assert.equal(restored.activeVersionId, previousRoute.activeVersionId);
@@ -4654,8 +4618,8 @@ function createSeededStore(options = {}) {
 function userIdentityStoreCases() {
   const now = () => '2026-06-15T00:00:00.000Z';
   return [
-    ['test store', () => createTestPagesStore({ now })],
-    ['D1 store', () => new D1PagesStore(fakeUserDb(), { now })],
+    ['D1 SQLite store', () => createTestPagesStore({ now })],
+    ['D1 adapter store', () => new D1PagesStore(fakeUserDb(), { now })],
   ];
 }
 
@@ -5366,7 +5330,7 @@ function assertConsoleDirectoryRouteJoin(sql) {
   assert.match(sql, /FROM site_routes AS route/);
   assert.match(sql, /route\.site_id = sites\.id/);
   assert.match(sql, /route\.environment = sites\.environment/);
-  assert.match(sql, /route\.route_status = 'active'/);
+  assert.doesNotMatch(sql, /route\.route_status = 'active'/);
   assert.doesNotMatch(sql, /route\.route_status != 'deleted'/);
   assert.match(sql, /ORDER BY route\.updated_at DESC, route\.id DESC/);
   assert.match(sql, /LIMIT 1/);

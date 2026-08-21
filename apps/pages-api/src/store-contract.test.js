@@ -3,60 +3,11 @@ import test from 'node:test';
 
 import { createD1TestDatabase } from './d1-test-db.js';
 import { createSchemaSql } from './schema.js';
-import { D1PagesStore } from './store.js';
-import { createTestPagesStore } from './test-store.js';
-
-// Intentional implementation differences outside this shared contract:
-// - `failAuditWrites` is a TestPagesStore-only fault-injection option.
-// - D1PagesStore encrypts secret values at rest; the public snapshot returned by
-//   both stores contains the same decrypted value.
-// - D1PagesStore exposes its active runtime lock ID to the lock callback, while
-//   TestPagesStore serializes callbacks in memory and reports a null lock ID.
+import { D1PagesStore } from './infrastructure/store/create-store.js';
 
 const NOW = '2026-07-28T00:00:00.000Z';
 
 const storeBackends = [
-  {
-    name: 'TestPagesStore',
-    async create() {
-      let currentNow = NOW;
-      const store = createTestPagesStore({ now: () => currentNow });
-      return {
-        store,
-        setNow(value) {
-          currentNow = value;
-        },
-        async setRawSitePolicy(siteId, { defaultExposure, defaultAccessMode } = {}) {
-          const site = store.sites.get(siteId);
-          if (defaultExposure !== undefined) site.defaultExposure = defaultExposure;
-          if (defaultAccessMode !== undefined) site.defaultAccessMode = defaultAccessMode;
-        },
-        async getRawSitePolicy(siteId) {
-          const site = store.sites.get(siteId);
-          return {
-            defaultVisibility: site.defaultVisibility,
-            defaultExposure: site.defaultExposure,
-            defaultAccessMode: site.defaultAccessMode,
-          };
-        },
-        async setRawRoutePolicy(siteId, { exposure, accessMode, visibility } = {}) {
-          const route = store.routes.get(store.routeBySiteId.get(siteId));
-          if (exposure !== undefined) route.exposure = exposure;
-          if (accessMode !== undefined) route.accessMode = accessMode;
-          if (visibility !== undefined) route.visibility = visibility;
-        },
-        async getRawRoutePolicy(siteId) {
-          const route = store.routes.get(store.routeBySiteId.get(siteId));
-          return {
-            visibility: route.visibility,
-            exposure: route.exposure,
-            accessMode: route.accessMode,
-          };
-        },
-        dispose() {},
-      };
-    },
-  },
   {
     name: 'D1PagesStore',
     async create() {

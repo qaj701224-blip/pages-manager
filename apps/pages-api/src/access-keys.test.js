@@ -4,7 +4,7 @@ import test from 'node:test';
 import worker from './index.js';
 import * as accessKeys from './access-keys.js';
 import { createAccessKeyPlaintext, hashAccessKey } from './crypto.js';
-import { createTestPagesStore } from './test-store.js';
+import { addTestSiteMember, createTestPagesStore } from '../test-support/pages-store-fixture.js';
 
 const BEARER_USR_1 = createAccessKeyPlaintext({
   environment: 'production',
@@ -242,7 +242,7 @@ test('rejects deploy-capable access key creation for non-owner site members', as
     bytes: new Uint8Array(24).fill(14),
   });
   await seedCliLoginKey(store, { userId: 'usr_viewer', keyId: 'ak_cli_viewer', plaintext: viewerBearer });
-  await store.addSiteMember({
+  await addTestSiteMember(store, {
     siteId: 'site_1',
     userId: 'usr_viewer',
     role: 'viewer',

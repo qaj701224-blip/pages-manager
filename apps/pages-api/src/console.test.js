@@ -3,7 +3,12 @@ import test from 'node:test';
 
 import worker from './index.js';
 import { markRuntimeConfigError } from './runtime-config-diagnostics.js';
-import { createTestPagesStore } from './test-store.js';
+import {
+  createTestPagesStore,
+  failTestAuditWrites,
+  updateTestRoute,
+  updateTestSitePolicy,
+} from '../test-support/pages-store-fixture.js';
 import { seedLifecycleWebhook, TEST_WEBHOOK_URL_ENCRYPTION_KEY } from './lifecycle-webhook-test-fixtures.js';
 
 test('public API host cannot use forged console identity headers', async () => {
@@ -1138,7 +1143,7 @@ test('Console access emits site.disabled only for the visibility transition', as
   });
   await activateSite(store, 'site_mine', { visibility: 'org' });
   await seedLifecycleWebhook(store, 'site.disabled');
-  const testEnvironment = env(store, {
+  const testEnvironment = envWithSequencedIds(store, {
     ROUTE_SNAPSHOTS: createSnapshotStore(),
     WEBHOOK_URL_ENCRYPTION_KEY: TEST_WEBHOOK_URL_ENCRYPTION_KEY,
     resolveWebhookHost: async () => ['8.8.8.8'],
@@ -1231,7 +1236,7 @@ test('site admin secret changes sync to active WFP worker', async () => {
   });
   await activateSite(store, 'site_mine', { workerName: 'pages-v2-mine-ver-1' });
   const synced = [];
-  const testEnvironment = env(store, {
+  const testEnvironment = envWithSequencedIds(store, {
     WFP_PROVIDER: {
       putSecret: async (input) => synced.push(['put', input.workerName, input.name, input.value]),
       deleteSecret: async (input) => synced.push(['delete', input.workerName, input.name]),
@@ -1307,7 +1312,7 @@ test('site admin var changes sync to active WFP worker plain text bindings', asy
   ]);
 });
 
-test('site admin concurrent var puts preserve both runtime bindings', async () => {
+test('site admin concurrent var puts fail fast and preserve both runtime bindings after retry', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   await seedSite(store, {
     id: 'site_mine',
@@ -1315,7 +1320,7 @@ test('site admin concurrent var puts preserve both runtime bindings', async () =
     ownerUserId: 'usr_me',
     visibility: 'org',
   });
-  const testEnvironment = env(store);
+  const testEnvironment = envWithSequencedIds(store);
 
   const [apiBase, featureFlag] = await Promise.all([
     worker.fetch(
@@ -1336,8 +1341,17 @@ test('site admin concurrent var puts preserve both runtime bindings', async () =
     ),
   ]);
 
-  assert.equal(apiBase.status, 200, await apiBase.clone().text());
-  assert.equal(featureFlag.status, 200, await featureFlag.clone().text());
+  assert.deepEqual([apiBase.status, featureFlag.status].sort(), [200, 409]);
+  const failedVar = apiBase.status === 409 ? ['API_BASE', 'https://api.example.com'] : ['FEATURE_FLAG', 'on'];
+  const retry = await worker.fetch(
+    internalConsoleJsonRequest(`/.xd-pages/api/console/sites/site_mine/config/vars/${failedVar[0]}`, {
+      userId: 'usr_me',
+      method: 'PUT',
+      body: { value: failedVar[1] },
+    }),
+    testEnvironment
+  );
+  assert.equal(retry.status, 200, await retry.clone().text());
   assert.deepEqual(
     (await store.listEnabledSiteVars('production', 'site_mine')).map(({ name, value }) => ({ name, value })),
     [
@@ -1374,17 +1388,13 @@ test('site admin var mutations map binding and revision conflicts to stable erro
   );
   for (let index = 1; index < 64; index += 1) {
     const name = `SECRET_${String(index).padStart(2, '0')}`;
-    store.siteSecrets.set(`production:site_mine:${name}`, {
+    await store.putSiteSecret({
       id: `sec_${index}`,
       environment: 'production',
       siteId: 'site_mine',
       name,
       value: `secret-${index}`,
-      revision: 1,
-      createdBy: 'usr_me',
-      createdAt: '2026-06-15T00:00:00.000Z',
-      updatedAt: '2026-06-15T00:00:00.000Z',
-      deletedAt: null,
+      actorId: 'usr_me',
     });
   }
   const quota = await worker.fetch(
@@ -1738,7 +1748,7 @@ test('site admin secret writes map store failures to runtime config errors', asy
         operation: 'secret_put',
         environment: 'production',
         siteId: 'site_mine',
-        stage: 'unknown',
+        stage: 'statement_build',
         reason: 'store_operation_failed',
         errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
       },
@@ -1767,7 +1777,7 @@ test('site admin secret deletes map store failures to runtime config errors', as
     auditId: 'aud_1',
     updatedAt: '2026-06-15T00:00:00.000Z',
   });
-  store.failAuditWrites = true;
+  failTestAuditWrites(store);
   const lines = [];
 
   const response = await worker.fetch(
@@ -1789,7 +1799,7 @@ test('site admin secret deletes map store failures to runtime config errors', as
         operation: 'secret_delete',
         environment: 'production',
         siteId: 'site_mine',
-        stage: 'unknown',
+        stage: 'statement_build',
         reason: 'store_operation_failed',
         errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
       },
@@ -1822,9 +1832,10 @@ test('site admin can update access policy and delete runtime config entries', as
     actorId: 'usr_me',
     actorType: 'user',
     routeId: 'route_site_mine',
-    auditId: 'aud_1',
+    auditId: 'aud_seed',
     updatedAt: '2026-06-15T00:00:00.000Z',
   });
+  const testEnvironment = envWithSequencedIds(store);
 
   const access = await worker.fetch(
     internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/access', {
@@ -1835,25 +1846,25 @@ test('site admin can update access policy and delete runtime config entries', as
         aclEntries: [{ subjectType: 'email', subjectValue: 'teammate@example.com', accessRole: 'viewer' }],
       },
     }),
-    env(store)
+    testEnvironment
   );
   const deleteVar = await worker.fetch(
     internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/config/vars/API_BASE', {
       userId: 'usr_me',
       method: 'DELETE',
     }),
-    env(store)
+    testEnvironment
   );
   const deleteSecret = await worker.fetch(
     internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/config/secrets/API_TOKEN', {
       userId: 'usr_me',
       method: 'DELETE',
     }),
-    env(store)
+    testEnvironment
   );
   const config = await worker.fetch(
     internalConsoleRequest('/.xd-pages/api/console/sites/site_mine/config', { userId: 'usr_me' }),
-    env(store)
+    testEnvironment
   );
 
   assert.equal(access.status, 200, await access.clone().text());
@@ -1888,8 +1899,8 @@ test('console access update commits visibility and ACL once while preserving pub
     visibility: 'org',
   });
   const initialRoute = await activateSite(store, 'site_mine', { visibility: 'org' });
-  store.routes.get(initialRoute.id).exposure = 'public';
-  store.sites.get('site_mine').defaultExposure = 'public';
+  await updateTestRoute(store, initialRoute.id, { exposure: 'public' });
+  await updateTestSitePolicy(store, 'site_mine', { defaultExposure: 'public' });
   const snapshots = createSnapshotStore();
 
   const response = await worker.fetch(
@@ -1978,8 +1989,8 @@ test('console access snapshot failure compensates visibility and ACL while prese
     'production'
   );
   const initialRoute = await activateSite(store, site.id, { visibility: 'org' });
-  store.routes.get(initialRoute.id).exposure = 'public';
-  store.sites.get(site.id).defaultExposure = 'public';
+  await updateTestRoute(store, initialRoute.id, { exposure: 'public' });
+  await updateTestSitePolicy(store, site.id, { defaultExposure: 'public' });
 
   const response = await worker.fetch(
     internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_console_repair/access', {
@@ -2023,7 +2034,7 @@ test('regular console access API rejects explicit exposure changes', async () =>
     visibility: 'org',
   });
   const route = await activateSite(store, 'site_mine', { visibility: 'org' });
-  store.routes.get(route.id).exposure = 'public';
+  await updateTestRoute(store, route.id, { exposure: 'public' });
   const snapshots = createSnapshotStore();
 
   const response = await worker.fetch(

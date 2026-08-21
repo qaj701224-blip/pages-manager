@@ -6,7 +6,7 @@ import kvGatewayWorker from '@xd/kv-gateway';
 import routerWorker from '@xd/pages-router';
 import apiWorker from './index.js';
 import { createAccessKeyPlaintext, hashAccessKey } from './crypto.js';
-import { createTestPagesStore } from './test-store.js';
+import { createTestPagesStore } from '../test-support/pages-store-fixture.js';
 
 const BEARER_USR_1 = createAccessKeyPlaintext({
   environment: 'production',

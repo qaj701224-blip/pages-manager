@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { createAccessKeyPlaintext, hashAccessKey } from './crypto.js';
 import worker from './index.js';
-import { createTestPagesStore } from './test-store.js';
+import { createTestPagesStore } from '../test-support/pages-store-fixture.js';
 
 const BEARER_USR_1 = createAccessKeyPlaintext({
   environment: 'production',

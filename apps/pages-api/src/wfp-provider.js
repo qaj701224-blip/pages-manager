@@ -1,11 +1,12 @@
 import { BINDINGS } from '@xd/pages-runtime-protocol';
-import { createWfpClient, readWfpConfig } from '@xd/wfp-client';
+import { createWfpClient } from '@xd/wfp-client';
+import { readWfpProviderConfig } from './infrastructure/config/provider-config.js';
 import { runtimeBindingsForProvider } from './runtime-config.js';
 
 export function createDeploymentProvider(env, config) {
   if (env.WFP_PROVIDER) return withWfpMetadata(env.WFP_PROVIDER);
-  const wfpConfig = readWfpConfig(env, { environment: config.environment });
-  const client = createWfpClient({ ...wfpConfig, fetch: env.fetch || globalThis.fetch });
+  const providerConfig = readWfpProviderConfig(env, { environment: config.environment });
+  const client = createWfpClient({ ...providerConfig, fetch: env.fetch || globalThis.fetch });
   return withWfpMetadata({
     async upload(input) {
       return client.uploadUserWorker({
@@ -15,11 +16,11 @@ export function createDeploymentProvider(env, config) {
         decision: input.decision,
         assetManifest: input.assetManifest,
         assetFiles: input.assetFiles,
-        compatibilityDate: env.WFP_COMPATIBILITY_DATE,
+        compatibilityDate: providerConfig.compatibilityDate,
         tags: ['pages-v2', config.environment, input.site.slug],
         bindings: [
           kvGatewayServiceBinding(config.environment),
-          ...userWorkerVpcNetworkBindings(env, input.decision, input.exposure),
+          ...userWorkerVpcNetworkBindings(providerConfig, input.decision, input.exposure),
           ...runtimeBindingsForProvider(input.runtimeBindings),
         ],
       });
@@ -62,10 +63,10 @@ export function kvGatewayServiceBinding(environment) {
   };
 }
 
-function userWorkerVpcNetworkBindings(env, decision, exposure = 'internal') {
+function userWorkerVpcNetworkBindings(config, decision, exposure = 'internal') {
   if (!decisionUsesUserWorker(decision)) return [];
   if (exposure === 'public') return [];
-  const tunnelId = String(env.PAGES_USER_WORKER_VPC_TUNNEL_ID || '').trim();
+  const tunnelId = config.userWorkerVpcTunnelId;
   if (!tunnelId) return [];
   return [
     {

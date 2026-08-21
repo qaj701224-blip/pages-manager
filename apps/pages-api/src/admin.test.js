@@ -2,7 +2,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import worker from './index.js';
-import { createTestPagesStore } from './test-store.js';
+import {
+  createTestPagesStore,
+  deleteTestSiteRecord,
+  insertTestTeam,
+  updateTestRoute,
+  updateTestRoutePolicy,
+  updateTestSitePolicy,
+} from '../test-support/pages-store-fixture.js';
 import { seedLifecycleWebhook, TEST_WEBHOOK_URL_ENCRYPTION_KEY } from './lifecycle-webhook-test-fixtures.js';
 
 test('admin dashboard requires platform admin and returns governance counts', async () => {
@@ -1983,7 +1990,7 @@ test('admin team list defaults to active teams and keeps merged teams behind an 
     createdAt: '2026-07-02T00:00:00.000Z',
     updatedAt: '2026-07-02T00:00:00.000Z',
   };
-  store.teams.set(source.id, source);
+  await insertTestTeam(store, source);
   const target = await store.findOrCreateDepartmentTeam({
     environment: 'production',
     departmentPath: '心动/发行服务/平台支撑部',
@@ -3360,7 +3367,7 @@ test('admin WFP cleanup fails closed for pointerless tasks with an orphaned vers
     artifactAvailability: 'active',
     createdBy: 'usr_root',
   });
-  store.sites.delete('site_orphaned_version');
+  await deleteTestSiteRecord(store, 'site_orphaned_version');
   await store.createDeploymentResourceCleanupTask({
     id: 'cln_orphaned_ownership',
     environment: 'production',
@@ -3412,7 +3419,7 @@ for (const ownershipKind of ['route', 'version']) {
       hostname: `cross-environment-${ownershipKind}-staging.workers.xd.team`,
     });
     if (ownershipKind === 'route') {
-      Object.assign(store.routes.get(routeId), {
+      await updateTestRoute(store, routeId, {
         workerName,
         executionProvider: 'wfp',
         dispatchType: 'dispatch-namespace',
@@ -3606,9 +3613,9 @@ test('admin sites filter returns only public exposure sites', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
   await seedPlatformAdmin(store);
   await seedTeamSite(store, { id: 'site_filter_public', slug: 'filter-public', teamId: 'team_console' });
-  const publicRoute = await activateSite(store, 'site_filter_public');
-  store.routes.get(publicRoute.id).exposure = 'public';
-  store.sites.get('site_filter_public').defaultExposure = 'public';
+  await activateSite(store, 'site_filter_public');
+  await updateTestRoutePolicy(store, 'site_filter_public', { exposure: 'public' });
+  await updateTestSitePolicy(store, 'site_filter_public', { defaultExposure: 'public' });
   await seedTeamSite(store, { id: 'site_filter_internal', slug: 'filter-internal', teamId: 'team_console' });
 
   const response = await worker.fetch(
@@ -3628,17 +3635,15 @@ test('admin sites filter returns only public exposure sites', async () => {
   assert.ok(body.sites.every((site) => site.exposure === 'public'));
 });
 
-test('admin sites filter returns internal and legacy sites without exposure data', async () => {
+test('admin sites filter returns internal and migration-defaulted legacy sites', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
   await seedPlatformAdmin(store);
   await seedTeamSite(store, { id: 'site_filter_public', slug: 'filter-public', teamId: 'team_console' });
-  const publicRoute = await activateSite(store, 'site_filter_public');
-  store.routes.get(publicRoute.id).exposure = 'public';
-  store.sites.get('site_filter_public').defaultExposure = 'public';
+  await activateSite(store, 'site_filter_public');
+  await updateTestRoutePolicy(store, 'site_filter_public', { exposure: 'public' });
+  await updateTestSitePolicy(store, 'site_filter_public', { defaultExposure: 'public' });
   await seedTeamSite(store, { id: 'site_filter_internal', slug: 'filter-internal', teamId: 'team_console' });
   await seedTeamSite(store, { id: 'site_filter_legacy', slug: 'filter-legacy', teamId: 'team_console' });
-  delete store.routes.get('route_site_filter_legacy').exposure;
-  delete store.sites.get('site_filter_legacy').defaultExposure;
 
   const response = await worker.fetch(
     internalConsoleRequest('/.xd-pages/api/console/admin/sites?exposure=internal', {
@@ -3766,9 +3771,9 @@ test('platform admin can disable public exposure without changing visibility or 
   const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
   await seedPlatformAdmin(store);
   await seedTeamSite(store, { id: 'site_public', slug: 'public', teamId: 'team_console', visibility: 'acl' });
-  const route = await activateSite(store, 'site_public', { workerName: 'pages-v2-public', visibility: 'acl' });
-  store.routes.get(route.id).exposure = 'public';
-  store.sites.get('site_public').defaultExposure = 'public';
+  await activateSite(store, 'site_public', { workerName: 'pages-v2-public', visibility: 'acl' });
+  await updateTestRoutePolicy(store, 'site_public', { exposure: 'public' });
+  await updateTestSitePolicy(store, 'site_public', { defaultExposure: 'public' });
   const snapshotStore = createSnapshotStore();
   const actions = [];
 
@@ -3809,8 +3814,8 @@ test('admin site access returns the latest successful public exposure reason', a
   await seedPlatformAdmin(store);
   await seedTeamSite(store, { id: 'site_public', slug: 'public', teamId: 'team_console', visibility: 'acl' });
   const route = await activateSite(store, 'site_public', { workerName: 'pages-v2-public', visibility: 'acl' });
-  store.routes.get(route.id).exposure = 'public';
-  store.sites.get('site_public').defaultExposure = 'public';
+  await updateTestRoutePolicy(store, 'site_public', { exposure: 'public' });
+  await updateTestSitePolicy(store, 'site_public', { defaultExposure: 'public' });
   await store.recordAuditEvent({
     id: 'op_public:effective_success',
     environment: 'production',
@@ -3855,8 +3860,8 @@ test('admin site access hides policy-committed reason while the exposure transac
   await seedPlatformAdmin(store);
   await seedTeamSite(store, { id: 'site_public', slug: 'public', teamId: 'team_console', visibility: 'acl' });
   const route = await activateSite(store, 'site_public', { workerName: 'pages-v2-public', visibility: 'acl' });
-  store.routes.get(route.id).exposure = 'public';
-  store.sites.get('site_public').defaultExposure = 'public';
+  await updateTestRoutePolicy(store, 'site_public', { exposure: 'public' });
+  await updateTestSitePolicy(store, 'site_public', { defaultExposure: 'public' });
   await store.recordAuditEvent({
     id: 'op_pending:policy_committed',
     environment: 'production',
@@ -3919,9 +3924,9 @@ test('admin site access degrades safely when public exposure reason history cann
   const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
   await seedPlatformAdmin(store);
   await seedTeamSite(store, { id: 'site_public', slug: 'public', teamId: 'team_console', visibility: 'acl' });
-  const route = await activateSite(store, 'site_public', { workerName: 'pages-v2-public', visibility: 'acl' });
-  store.routes.get(route.id).exposure = 'public';
-  store.sites.get('site_public').defaultExposure = 'public';
+  await activateSite(store, 'site_public', { workerName: 'pages-v2-public', visibility: 'acl' });
+  await updateTestRoutePolicy(store, 'site_public', { exposure: 'public' });
+  await updateTestSitePolicy(store, 'site_public', { defaultExposure: 'public' });
   store.getLatestAdminSitePublicExposureReason = async () => {
     throw new Error('sensitive database detail');
   };

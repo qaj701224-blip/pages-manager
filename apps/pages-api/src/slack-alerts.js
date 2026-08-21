@@ -1,17 +1,19 @@
+import { readAlertConfig } from './infrastructure/config/integration-config.js';
+
 const GITHUB_ACTIONS_URL = 'https://github.com/xindong/pages-manager/actions';
 const ALERT_FALLBACK_TEXT = 'Legacy Worker 池容量不足，需要迁移到 WFP';
-const DEFAULT_MENTION_USER_ID = 'U06QLFY2XCK';
 
 export async function notifyDeploymentCapacityExhausted(env, config, { store }) {
+  const alertConfig = readAlertConfig(env);
   const capacity = await readWorkerSlotCapacity(store, config.environment);
   const payload = buildCapacityExhaustedPayload({
     environment: config.environment,
-    mentionUserId: env.SLACK_PAGES_ALERT_MENTION_USER_ID || DEFAULT_MENTION_USER_ID,
+    mentionUserId: alertConfig.mentionUserId,
     currentCapacity: capacity,
   });
 
   try {
-    return await sendSlackAlert(env, payload);
+    return await sendSlackAlertWithConfig(alertConfig, payload);
   } catch {
     return { sent: false, reason: 'send_failed' };
   }
@@ -65,10 +67,14 @@ export function buildCapacityExhaustedPayload({ environment, mentionUserId, curr
 }
 
 export async function sendSlackAlert(env, payload) {
-  const webhookUrl = normalizeSlackWebhookUrl(env.SLACK_PAGES_ALERT_WEBHOOK_URL);
+  return sendSlackAlertWithConfig(readAlertConfig(env), payload);
+}
+
+async function sendSlackAlertWithConfig(config, payload) {
+  const webhookUrl = normalizeSlackWebhookUrl(config.webhookUrl);
   if (!webhookUrl) return { sent: false, reason: 'webhook_not_configured' };
 
-  const fetchImpl = env.fetch || globalThis.fetch;
+  const fetchImpl = config.fetchImpl;
   if (typeof fetchImpl !== 'function') return { sent: false, reason: 'fetch_unavailable' };
 
   const response = await fetchImpl(
