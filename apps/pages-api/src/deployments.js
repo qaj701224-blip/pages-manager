@@ -22,6 +22,7 @@ import { createDeploymentProviderOperations } from './application/deployments/pr
 import { createDeploymentRouteActivationPreparation } from './application/deployments/prepare-route-activation.js';
 import { createRollbackRouteStateRead } from './application/deployments/read-rollback-route-state.js';
 import { createCommittedDeploymentReconciliation } from './application/deployments/reconcile-committed-deployment.js';
+import { createDeploymentActivationFailureRecovery } from './application/deployments/recover-activation-failure.js';
 import { createFailedDeploymentsRecovery } from './application/deployments/recover-failed-deployments.js';
 import { createUnexpectedRequestFailureRecovery } from './application/deployments/recover-unexpected-request-failure.js';
 import { createDeploymentRouteSnapshotRecovery } from './application/deployments/recover-route-snapshot.js';
@@ -766,19 +767,29 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
         })
       : null;
     if (preActivationRuntimeSnapshotError) {
-      await createUploadedWorkerCompensationApplication({ store, provider, trace }).cleanup({
-        uploaded,
-        originalFailure: { stage: 'runtime_config', code: preActivationRuntimeSnapshotError.code },
-        trafficImpact: 'old_version_retained',
+      const recovery = await createDeploymentActivationFailureRecoveryApplication({ store, env, provider, trace }).recover({
+        site,
+        worker: {
+          uploaded,
+          originalFailure: { stage: 'runtime_config', code: preActivationRuntimeSnapshotError.code },
+          trafficImpact: 'old_version_retained',
+        },
+        runtimeConfig: {
+          environment: config.environment,
+          siteId,
+          restoreVars: originalRuntimeVarRecords,
+          expectedVars: committedRuntimeVarRecords,
+          actorId: actor.userId,
+          enabled: workerRuntimeVarsProvided,
+        },
+        ownerTransfer: {
+          siteId,
+          previousSite: ownerTransferRollbackSite,
+          environment: config.environment,
+          enabled: ownerTransferApplied,
+        },
       });
-      await restoreDeploymentRuntimeConfigAfterFailure(store, env, {
-        environment: config.environment,
-        siteId,
-        restoreVars: originalRuntimeVarRecords,
-        expectedVars: committedRuntimeVarRecords,
-        actorId: actor.userId,
-        enabled: workerRuntimeVarsProvided,
-      });
+      site = recovery.site;
       await finalizeFailedDeployment({
         errorCode: preActivationRuntimeSnapshotError.code,
         errorMessage: preActivationRuntimeSnapshotError.message,
@@ -808,19 +819,29 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
       ownerTransferRollbackSite = site;
       const transferResult = await applyPendingDeployOwnerTransfer(store, actor, config, env, site, site.pendingOwnerTransfer);
       if (transferResult instanceof Response) {
-        await createUploadedWorkerCompensationApplication({ store, provider, trace }).cleanup({
-          uploaded,
-          originalFailure: { stage: 'auth_and_site_resolution', code: 'SITE_TRANSFER_FAILED' },
-          trafficImpact: 'old_version_retained',
+        const recovery = await createDeploymentActivationFailureRecoveryApplication({ store, env, provider, trace }).recover({
+          site,
+          worker: {
+            uploaded,
+            originalFailure: { stage: 'auth_and_site_resolution', code: 'SITE_TRANSFER_FAILED' },
+            trafficImpact: 'old_version_retained',
+          },
+          runtimeConfig: {
+            environment: config.environment,
+            siteId,
+            restoreVars: originalRuntimeVarRecords,
+            expectedVars: committedRuntimeVarRecords,
+            actorId: actor.userId,
+            enabled: workerRuntimeVarsProvided,
+          },
+          ownerTransfer: {
+            siteId,
+            previousSite: ownerTransferRollbackSite,
+            environment: config.environment,
+            enabled: ownerTransferApplied,
+          },
         });
-        await restoreDeploymentRuntimeConfigAfterFailure(store, env, {
-          environment: config.environment,
-          siteId,
-          restoreVars: originalRuntimeVarRecords,
-          expectedVars: committedRuntimeVarRecords,
-          actorId: actor.userId,
-          enabled: workerRuntimeVarsProvided,
-        });
+        site = recovery.site;
         await finalizeFailedDeployment(
           deploymentOperationFailurePatch({
             errorCode: 'SITE_TRANSFER_FAILED',
@@ -992,34 +1013,37 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
     }
     route = commitResult.value;
   } catch (error) {
-    await createUploadedWorkerCompensationApplication({ store, provider, trace }).cleanup({
-      uploaded,
-      originalFailure: error?.deploymentStateOperation
-        ? { stage: 'deployment_state_persist', code: 'DEPLOYMENT_STATE_WRITE_FAILED' }
-        : isPublicOfficeNetFailure(error)
-          ? { stage: 'office_net', code: error.code }
-          : routePolicyLockFailed
-            ? { stage: 'route_policy_lock', code: error?.code || 'SITE_POLICY_LOCKED' }
-          : error?.code === 'SITE_POLICY_LOCKED' || error?.code === 'ROUTE_ACTIVATION_CONFLICT'
-            ? { stage: 'route_activate', code: error.code }
-            : { stage: 'version_create', code: 'DEPLOYMENT_STATE_WRITE_FAILED' },
-      trafficImpact: 'old_version_retained',
-    });
-    await restoreDeploymentRuntimeConfigAfterFailure(store, env, {
-      environment: config.environment,
-      siteId,
-      restoreVars: originalRuntimeVarRecords,
-      expectedVars: committedRuntimeVarRecords,
-      actorId: actor.userId,
-      enabled: workerRuntimeVarsProvided,
-    });
-    site =
-      (await createDeploymentOwnerTransferRestorationApplication(store).restore({
+    const recovery = await createDeploymentActivationFailureRecoveryApplication({ store, env, provider, trace }).recover({
+      site,
+      worker: {
+        uploaded,
+        originalFailure: error?.deploymentStateOperation
+          ? { stage: 'deployment_state_persist', code: 'DEPLOYMENT_STATE_WRITE_FAILED' }
+          : isPublicOfficeNetFailure(error)
+            ? { stage: 'office_net', code: error.code }
+            : routePolicyLockFailed
+              ? { stage: 'route_policy_lock', code: error?.code || 'SITE_POLICY_LOCKED' }
+            : error?.code === 'SITE_POLICY_LOCKED' || error?.code === 'ROUTE_ACTIVATION_CONFLICT'
+              ? { stage: 'route_activate', code: error.code }
+              : { stage: 'version_create', code: 'DEPLOYMENT_STATE_WRITE_FAILED' },
+        trafficImpact: 'old_version_retained',
+      },
+      runtimeConfig: {
+        environment: config.environment,
+        siteId,
+        restoreVars: originalRuntimeVarRecords,
+        expectedVars: committedRuntimeVarRecords,
+        actorId: actor.userId,
+        enabled: workerRuntimeVarsProvided,
+      },
+      ownerTransfer: {
         siteId,
         previousSite: ownerTransferRollbackSite,
         environment: config.environment,
         enabled: ownerTransferApplied,
-      })) || site;
+      },
+    });
+    site = recovery.site;
     if (isPublicOfficeNetFailure(error)) {
       await finalizeFailedDeployment({
         versionId: version?.id || null,
@@ -1112,26 +1136,29 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
       latestRoute.activeVersionId === previousRoute.activeVersionId &&
       (latestRoute.runtimeConfigGeneration || 0) !== (previousRoute.runtimeConfigGeneration || 0);
     if (runtimeConfigChanged) {
-      await createUploadedWorkerCompensationApplication({ store, provider, trace }).cleanup({
-        uploaded,
-        originalFailure: { stage: 'runtime_config', code: 'RUNTIME_CONFIG_CHANGED' },
-        trafficImpact: 'old_version_retained',
-      });
-      await restoreDeploymentRuntimeConfigAfterFailure(store, env, {
-        environment: config.environment,
-        siteId,
-        restoreVars: originalRuntimeVarRecords,
-        expectedVars: committedRuntimeVarRecords,
-        actorId: actor.userId,
-        enabled: workerRuntimeVarsProvided,
-      });
-      site =
-        (await createDeploymentOwnerTransferRestorationApplication(store).restore({
+      const recovery = await createDeploymentActivationFailureRecoveryApplication({ store, env, provider, trace }).recover({
+        site,
+        worker: {
+          uploaded,
+          originalFailure: { stage: 'runtime_config', code: 'RUNTIME_CONFIG_CHANGED' },
+          trafficImpact: 'old_version_retained',
+        },
+        runtimeConfig: {
+          environment: config.environment,
+          siteId,
+          restoreVars: originalRuntimeVarRecords,
+          expectedVars: committedRuntimeVarRecords,
+          actorId: actor.userId,
+          enabled: workerRuntimeVarsProvided,
+        },
+        ownerTransfer: {
           siteId,
           previousSite: ownerTransferRollbackSite,
           environment: config.environment,
           enabled: ownerTransferApplied,
-        })) || site;
+        },
+      });
+      site = recovery.site;
       await finalizeFailedDeployment({
         versionId: version.id,
         errorCode: 'RUNTIME_CONFIG_CHANGED',
@@ -1159,26 +1186,29 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
         'Retry the deployment with a new Idempotency-Key.'
       );
     }
-    await createUploadedWorkerCompensationApplication({ store, provider, trace }).cleanup({
-      uploaded,
-      originalFailure: { stage: 'route_activate', code: 'ROUTE_ACTIVATION_CONFLICT' },
-      trafficImpact: 'old_version_retained',
-    });
-    await restoreDeploymentRuntimeConfigAfterFailure(store, env, {
-      environment: config.environment,
-      siteId,
-      restoreVars: originalRuntimeVarRecords,
-      expectedVars: committedRuntimeVarRecords,
-      actorId: actor.userId,
-      enabled: workerRuntimeVarsProvided,
-    });
-    site =
-      (await createDeploymentOwnerTransferRestorationApplication(store).restore({
+    const recovery = await createDeploymentActivationFailureRecoveryApplication({ store, env, provider, trace }).recover({
+      site,
+      worker: {
+        uploaded,
+        originalFailure: { stage: 'route_activate', code: 'ROUTE_ACTIVATION_CONFLICT' },
+        trafficImpact: 'old_version_retained',
+      },
+      runtimeConfig: {
+        environment: config.environment,
+        siteId,
+        restoreVars: originalRuntimeVarRecords,
+        expectedVars: committedRuntimeVarRecords,
+        actorId: actor.userId,
+        enabled: workerRuntimeVarsProvided,
+      },
+      ownerTransfer: {
         siteId,
         previousSite: ownerTransferRollbackSite,
         environment: config.environment,
         enabled: ownerTransferApplied,
-      })) || site;
+      },
+    });
+    site = recovery.site;
     await finalizeFailedDeployment({
       versionId: version.id,
       errorCode: 'ROUTE_ACTIVATION_CONFLICT',
@@ -2653,6 +2683,14 @@ function createUploadedWorkerCompensationApplication({ store, provider, trace })
   });
 }
 
+function createDeploymentActivationFailureRecoveryApplication({ store, env, provider, trace }) {
+  return createDeploymentActivationFailureRecovery({
+    workers: createUploadedWorkerCompensationApplication({ store, provider, trace }),
+    runtimeConfig: createDeploymentRuntimeConfigRestorationApplication(store, env),
+    ownerTransfers: createDeploymentOwnerTransferRestorationApplication(store),
+  });
+}
+
 function createSuccessfulDeploymentFinalizationApplication({ store, env, config, ctx, provider, trace }) {
   return createSuccessfulDeploymentFinalization({
     completion: createDeploymentCompletionApplication({ store, env, trace }),
@@ -3319,10 +3357,6 @@ function createDeploymentRuntimeConfigRestorationApplication(store, env) {
     clock: { now: () => readNow(env) },
     ids: { next: (prefix) => nextId(env, prefix) },
   });
-}
-
-function restoreDeploymentRuntimeConfigAfterFailure(store, env, command) {
-  return createDeploymentRuntimeConfigRestorationApplication(store, env).restore(command);
 }
 
 async function validateDeploymentRuntimeConfigSnapshot(store, command) {
