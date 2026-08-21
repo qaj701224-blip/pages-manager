@@ -45,6 +45,18 @@ test('site deployments show owner context beside deployment source', () => {
   assert.match(siteDetailSource, /adminDeploymentActorView\(deployment\.actor\)/);
 });
 
+test('only admin site deployments expose the trace timeline action', () => {
+  const deploymentsSource = siteDetailSource.slice(
+    siteDetailSource.indexOf('function DeploymentsPanel'),
+    siteDetailSource.indexOf('function DeploymentActorCell')
+  );
+
+  assert.match(deploymentsSource, /scope === 'admin'/);
+  assert.match(deploymentsSource, /<DeploymentTracePanel/);
+  assert.match(deploymentsSource, />\s*查看时间线\s*</);
+  assert.doesNotMatch(deploymentsSource, /scope === 'workspace'[\s\S]*?<DeploymentTracePanel/);
+});
+
 test('site overview summarizes service state instead of a raw active status row', () => {
   const overviewSource = siteDetailSource.slice(
     siteDetailSource.indexOf('function SiteOverview'),

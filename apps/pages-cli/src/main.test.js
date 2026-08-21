@@ -53,6 +53,7 @@ test('main prints API error code, message, and action', async () => {
         code: 'SITE_NOT_FOUND',
         message: 'Site not found.',
         action: 'Check the site id.',
+        deploymentTraceId: 'dtr_cli_failure',
       });
     },
   });
@@ -61,6 +62,7 @@ test('main prints API error code, message, and action', async () => {
   assert.match(stderr.text(), /SITE_NOT_FOUND/);
   assert.match(stderr.text(), /未找到站点/);
   assert.match(stderr.text(), /确认站点名和站点权限/);
+  assert.match(stderr.text(), /traceId=dtr_cli_failure/);
   assert.equal(stdout.text(), '');
 });
 

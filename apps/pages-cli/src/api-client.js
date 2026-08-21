@@ -31,13 +31,13 @@ const PUBLIC_DETAIL_KEYS = new Set(['httpStatus', 'providerEndpointType']);
 const PUBLIC_PROVIDER_ENDPOINT_TYPES = new Set(['sso_authorization', 'sso_token', 'sso_profile']);
 
 export class ApiError extends Error {
-  constructor({ status, code, message, action, reason, step, requestId, retryable, details }) {
+  constructor({ status, code, message, action, reason, step, requestId, deploymentTraceId, retryable, details }) {
     super(message || code || `HTTP ${status}`);
     this.name = 'ApiError';
     this.status = status;
     this.code = code || 'API_ERROR';
     this.action = action;
-    Object.assign(this, readPublicDiagnostics({ reason, step, requestId, retryable, details }));
+    Object.assign(this, readPublicDiagnostics({ reason, step, requestId, deploymentTraceId, retryable, details }));
   }
 }
 
@@ -89,7 +89,8 @@ async function requestForm(fetch, url, { method, form, bearer, idempotencyKey })
   if (idempotencyKey) headers.set('Idempotency-Key', idempotencyKey);
 
   const response = await fetch(new Request(url, { method, headers, body: form }));
-  const payload = await readResponsePayload(response);
+  const deploymentTraceId = readDeploymentTraceId(response.headers);
+  const payload = await readResponsePayload(response, deploymentTraceId);
   if (!response.ok) {
     const error = payload?.error || {};
     throw new ApiError({
@@ -98,9 +99,10 @@ async function requestForm(fetch, url, { method, form, bearer, idempotencyKey })
       message: error.message || response.statusText,
       action: error.action,
       ...readPublicDiagnostics(error),
+      deploymentTraceId,
     });
   }
-  return payload;
+  return attachDeploymentTraceId(payload, deploymentTraceId);
 }
 
 async function requestJson(fetch, url, { method, body, bearer, idempotencyKey }) {
@@ -118,7 +120,8 @@ async function requestJson(fetch, url, { method, body, bearer, idempotencyKey })
   }
 
   const response = await fetch(new Request(url, init));
-  const payload = await readResponsePayload(response);
+  const deploymentTraceId = readDeploymentTraceId(response.headers);
+  const payload = await readResponsePayload(response, deploymentTraceId);
   if (!response.ok) {
     const error = payload?.error || {};
     throw new ApiError({
@@ -127,12 +130,13 @@ async function requestJson(fetch, url, { method, body, bearer, idempotencyKey })
       message: error.message || response.statusText,
       action: error.action,
       ...readPublicDiagnostics(error),
+      deploymentTraceId,
     });
   }
-  return payload;
+  return attachDeploymentTraceId(payload, deploymentTraceId);
 }
 
-async function readResponsePayload(response) {
+async function readResponsePayload(response, deploymentTraceId = null) {
   if (response.status === 204) return null;
   const text = await response.text();
   if (!text) return null;
@@ -145,6 +149,7 @@ async function readResponsePayload(response) {
       code: 'INVALID_JSON_RESPONSE',
       message: `服务返回了非 JSON 响应（HTTP ${response.status}，Content-Type: ${contentType}）。`,
       action: '请确认 CLI 登录状态、服务地址和网络访问是否正确；如果是内部测试环境，请按维护文档切换环境后重试。',
+      deploymentTraceId,
     });
   }
 }
@@ -159,10 +164,24 @@ export function readPublicDiagnostics(error) {
   if (isPublicReason(error.reason)) diagnostics.reason = error.reason;
   if (isPublicStep(error.step)) diagnostics.step = error.step;
   if (isPublicRequestId(error.requestId)) diagnostics.requestId = error.requestId;
+  if (isDeploymentTraceId(error.deploymentTraceId)) diagnostics.deploymentTraceId = error.deploymentTraceId;
   if (typeof error.retryable === 'boolean') diagnostics.retryable = error.retryable;
   const details = sanitizePublicDetails(error.details);
   if (details) diagnostics.details = details;
   return diagnostics;
+}
+
+function attachDeploymentTraceId(payload, deploymentTraceId) {
+  return deploymentTraceId && isPlainObject(payload) ? { ...payload, deploymentTraceId } : payload;
+}
+
+function readDeploymentTraceId(headers) {
+  const value = headers?.get?.('X-Deployment-Trace-Id');
+  return isDeploymentTraceId(value) ? value : null;
+}
+
+function isDeploymentTraceId(value) {
+  return typeof value === 'string' && /^dtr_[A-Za-z0-9_-]{1,128}$/.test(value);
 }
 
 function isPlainObject(value) {

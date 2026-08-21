@@ -12,6 +12,16 @@ import {
   siteVarRecordsFromObject,
 } from './deployment-runtime-config.js';
 import { canonicalDeploymentContentHash, decisionRequiresAssets, decisionRequiresWorker } from './deployment-plan.js';
+import {
+  attachDeploymentTraceStore,
+  bindDeploymentTrace,
+  createDeploymentTraceContext,
+  finishDeploymentStage,
+  providerDiagnosticsFromError,
+  recordDeploymentStage,
+  startDeploymentStage,
+  withDeploymentTraceHeader,
+} from './deployment-trace.js';
 import { isMultipartRequest, readMultipartDeploymentBody, validateAssetFiles } from './deployment-upload.js';
 import { jsonError, jsonOk } from './http.js';
 import { newHexId, nextId } from './id.js';
@@ -32,21 +42,75 @@ import { createSiteWithLegacyV1Takeover } from './legacy-v1/takeover.js';
 
 const encoder = new globalThis.TextEncoder();
 const VISIBILITIES = new Set(['internal', 'org', 'acl', 'owner', 'disabled']);
+const PROVIDER_DIAGNOSTIC_CLIENT_CODES = new Set(['WFP_API_ERROR', 'WFP_API_INVALID_JSON', 'WFP_NETWORK_ERROR']);
+const PROVIDER_DIAGNOSTIC_OPERATIONS = new Set(['assets_upload_session', 'assets_upload', 'worker_put', 'worker_get']);
+const TERMINAL_DEPLOYMENT_STATUSES = new Set(['succeeded', 'failed']);
 const RESERVED_SITE_SLUG_ACTION = '该站点名是 XD Cell 平台保留项，请换一个业务站点名。';
+const deploymentRequestTraceStates = new WeakMap();
 
 export async function handleDeploymentsApi(request, env, config, store, ctx) {
-  const auth = await authenticateApiRequest(request, env, store, config, readNow(env));
-  if (!auth.ok) return authErrorResponse(auth.error);
-
   const url = new URL(request.url);
+  const trace =
+    url.pathname === '/.xd-pages/api/deployments' && request.method === 'POST'
+      ? createDeploymentTraceContext(request, env, {
+          environment: config.environment,
+          operation: 'deploy',
+          deferPersistence: true,
+          now: env?.now,
+        })
+      : null;
+  if (trace) queueRequestTraceSuccess(trace, 'intake', 'accept_request');
+  const authStage = trace
+    ? startDeploymentStage(trace, { stage: 'auth_and_site_resolution', operation: 'authenticate_request' })
+    : null;
+  let auth;
+  try {
+    auth = await authenticateApiRequest(request, env, store, config, readNow(env));
+  } catch (error) {
+    if (!trace) throw error;
+    await finishRequestAuthStage(authStage, {
+      status: 'failed',
+      errorCode: 'DEPLOYMENT_REQUEST_FAILED',
+      errorMessage: 'Deployment request could not be processed.',
+      diagnostics: { causeClass: 'authentication_error' },
+    });
+    return withRequestTraceHeader(deploymentRequestFailed(), trace);
+  }
+  if (!auth.ok) {
+    await finishRequestAuthStage(authStage, {
+      status: 'failed',
+      errorCode: auth.error.code,
+      errorMessage: auth.error.message,
+      diagnostics: { causeClass: 'authentication_error' },
+    });
+    return withRequestTraceHeader(authErrorResponse(auth.error), trace);
+  }
+  if (trace) attachDeploymentTraceStore(trace, store);
+
   if (url.pathname === '/.xd-pages/api/deployments') {
     if (request.method === 'POST') {
+      let response;
       try {
-        return await createDeployment(request, env, config, store, auth.actor, ctx);
+        response = await createDeployment(request, env, config, store, auth.actor, ctx, trace, authStage);
       } catch (error) {
-        if (error?.code === 'DEPLOYMENT_STATE_WRITE_FAILED') return deploymentStateWriteFailed();
-        throw error;
+        if (error?.code === 'DEPLOYMENT_STATE_WRITE_FAILED') response = deploymentStateWriteFailed();
+        else {
+          await finishRequestAuthStage(authStage, { status: 'succeeded' });
+          const recoveredDeployment = await recoverUnexpectedRequestFailure({
+            trace,
+            store,
+            env,
+            config,
+            ctx,
+            actor: auth.actor,
+            fallbackOperation: 'orchestrate_deployment_request',
+          });
+          response = await unexpectedRequestResponse(store, recoveredDeployment, config.environment);
+        }
       }
+      await finishRequestAuthStage(authStage, { status: 'succeeded' });
+      response = await ensureRequestFailureTraced(trace, response);
+      return withRequestTraceHeader(response, trace);
     }
     return methodNotAllowed();
   }
@@ -59,28 +123,97 @@ export async function handleDeploymentsApi(request, env, config, store, ctx) {
 }
 
 export async function handleVersionsApi(request, env, config, store, ctx) {
-  const auth = await authenticateApiRequest(request, env, store, config, readNow(env));
-  if (!auth.ok) return authErrorResponse(auth.error);
+  const url = new URL(request.url);
+  const versionId = matchRollbackVersionId(url.pathname);
+  const trace =
+    versionId && request.method === 'POST'
+      ? createDeploymentTraceContext(request, env, {
+          environment: config.environment,
+          operation: 'rollback',
+          deferPersistence: true,
+          now: env?.now,
+        })
+      : null;
+  if (trace) queueRequestTraceSuccess(trace, 'intake', 'accept_request');
+  const authStage = trace
+    ? startDeploymentStage(trace, { stage: 'auth_and_site_resolution', operation: 'authenticate_request' })
+    : null;
+  let auth;
+  try {
+    auth = await authenticateApiRequest(request, env, store, config, readNow(env));
+  } catch (error) {
+    if (!trace) throw error;
+    await finishRequestAuthStage(authStage, {
+      status: 'failed',
+      errorCode: 'DEPLOYMENT_REQUEST_FAILED',
+      errorMessage: 'Deployment request could not be processed.',
+      diagnostics: { causeClass: 'authentication_error' },
+    });
+    return withRequestTraceHeader(deploymentRequestFailed(), trace);
+  }
+  if (!auth.ok) {
+    await finishRequestAuthStage(authStage, {
+      status: 'failed',
+      errorCode: auth.error.code,
+      errorMessage: auth.error.message,
+      diagnostics: { causeClass: 'authentication_error' },
+    });
+    return withRequestTraceHeader(authErrorResponse(auth.error), trace);
+  }
+  if (trace) attachDeploymentTraceStore(trace, store);
 
-  const versionId = matchRollbackVersionId(new URL(request.url).pathname);
   if (versionId && request.method === 'POST') {
+    let response;
     try {
-      return await rollbackVersion(request, env, config, store, auth.actor, versionId, ctx);
+      response = await rollbackVersion(request, env, config, store, auth.actor, versionId, ctx, trace, authStage);
     } catch (error) {
-      if (error?.code === 'DEPLOYMENT_STATE_WRITE_FAILED') return deploymentStateWriteFailed();
-      throw error;
+      if (error?.code === 'DEPLOYMENT_STATE_WRITE_FAILED') response = deploymentStateWriteFailed();
+      else {
+        await finishRequestAuthStage(authStage, { status: 'succeeded' });
+        const recoveredDeployment = await recoverUnexpectedRequestFailure({
+          trace,
+          store,
+          env,
+          config,
+          ctx,
+          actor: auth.actor,
+          fallbackOperation: 'orchestrate_rollback_request',
+        });
+        response = await unexpectedRequestResponse(store, recoveredDeployment, config.environment);
+      }
     }
+    await finishRequestAuthStage(authStage, { status: 'succeeded' });
+    response = await ensureRequestFailureTraced(trace, response);
+    return withRequestTraceHeader(response, trace);
   }
   if (versionId) return methodNotAllowed();
 
   return null;
 }
 
-async function createDeployment(request, env, config, store, actor, ctx) {
+async function createDeployment(request, env, config, store, actor, ctx, trace, authStage) {
+  setRequestTraceStage(trace, 'intake', 'read_deployment_request');
   const idempotencyKey = readIdempotencyKey(request);
-  if (!idempotencyKey) return idempotencyKeyRequired();
-  if (!isMultipartRequest(request)) return cliUploadProtocolRequired();
+  if (!idempotencyKey) {
+    return traceFailureResponse(trace, idempotencyKeyRequired(), {
+      stage: 'intake',
+      operation: 'read_idempotency_key',
+      errorCode: 'IDEMPOTENCY_KEY_REQUIRED',
+      errorMessage: 'Idempotency-Key is required.',
+      diagnostics: { causeClass: 'request_validation_error' },
+    });
+  }
+  if (!isMultipartRequest(request)) {
+    return traceFailureResponse(trace, cliUploadProtocolRequired(), {
+      stage: 'intake',
+      operation: 'parse_multipart',
+      errorCode: 'CLI_UPLOAD_PROTOCOL_REQUIRED',
+      errorMessage: 'Deployment uploads must use the CLI protocol.',
+      diagnostics: { causeClass: 'payload_validation_error' },
+    });
+  }
 
+  setRequestTraceStage(trace, 'intake', 'parse_multipart');
   let body;
   try {
     body = await readMultipartDeploymentBody(request);
@@ -127,11 +260,21 @@ async function createDeployment(request, env, config, store, actor, ctx) {
       return jsonError('PUBLISH_PLAN_INVALID', 'Publish plan is invalid.', 400, 'Run xd-cell deploy --dry-run and retry.');
     }
     if (error?.code === 'CONTENT_HASH_MISMATCH') {
-      return jsonError(
-        'CONTENT_HASH_MISMATCH',
-        'Content hash does not match uploaded files.',
-        400,
-        'Run xd-cell deploy --dry-run and retry.'
+      return traceFailureResponse(
+        trace,
+        jsonError(
+          'CONTENT_HASH_MISMATCH',
+          'Content hash does not match uploaded files.',
+          400,
+          'Run xd-cell deploy --dry-run and retry.'
+        ),
+        {
+          stage: 'payload_validation',
+          operation: 'validate_content_hash',
+          errorCode: 'CONTENT_HASH_MISMATCH',
+          errorMessage: 'Content hash does not match uploaded files.',
+          diagnostics: { causeClass: 'payload_validation_error' },
+        }
       );
     }
     if (error?.code === 'RUNTIME_VARS_INVALID') {
@@ -150,9 +293,29 @@ async function createDeployment(request, env, config, store, actor, ctx) {
         'Reduce vars or secret size/count and retry.'
       );
     }
-    if (error?.code === 'CLI_UPLOAD_PROTOCOL_REQUIRED') return cliUploadProtocolRequired();
-    return jsonError('INVALID_MULTIPART', 'Invalid multipart body.', 400, 'Run xd-cell deploy --dry-run and retry.');
+    if (error?.code === 'CLI_UPLOAD_PROTOCOL_REQUIRED') {
+      return traceFailureResponse(trace, cliUploadProtocolRequired(), {
+        stage: 'intake',
+        operation: 'parse_multipart',
+        errorCode: 'CLI_UPLOAD_PROTOCOL_REQUIRED',
+        errorMessage: 'Deployment uploads must use the CLI protocol.',
+        diagnostics: { causeClass: 'payload_validation_error' },
+      });
+    }
+    return traceFailureResponse(
+      trace,
+      jsonError('INVALID_MULTIPART', 'Invalid multipart body.', 400, 'Run xd-cell deploy --dry-run and retry.'),
+      {
+        stage: 'intake',
+        operation: 'parse_multipart',
+        errorCode: 'INVALID_MULTIPART',
+        errorMessage: 'Invalid multipart body.',
+        diagnostics: { causeClass: 'payload_validation_error' },
+      }
+    );
   }
+  queueRequestTraceSuccess(trace, 'intake', 'parse_multipart');
+  setRequestTraceStage(trace, 'payload_validation', 'validate_deployment_payload');
 
   const exposureError = rejectUserExposureMutation(body);
   if (exposureError) return exposureError;
@@ -227,13 +390,25 @@ async function createDeployment(request, env, config, store, actor, ctx) {
     throw error;
   }
   if (clientContentHash !== canonicalContentHash) {
-    return jsonError(
-      'CONTENT_HASH_MISMATCH',
-      'Content hash does not match uploaded files.',
-      400,
-      'Run xd-cell deploy --dry-run and retry.'
+    return traceFailureResponse(
+      trace,
+      jsonError(
+        'CONTENT_HASH_MISMATCH',
+        'Content hash does not match uploaded files.',
+        400,
+        'Run xd-cell deploy --dry-run and retry.'
+      ),
+      {
+        stage: 'payload_validation',
+        operation: 'validate_content_hash',
+        errorCode: 'CONTENT_HASH_MISMATCH',
+        errorMessage: 'Content hash does not match uploaded files.',
+        diagnostics: { causeClass: 'payload_validation_error' },
+      }
     );
   }
+  queueRequestTraceSuccess(trace, 'payload_validation', 'validate_deployment_payload');
+  setRequestTraceStage(trace, 'auth_and_site_resolution', 'resolve_site');
   let site = await resolveDeploySite(store, actor, config, env, {
     siteId: requestedSiteId,
     siteSlug: requestedSiteSlug,
@@ -241,14 +416,23 @@ async function createDeployment(request, env, config, store, actor, ctx) {
     visibility: requestedVisibility || 'org',
     requestedVisibility,
   });
-  if (site instanceof Response) return site;
+  if (site instanceof Response) {
+    await finishRequestAuthStageFromResponse(authStage, site, 'site_resolution_error');
+    return site;
+  }
   let ownerTransfer = null;
   const routeSlugError = validateDeployableSiteSlug(site.slug, config.environment);
-  if (routeSlugError) return routeSlugError;
+  if (routeSlugError) {
+    await finishRequestAuthStageFromResponse(authStage, routeSlugError, 'site_resolution_error');
+    return routeSlugError;
+  }
   const siteId = site.id;
   if (!actorCanDeploy(actor, site, 'deploy:site')) {
-    return jsonError('DEPLOY_FORBIDDEN', 'Actor cannot deploy this site.', 403, 'Use a token scoped to this site.');
+    const response = jsonError('DEPLOY_FORBIDDEN', 'Actor cannot deploy this site.', 403, 'Use a token scoped to this site.');
+    await finishRequestAuthStageFromResponse(authStage, response, 'authorization_error');
+    return response;
   }
+  setRequestTraceStage(trace, 'runtime_config', 'build_request_hash');
   let requestHash;
   try {
     requestHash = await canonicalRequestHash({
@@ -271,28 +455,70 @@ async function createDeployment(request, env, config, store, actor, ctx) {
       'Check runtime configuration and retry with a new Idempotency-Key.'
     );
   }
-  const deploymentResult = await store.createDeploymentForIdempotency({
-    id: nextId(env, 'dep'),
-    environment: config.environment,
-    actorId: actor.actorId,
-    actorUserId: actor.userId,
-    actorType: actor.type,
-    source,
-    siteId,
-    operation: 'deploy',
-    idempotencyKey,
-    requestHash,
-    visibility: site.pendingOwnerTransfer?.visibility || site.defaultVisibility,
-    status: 'pending',
-  });
+  setRequestTraceStage(trace, 'deployment_record', 'create_deployment');
+  let deploymentResult;
+  try {
+    deploymentResult = await store.createDeploymentForIdempotency({
+      id: nextId(env, 'dep'),
+      environment: config.environment,
+      actorId: actor.actorId,
+      actorUserId: actor.userId,
+      actorType: actor.type,
+      source,
+      siteId,
+      operation: 'deploy',
+      idempotencyKey,
+      requestHash,
+      traceId: trace?.traceId || null,
+      visibility: site.pendingOwnerTransfer?.visibility || site.defaultVisibility,
+      status: 'pending',
+    });
+  } catch {
+    await finishValidatedRequestTrace(trace, authStage);
+    return traceFailureResponse(trace, deploymentStateWriteFailed(), {
+      stage: 'deployment_record',
+      operation: 'create_deployment',
+      errorCode: 'DEPLOYMENT_STATE_WRITE_FAILED',
+      errorMessage: 'Deployment state could not be persisted.',
+      diagnostics: { causeClass: 'deployment_store_error' },
+    });
+  }
 
-  if (deploymentResult.kind === 'conflict') return idempotencyConflict();
+  if (deploymentResult.kind === 'conflict') {
+    await finishValidatedRequestTrace(trace, authStage);
+    return traceFailureResponse(trace, idempotencyConflict(), {
+      stage: 'payload_validation',
+      operation: 'idempotency_conflict',
+      errorCode: 'IDEMPOTENCY_CONFLICT',
+      errorMessage: 'Idempotency-Key conflicts with an existing deployment.',
+      diagnostics: { causeClass: 'idempotency_conflict' },
+    });
+  }
   if (deploymentResult.kind === 'existing') {
-    const reconciled = await reconcileCommittedDeployment(store, deploymentResult.deployment, config.environment, env);
-    return jsonOk(await deploymentEnvelope(store, reconciled, {}, config.environment));
+    const traceBinding = await bindExistingDeploymentTrace(trace, store, deploymentResult.deployment, config.environment);
+    const existingDeployment = traceBinding.deployment;
+    discardReplayRequestTrace(trace, authStage);
+    if (traceBinding.claimFailed) {
+      await recordDeploymentStage(trace, {
+        stage: 'deployment_record',
+        operation: 'claim_deployment_trace',
+        status: 'failed',
+        errorCode: 'DEPLOYMENT_STATE_WRITE_FAILED',
+        errorMessage: 'Deployment state could not be persisted.',
+        diagnostics: { causeClass: 'deployment_store_error' },
+      });
+    }
+    await traceSucceeded(trace, { stage: 'deployment_record', operation: 'idempotency_replay' });
+    clearRequestTraceStage(trace);
+    const reconciled = await reconcileCommittedDeployment(store, existingDeployment, config.environment, env, trace);
+    return withDeploymentTraceHeader(jsonOk(await deploymentEnvelope(store, reconciled, {}, config.environment)), trace.traceId);
   }
 
   const deployment = deploymentResult.deployment;
+  bindDeploymentTrace(trace, { deploymentId: deployment.id, siteId });
+  await finishValidatedRequestTrace(trace, authStage);
+  await traceSucceeded(trace, { stage: 'deployment_record', operation: 'create_deployment' });
+  clearRequestTraceStage(trace);
   const finalizeFailedDeployment = (patch, { bestEffort = false } = {}) =>
     updateDeploymentToFailedAndNotify({
       store,
@@ -303,6 +529,7 @@ async function createDeployment(request, env, config, store, actor, ctx) {
       patch,
       actor,
       site,
+      trace,
       bestEffort,
     });
   if (site.pendingSiteCreation) {
@@ -320,10 +547,28 @@ async function createDeployment(request, env, config, store, actor, ctx) {
     site = creationResult.site;
   }
 
+  let runtimeConfigStage = trace
+    ? startDeploymentStage(trace, {
+        stage: 'runtime_config',
+        operation: 'resolve_runtime_config',
+      })
+    : null;
+  if (!decisionRequiresWorker(decision) && runtimeConfigStage) {
+    await finishDeploymentStage(runtimeConfigStage, { status: 'skipped' });
+    runtimeConfigStage = null;
+  }
   let runtimeSecrets = [];
   let originalRuntimeVarRecords = [];
   if (decisionRequiresWorker(decision)) {
     if (typeof store.listEnabledSiteSecrets !== 'function' || typeof store.listEnabledSiteVars !== 'function') {
+      if (runtimeConfigStage) {
+        await finishDeploymentStage(runtimeConfigStage, {
+          status: 'failed',
+          errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+          errorMessage: 'Runtime configuration is unavailable.',
+          diagnostics: { causeClass: 'runtime_config_error' },
+        });
+      }
       await finalizeFailedDeployment(runtimeConfigFailurePatch(), { bestEffort: true });
       return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime configuration is unavailable.', 503, 'Retry later.');
     }
@@ -333,6 +578,14 @@ async function createDeployment(request, env, config, store, actor, ctx) {
       runtimeVars = runtimeVarsFromRecords(runtimeVarRecords);
       runtimeSecrets = await store.listEnabledSiteSecrets(config.environment, siteId);
     } catch {
+      if (runtimeConfigStage) {
+        await finishDeploymentStage(runtimeConfigStage, {
+          status: 'failed',
+          errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+          errorMessage: 'Runtime configuration is unavailable.',
+          diagnostics: { causeClass: 'runtime_config_error' },
+        });
+      }
       await finalizeFailedDeployment(runtimeConfigFailurePatch(), { bestEffort: true });
       return jsonError(
         'RUNTIME_CONFIG_UNSUPPORTED',
@@ -345,6 +598,17 @@ async function createDeployment(request, env, config, store, actor, ctx) {
   try {
     validateRuntimeBindingQuotas(runtimeVars, runtimeSecrets);
   } catch (error) {
+    if (runtimeConfigStage) {
+      await finishDeploymentStage(runtimeConfigStage, {
+        status: 'failed',
+        errorCode:
+          error?.message === 'RUNTIME_BINDING_NAME_CONFLICT'
+            ? 'RUNTIME_BINDING_NAME_CONFLICT'
+            : 'RUNTIME_BINDINGS_LIMIT_EXCEEDED',
+        errorMessage: 'Runtime bindings are invalid.',
+        diagnostics: { causeClass: 'runtime_config_error' },
+      });
+    }
     await finalizeFailedDeployment(
       runtimeConfigFailurePatch({
         errorCode:
@@ -373,6 +637,14 @@ async function createDeployment(request, env, config, store, actor, ctx) {
   try {
     await runtimeConfigHashInput(env, runtimeVars, runtimeSecrets);
   } catch {
+    if (runtimeConfigStage) {
+      await finishDeploymentStage(runtimeConfigStage, {
+        status: 'failed',
+        errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+        errorMessage: 'Runtime configuration is unavailable.',
+        diagnostics: { causeClass: 'runtime_config_error' },
+      });
+    }
     await finalizeFailedDeployment(runtimeConfigFailurePatch(), { bestEffort: true });
     return jsonError(
       'RUNTIME_CONFIG_UNSUPPORTED',
@@ -386,6 +658,17 @@ async function createDeployment(request, env, config, store, actor, ctx) {
   try {
     validateRuntimeBindingQuotas(runtimeVars, runtimeSecrets);
   } catch (error) {
+    if (runtimeConfigStage) {
+      await finishDeploymentStage(runtimeConfigStage, {
+        status: 'failed',
+        errorCode:
+          error?.message === 'RUNTIME_BINDING_NAME_CONFLICT'
+            ? 'RUNTIME_BINDING_NAME_CONFLICT'
+            : 'RUNTIME_BINDINGS_LIMIT_EXCEEDED',
+        errorMessage: 'Runtime bindings are invalid.',
+        diagnostics: { causeClass: 'runtime_config_error' },
+      });
+    }
     await finalizeFailedDeployment(
       runtimeConfigFailurePatch({
         errorCode:
@@ -419,10 +702,22 @@ async function createDeployment(request, env, config, store, actor, ctx) {
       revision: secret.revision,
     })),
   };
+  if (runtimeConfigStage) {
+    await finishDeploymentStage(runtimeConfigStage, { status: 'succeeded' });
+    runtimeConfigStage = null;
+  }
   let provider;
   try {
     provider = createDeploymentProvider(env, config, store, site);
   } catch {
+    await recordDeploymentStage(trace, {
+      stage: 'provider_upload',
+      operation: 'create_deployment_provider',
+      status: 'failed',
+      errorCode: 'DEPLOYMENT_PLATFORM_CONFIG_INVALID',
+      errorMessage: 'Deployment platform configuration is invalid.',
+      diagnostics: { causeClass: 'provider_config_error' },
+    });
     await finalizeFailedDeployment({
       errorCode: 'DEPLOYMENT_PLATFORM_CONFIG_INVALID',
       errorMessage: 'Deployment platform configuration is invalid.',
@@ -448,7 +743,13 @@ async function createDeployment(request, env, config, store, actor, ctx) {
   try {
     await store.updateDeployment(deployment.id, { status: 'uploading' });
   } catch (error) {
-    logDeploymentStateWriteFailed(env, { deploymentId: deployment.id, cause: error });
+    await recordDeploymentStatePersistFailure({
+      trace,
+      env,
+      deploymentId: deployment.id,
+      operation: 'persist_uploading_deployment',
+      cause: error,
+    });
     await finalizeFailedDeployment(
       {
         errorCode: 'DEPLOYMENT_STATE_WRITE_FAILED',
@@ -477,6 +778,14 @@ async function createDeployment(request, env, config, store, actor, ctx) {
       )
     : null;
   if (runtimeSnapshotError) {
+    await recordDeploymentStage(trace, {
+      stage: 'runtime_config',
+      operation: 'validate_runtime_snapshot_before_upload',
+      status: 'failed',
+      errorCode: runtimeSnapshotError.code,
+      errorMessage: runtimeSnapshotError.message,
+      diagnostics: { causeClass: 'runtime_config_changed' },
+    });
     await finalizeFailedDeployment({
       errorCode: runtimeSnapshotError.code,
       errorMessage: runtimeSnapshotError.message,
@@ -502,6 +811,12 @@ async function createDeployment(request, env, config, store, actor, ctx) {
     );
   }
   const uploadExposure = normalizeExposureForDeployment(site.route?.exposure || site.defaultExposure);
+  const providerUploadStage = trace
+    ? startDeploymentStage(trace, {
+        stage: 'provider_upload',
+        operation: 'provider_upload',
+      })
+    : null;
   let uploaded;
   try {
     uploaded = await provider.upload({
@@ -516,15 +831,31 @@ async function createDeployment(request, env, config, store, actor, ctx) {
       assetFiles,
       runtimeBindings,
     });
+    if (providerUploadStage) {
+      await finishDeploymentStage(providerUploadStage, {
+        status: 'succeeded',
+        operation: uploaded?.operation,
+      });
+    }
   } catch (error) {
     const code = publicProviderErrorCode(error, 'upload');
+    const executionProvider = provider.executionProvider || 'wfp';
+    if (providerUploadStage) {
+      await finishDeploymentStage(providerUploadStage, {
+        status: 'failed',
+        error,
+        errorCode: code,
+        errorMessage: 'Deployment upload failed.',
+        diagnostics: { causeClass: 'provider_upload_error' },
+      });
+    }
     await finalizeFailedDeployment({
       errorCode: code,
       errorMessage: 'Deployment upload failed.',
       failureStage: 'upload_worker',
       failureDiagnostics: buildDeploymentFailureDiagnostics({
         stage: 'upload_worker',
-        executionProvider: provider.executionProvider || 'wfp',
+        executionProvider,
         deploymentShape: decision.deploymentShape,
         plannedVersionId: versionId,
         plannedWorkerName,
@@ -532,6 +863,7 @@ async function createDeployment(request, env, config, store, actor, ctx) {
         verifyCompleted: false,
         routePointerCommitted: false,
         cause: { code, class: 'provider_upload_error' },
+        provider: buildProviderFailureDiagnostics(error, executionProvider),
       }),
       completedAt: readNow(env),
     });
@@ -557,7 +889,18 @@ async function createDeployment(request, env, config, store, actor, ctx) {
       )
     : null;
   if (postUploadRuntimeSnapshotError) {
-    await cleanupUploadedWorker(provider, uploaded);
+    await recordDeploymentStage(trace, {
+      stage: 'runtime_config',
+      operation: 'validate_runtime_snapshot_after_upload',
+      status: 'failed',
+      errorCode: postUploadRuntimeSnapshotError.code,
+      errorMessage: postUploadRuntimeSnapshotError.message,
+      diagnostics: { causeClass: 'runtime_config_changed' },
+    });
+    await cleanupUploadedWorkerAndRecord(trace, provider, uploaded, {
+      originalFailure: { stage: 'runtime_config', code: postUploadRuntimeSnapshotError.code },
+      trafficImpact: 'old_version_retained',
+    });
     await finalizeFailedDeployment({
       errorCode: postUploadRuntimeSnapshotError.code,
       errorMessage: postUploadRuntimeSnapshotError.message,
@@ -586,8 +929,17 @@ async function createDeployment(request, env, config, store, actor, ctx) {
   try {
     await store.updateDeployment(deployment.id, { status: 'uploaded' });
   } catch (error) {
-    await cleanupUploadedWorker(provider, uploaded);
-    logDeploymentStateWriteFailed(env, { deploymentId: deployment.id, cause: error });
+    await recordDeploymentStatePersistFailure({
+      trace,
+      env,
+      deploymentId: deployment.id,
+      operation: 'persist_uploaded_deployment',
+      cause: error,
+    });
+    await cleanupUploadedWorkerAndRecord(trace, provider, uploaded, {
+      originalFailure: { stage: 'deployment_state_persist', code: 'DEPLOYMENT_STATE_WRITE_FAILED' },
+      trafficImpact: 'old_version_retained',
+    });
     await finalizeFailedDeployment(
       {
         errorCode: 'DEPLOYMENT_STATE_WRITE_FAILED',
@@ -606,6 +958,12 @@ async function createDeployment(request, env, config, store, actor, ctx) {
     );
     return deploymentStateWriteFailed();
   }
+  const providerVerifyStage = trace
+    ? startDeploymentStage(trace, {
+        stage: 'provider_verify',
+        operation: 'provider_verify',
+      })
+    : null;
   try {
     await provider.verify({
       site,
@@ -614,16 +972,30 @@ async function createDeployment(request, env, config, store, actor, ctx) {
       artifactRef: uploaded.artifactRef,
       ...uploaded,
     });
-  } catch {
-    await cleanupUploadedWorker(provider, uploaded);
+    if (providerVerifyStage) await finishDeploymentStage(providerVerifyStage, { status: 'succeeded' });
+  } catch (error) {
     const code = publicProviderErrorCode(null, 'verify');
+    const executionProvider = uploaded.executionProvider || provider.executionProvider || 'wfp';
+    if (providerVerifyStage) {
+      await finishDeploymentStage(providerVerifyStage, {
+        status: 'failed',
+        error,
+        errorCode: code,
+        errorMessage: 'Deployment verification failed.',
+        diagnostics: { causeClass: 'provider_verify_error' },
+      });
+    }
+    await cleanupUploadedWorkerAndRecord(trace, provider, uploaded, {
+      originalFailure: { stage: 'provider_verify', code },
+      trafficImpact: 'old_version_retained',
+    });
     await finalizeFailedDeployment({
       errorCode: code,
       errorMessage: 'Deployment verification failed.',
       failureStage: 'verify_worker',
       failureDiagnostics: buildDeploymentFailureDiagnostics({
         stage: 'verify_worker',
-        executionProvider: uploaded.executionProvider || provider.executionProvider || 'wfp',
+        executionProvider,
         deploymentShape: decision.deploymentShape,
         plannedVersionId: versionId,
         plannedWorkerName: workerName,
@@ -632,15 +1004,37 @@ async function createDeployment(request, env, config, store, actor, ctx) {
         routePointerCommitted: false,
         uploadedWorkerCleanup: 'attempted',
         cause: { code, class: 'provider_verify_error' },
+        provider: buildProviderFailureDiagnostics(error, executionProvider),
       }),
       completedAt: readNow(env),
     });
     return jsonError(code, 'Deployment verification failed.', 502, 'Retry the deployment with a new Idempotency-Key.');
   }
 
+  let runtimeConfigCommitStage = trace
+    ? startDeploymentStage(trace, {
+        stage: 'runtime_config_commit',
+        operation: 'commit_runtime_config',
+      })
+    : null;
+  if (!workerRuntimeVarsProvided && runtimeConfigCommitStage) {
+    await finishDeploymentStage(runtimeConfigCommitStage, { status: 'skipped' });
+    runtimeConfigCommitStage = null;
+  }
   if (workerRuntimeVarsProvided) {
     if (typeof store.replaceSiteVars !== 'function') {
-      await cleanupUploadedWorker(provider, uploaded);
+      if (runtimeConfigCommitStage) {
+        await finishDeploymentStage(runtimeConfigCommitStage, {
+          status: 'failed',
+          errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+          errorMessage: 'Runtime configuration is unavailable.',
+          diagnostics: { causeClass: 'runtime_config_error' },
+        });
+      }
+      await cleanupUploadedWorkerAndRecord(trace, provider, uploaded, {
+        originalFailure: { stage: 'runtime_config_commit', code: 'RUNTIME_CONFIG_UNSUPPORTED' },
+        trafficImpact: 'old_version_retained',
+      });
       await finalizeFailedDeployment(runtimeConfigFailurePatch(), { bestEffort: true });
       return runtimeConfigUnavailable();
     }
@@ -652,7 +1046,18 @@ async function createDeployment(request, env, config, store, actor, ctx) {
       runtimeSecrets
     );
     if (preCommitRuntimeSnapshotError) {
-      await cleanupUploadedWorker(provider, uploaded);
+      if (runtimeConfigCommitStage) {
+        await finishDeploymentStage(runtimeConfigCommitStage, {
+          status: 'failed',
+          errorCode: preCommitRuntimeSnapshotError.code,
+          errorMessage: preCommitRuntimeSnapshotError.message,
+          diagnostics: { causeClass: 'runtime_config_changed' },
+        });
+      }
+      await cleanupUploadedWorkerAndRecord(trace, provider, uploaded, {
+        originalFailure: { stage: 'runtime_config_commit', code: preCommitRuntimeSnapshotError.code },
+        trafficImpact: 'old_version_retained',
+      });
       await finalizeFailedDeployment({
         errorCode: preCommitRuntimeSnapshotError.code,
         errorMessage: preCommitRuntimeSnapshotError.message,
@@ -689,9 +1094,24 @@ async function createDeployment(request, env, config, store, actor, ctx) {
       });
       runtimeVars = runtimeVarsFromRecords(runtimeVarRecords);
     } catch {
-      await cleanupUploadedWorker(provider, uploaded);
+      if (runtimeConfigCommitStage) {
+        await finishDeploymentStage(runtimeConfigCommitStage, {
+          status: 'failed',
+          errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+          errorMessage: 'Runtime configuration is unavailable.',
+          diagnostics: { causeClass: 'runtime_config_error' },
+        });
+      }
+      await cleanupUploadedWorkerAndRecord(trace, provider, uploaded, {
+        originalFailure: { stage: 'runtime_config_commit', code: 'RUNTIME_CONFIG_UNSUPPORTED' },
+        trafficImpact: 'old_version_retained',
+      });
       await finalizeFailedDeployment(runtimeConfigFailurePatch(), { bestEffort: true });
       return runtimeConfigUnavailable();
+    }
+    if (runtimeConfigCommitStage) {
+      await finishDeploymentStage(runtimeConfigCommitStage, { status: 'succeeded' });
+      runtimeConfigCommitStage = null;
     }
   }
   const committedRuntimeVarRecords = runtimeVarRecords;
@@ -702,14 +1122,19 @@ async function createDeployment(request, env, config, store, actor, ctx) {
   let ownerTransferRollbackSite = null;
   let ownerTransferApplied = false;
   let activationSnapshotFailureResponse = null;
+  let versionCreateStage = null;
+  let routePolicyLockStage = null;
   try {
-    await store.updateDeployment(deployment.id, { status: 'verified' });
+    await persistIntermediateDeploymentState(store, deployment.id, { status: 'verified' }, 'persist_verified_deployment');
     previousRoute = await store.getRouteBySiteId(siteId, config.environment);
     const preActivationRuntimeSnapshotError = decisionRequiresWorker(decision)
       ? await assertRuntimeConfigSnapshotUnchanged(store, config.environment, siteId, runtimeVarRecords, runtimeSecrets)
       : null;
     if (preActivationRuntimeSnapshotError) {
-      await cleanupUploadedWorker(provider, uploaded);
+      await cleanupUploadedWorkerAndRecord(trace, provider, uploaded, {
+        originalFailure: { stage: 'runtime_config', code: preActivationRuntimeSnapshotError.code },
+        trafficImpact: 'old_version_retained',
+      });
       await restoreSiteVarsAfterFailedDeployment(store, {
         environment: config.environment,
         siteId,
@@ -749,7 +1174,10 @@ async function createDeployment(request, env, config, store, actor, ctx) {
       ownerTransferRollbackSite = site;
       const transferResult = await applyPendingDeployOwnerTransfer(store, actor, config, env, site, site.pendingOwnerTransfer);
       if (transferResult instanceof Response) {
-        await cleanupUploadedWorker(provider, uploaded);
+        await cleanupUploadedWorkerAndRecord(trace, provider, uploaded, {
+          originalFailure: { stage: 'auth_and_site_resolution', code: 'SITE_TRANSFER_FAILED' },
+          trafficImpact: 'old_version_retained',
+        });
         await restoreSiteVarsAfterFailedDeployment(store, {
           environment: config.environment,
           siteId,
@@ -773,6 +1201,12 @@ async function createDeployment(request, env, config, store, actor, ctx) {
       site = transferResult.site;
       ownerTransfer = transferResult.ownerTransfer;
     }
+    versionCreateStage = trace
+      ? startDeploymentStage(trace, {
+          stage: 'version_create',
+          operation: 'create_site_version',
+        })
+      : null;
     version = await store.createSiteVersion({
       id: versionId,
       siteId,
@@ -816,15 +1250,34 @@ async function createDeployment(request, env, config, store, actor, ctx) {
       artifactAvailability: 'active',
       createdBy: actor.userId,
     });
-    await store.updateDeployment(deployment.id, {
-      status: 'activating',
-      versionId: version.id,
-    });
+    if (versionCreateStage) {
+      await finishDeploymentStage(versionCreateStage, { status: 'succeeded' });
+      versionCreateStage = null;
+    }
+    await persistIntermediateDeploymentState(
+      store,
+      deployment.id,
+      {
+        status: 'activating',
+        versionId: version.id,
+      },
+      'persist_activating_deployment'
+    );
+    routePolicyLockStage = trace
+      ? startDeploymentStage(trace, {
+          stage: 'route_policy_lock',
+          operation: 'acquire_site_commit_lock',
+        })
+      : null;
     if (typeof store.withSiteCommitLock !== 'function') throw deploymentOperationError('SITE_POLICY_LOCKED');
     route = await store.withSiteCommitLock(
       config.environment,
       siteId,
       async (activationLease) => {
+        if (routePolicyLockStage) {
+          await finishDeploymentStage(routePolicyLockStage, { status: 'succeeded' });
+          routePolicyLockStage = null;
+        }
         const routeBeforeActivation = previousRoute;
         const latestRoute = await store.getRouteBySiteId(siteId, config.environment);
         if (!latestRoute) throw deploymentOperationError('ROUTE_ACTIVATION_CONFLICT');
@@ -843,40 +1296,111 @@ async function createDeployment(request, env, config, store, actor, ctx) {
             ? site.defaultVisibility
             : latestRoute.visibility;
         assertCommitLeaseHealthy(activationLease);
-        await ensurePublicWorkerOfficeNetAbsent(provider, {
-          store,
-          environment: config.environment,
-          siteId,
-          workerName: version.workerName,
-          executionProvider: version.executionProvider,
-          deploymentShape: decision.deploymentShape,
-          exposure: activationExposure,
-          signal: activationLease.signal,
-        });
-        assertCommitLeaseHealthy(activationLease);
-        const activatedRoute = await store.activateSiteVersion(
-          siteId,
-          {
-            activeVersionId: version.id,
+        const officeNetStage = trace
+          ? startDeploymentStage(trace, {
+              stage: 'office_net',
+              operation: 'verify_public_office_net_absent',
+            })
+          : null;
+        try {
+          await ensurePublicWorkerOfficeNetAbsent(provider, {
+            store,
+            environment: config.environment,
+            siteId,
             workerName: version.workerName,
-            runtime: version.runtime,
             executionProvider: version.executionProvider,
-            dispatchType: version.dispatchType,
-            dispatchBindingName: version.dispatchBindingName,
-            slotId: version.slotId,
-            visibility: activationVisibility,
-            lease: activationLease,
-            updatedAt: readNow(env),
-          },
-          config.environment,
-          { ...latestRoute, exposure: activationExposure }
-        );
+            deploymentShape: decision.deploymentShape,
+            exposure: activationExposure,
+            signal: activationLease.signal,
+          });
+          if (officeNetStage) {
+            await finishDeploymentStage(officeNetStage, {
+              status: activationExposure === 'public' ? 'succeeded' : 'skipped',
+            });
+          }
+        } catch (error) {
+          if (officeNetStage) {
+            await finishDeploymentStage(officeNetStage, {
+              status: 'failed',
+              error,
+              errorCode: error?.code || 'SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED',
+              errorMessage: error?.message || 'Public Worker OfficeNet verification failed.',
+              diagnostics: { causeClass: 'public_office_net_error' },
+            });
+          }
+          throw error;
+        }
+        assertCommitLeaseHealthy(activationLease);
+        const routeActivateStage = trace
+          ? startDeploymentStage(trace, {
+              stage: 'route_activate',
+              operation: 'activate_route',
+            })
+          : null;
+        let activatedRoute;
+        try {
+          activatedRoute = await store.activateSiteVersion(
+            siteId,
+            {
+              activeVersionId: version.id,
+              workerName: version.workerName,
+              runtime: version.runtime,
+              executionProvider: version.executionProvider,
+              dispatchType: version.dispatchType,
+              dispatchBindingName: version.dispatchBindingName,
+              slotId: version.slotId,
+              visibility: activationVisibility,
+              lease: activationLease,
+              updatedAt: readNow(env),
+            },
+            config.environment,
+            { ...latestRoute, exposure: activationExposure }
+          );
+          if (routeActivateStage) {
+            await finishDeploymentStage(routeActivateStage, {
+              status: activatedRoute ? 'succeeded' : 'failed',
+              ...(!activatedRoute
+                ? {
+                    errorCode: 'ROUTE_ACTIVATION_CONFLICT',
+                    errorMessage: 'Route changed while deployment was activating.',
+                    diagnostics: { causeClass: 'route_activation_conflict' },
+                  }
+                : {}),
+            });
+          }
+        } catch (error) {
+          if (routeActivateStage) {
+            await finishDeploymentStage(routeActivateStage, {
+              status: 'failed',
+              error,
+              errorCode: error?.code || 'ROUTE_ACTIVATION_FAILED',
+              errorMessage: error?.message || 'Route activation failed.',
+              diagnostics: { causeClass: 'route_activation_error' },
+            });
+          }
+          throw error;
+        }
         if (!activatedRoute) return null;
+        const routeSnapshotStage = trace
+          ? startDeploymentStage(trace, {
+              stage: 'route_snapshot',
+              operation: 'write_route_snapshot',
+            })
+          : null;
         try {
           assertCommitLeaseHealthy(activationLease);
           await writeSnapshot(env, store, { site, route: activatedRoute, version });
           assertCommitLeaseHealthy(activationLease);
+          if (routeSnapshotStage) await finishDeploymentStage(routeSnapshotStage, { status: 'succeeded' });
         } catch {
+          if (routeSnapshotStage) {
+            await finishDeploymentStage(routeSnapshotStage, {
+              status: 'failed',
+              errorCode: 'ROUTE_SNAPSHOT_WRITE_FAILED',
+              errorMessage: 'Route snapshot write failed.',
+              diagnostics: { causeClass: 'route_snapshot_store_error' },
+            });
+          }
           let restoredRoute = null;
           let restorationError = null;
           try {
@@ -922,6 +1446,28 @@ async function createDeployment(request, env, config, store, actor, ctx) {
             ? false
             : await clearRoutePointerAfterSnapshotFailure(env, restoredRoute || activatedRoute);
           const repairRequired = Boolean(restorationError || !restoredSnapshotWritten);
+          await recordDeploymentStage(trace, {
+            stage: 'cleanup_or_compensation',
+            operation: 'restore_route_after_snapshot_failure',
+            status: repairRequired ? 'failed' : 'compensated',
+            ...(!repairRequired
+              ? {}
+              : {
+                  errorCode: 'ROUTE_SNAPSHOT_WRITE_FAILED',
+                  errorMessage: 'Route snapshot compensation failed.',
+                }),
+            diagnostics: {
+              causeClass: repairRequired ? 'route_snapshot_compensation_error' : 'route_snapshot_compensated',
+              routePointerCommitted: false,
+              trafficImpact: repairRequired
+                ? routePointerCleared
+                  ? 'site_unavailable'
+                  : 'public_route_state_unknown'
+                : 'old_version_retained',
+              cleanupStatus: repairRequired ? 'failed' : 'succeeded',
+              operatorAction: repairRequired ? 'repair_route_snapshot' : undefined,
+            },
+          });
           if (repairRequired) {
             logDeploymentRepairRequired(env, {
               environment: config.environment,
@@ -931,7 +1477,19 @@ async function createDeployment(request, env, config, store, actor, ctx) {
             });
           }
           if (restoredSnapshotWritten) {
-            await cleanupUploadedWorkerIfInactive(store, provider, uploaded, siteId, version.id, config.environment);
+            await cleanupUploadedWorkerIfInactiveAndRecord(
+              trace,
+              store,
+              provider,
+              uploaded,
+              siteId,
+              version.id,
+              config.environment,
+              {
+                originalFailure: { stage: 'route_snapshot', code: 'ROUTE_SNAPSHOT_WRITE_FAILED' },
+                trafficImpact: repairRequired ? 'public_route_state_unknown' : 'old_version_retained',
+              }
+            );
           }
           await finalizeFailedDeployment({
             versionId: version.id,
@@ -974,7 +1532,37 @@ async function createDeployment(request, env, config, store, actor, ctx) {
       { lockId: nextId(env, 'deploylock'), bestEffortRelease: true }
     );
   } catch (error) {
-    await cleanupUploadedWorker(provider, uploaded);
+    const routePolicyLockFailed = Boolean(routePolicyLockStage);
+    if (versionCreateStage) {
+      await finishDeploymentStage(versionCreateStage, {
+        status: 'failed',
+        errorCode: 'DEPLOYMENT_STATE_WRITE_FAILED',
+        errorMessage: 'Deployment version could not be persisted.',
+        diagnostics: { causeClass: 'version_store_error' },
+      });
+      versionCreateStage = null;
+    }
+    if (routePolicyLockStage) {
+      await finishDeploymentStage(routePolicyLockStage, {
+        status: 'failed',
+        errorCode: error?.code || 'SITE_POLICY_LOCKED',
+        errorMessage: error?.message || 'Site policy lock could not be acquired.',
+        diagnostics: { causeClass: 'site_policy_lock_error' },
+      });
+      routePolicyLockStage = null;
+    }
+    await cleanupUploadedWorkerAndRecord(trace, provider, uploaded, {
+      originalFailure: error?.deploymentStateOperation
+        ? { stage: 'deployment_state_persist', code: 'DEPLOYMENT_STATE_WRITE_FAILED' }
+        : isPublicOfficeNetFailure(error)
+          ? { stage: 'office_net', code: error.code }
+          : routePolicyLockFailed
+            ? { stage: 'route_policy_lock', code: error?.code || 'SITE_POLICY_LOCKED' }
+          : error?.code === 'SITE_POLICY_LOCKED' || error?.code === 'ROUTE_ACTIVATION_CONFLICT'
+            ? { stage: 'route_activate', code: error.code }
+            : { stage: 'version_create', code: 'DEPLOYMENT_STATE_WRITE_FAILED' },
+      trafficImpact: 'old_version_retained',
+    });
     await restoreSiteVarsAfterFailedDeployment(store, {
       environment: config.environment,
       siteId,
@@ -1021,13 +1609,14 @@ async function createDeployment(request, env, config, store, actor, ctx) {
       );
     }
     if (error?.code === 'SITE_POLICY_LOCKED' || error?.code === 'ROUTE_ACTIVATION_CONFLICT') {
+      const failureStage = routePolicyLockFailed ? 'route_policy_lock' : 'activate_route';
       await finalizeFailedDeployment({
         versionId: version?.id || null,
         errorCode: error.code,
         errorMessage: error.message,
-        failureStage: 'activate_route',
+        failureStage,
         failureDiagnostics: buildDeploymentFailureDiagnostics({
-          stage: 'activate_route',
+          stage: failureStage,
           executionProvider: version?.executionProvider || uploaded?.executionProvider || provider.executionProvider || 'wfp',
           deploymentShape: decision.deploymentShape,
           plannedVersionId: version?.id || versionId,
@@ -1037,13 +1626,22 @@ async function createDeployment(request, env, config, store, actor, ctx) {
           routeActivatedInD1: false,
           routePointerCommitted: false,
           uploadedWorkerCleanup: 'attempted',
-          cause: { code: error.code, class: 'route_activation_conflict' },
+          cause: {
+            code: error.code,
+            class: routePolicyLockFailed ? 'site_policy_lock_error' : 'route_activation_conflict',
+          },
         }),
         completedAt: readNow(env),
       });
       return jsonError(error.code, error.message, error.status || 409, error.action);
     }
-    logDeploymentStateWriteFailed(env, { deploymentId: deployment.id, cause: error });
+    await recordDeploymentStatePersistFailure({
+      trace,
+      env,
+      deploymentId: deployment.id,
+      operation: error?.deploymentStateOperation || 'persist_activation_state',
+      cause: error,
+    });
     await finalizeFailedDeployment(
       {
         versionId: version?.id,
@@ -1075,7 +1673,10 @@ async function createDeployment(request, env, config, store, actor, ctx) {
       latestRoute.activeVersionId === previousRoute.activeVersionId &&
       (latestRoute.runtimeConfigGeneration || 0) !== (previousRoute.runtimeConfigGeneration || 0);
     if (runtimeConfigChanged) {
-      await cleanupUploadedWorker(provider, uploaded);
+      await cleanupUploadedWorkerAndRecord(trace, provider, uploaded, {
+        originalFailure: { stage: 'runtime_config', code: 'RUNTIME_CONFIG_CHANGED' },
+        trafficImpact: 'old_version_retained',
+      });
       await restoreSiteVarsAfterFailedDeployment(store, {
         environment: config.environment,
         siteId,
@@ -1120,7 +1721,10 @@ async function createDeployment(request, env, config, store, actor, ctx) {
         'Retry the deployment with a new Idempotency-Key.'
       );
     }
-    await cleanupUploadedWorker(provider, uploaded);
+    await cleanupUploadedWorkerAndRecord(trace, provider, uploaded, {
+      originalFailure: { stage: 'route_activate', code: 'ROUTE_ACTIVATION_CONFLICT' },
+      trafficImpact: 'old_version_retained',
+    });
     await restoreSiteVarsAfterFailedDeployment(store, {
       environment: config.environment,
       siteId,
@@ -1166,6 +1770,12 @@ async function createDeployment(request, env, config, store, actor, ctx) {
     );
   }
   const completedAt = readNow(env);
+  const deploymentStateStage = trace
+    ? startDeploymentStage(trace, {
+        stage: 'deployment_state_persist',
+        operation: 'persist_succeeded_deployment',
+      })
+    : null;
   let completed;
   try {
     completed = await store.updateDeployment(deployment.id, {
@@ -1173,13 +1783,35 @@ async function createDeployment(request, env, config, store, actor, ctx) {
       versionId: version.id,
       completedAt,
     });
-  } catch {
+    if (deploymentStateStage) await finishDeploymentStage(deploymentStateStage, { status: 'succeeded' });
+  } catch (cause) {
+    await recordDeploymentStatePersistFailure({
+      trace,
+      env,
+      deploymentId: deployment.id,
+      operation: 'persist_succeeded_deployment',
+      stageHandle: deploymentStateStage,
+      cause,
+    });
     completed = synthesizeSucceededDeployment(deployment, { versionId: version.id, completedAt });
   }
 
-  await cleanupPreviousNormalWorkerSlot(provider, previousRoute, route, env);
-  await enqueuePreviousWfpWorkerCleanup(store, env, config, previousRoute, route, completed);
-  const webhookDelivery = emitDeploymentSucceededWebhook({ store, env, config, actor, site, route, deployment: completed });
+  await recordCleanupOutcome(trace, await cleanupPreviousNormalWorkerSlot(provider, previousRoute, route, env), {
+    trafficImpact: 'new_version_active',
+  });
+  await recordCleanupOutcome(trace, await enqueuePreviousWfpWorkerCleanup(store, env, config, previousRoute, route, completed), {
+    trafficImpact: 'new_version_active',
+  });
+  const webhookDelivery = emitDeploymentSucceededWebhook({
+    store,
+    env,
+    config,
+    actor,
+    site,
+    route,
+    deployment: completed,
+    trace,
+  });
   if (ctx && typeof ctx.waitUntil === 'function') {
     ctx.waitUntil(webhookDelivery);
   } else {
@@ -1190,11 +1822,17 @@ async function createDeployment(request, env, config, store, actor, ctx) {
   return jsonOk(await deploymentEnvelope(store, completed, { version, route, decision, ownerTransfer }), 201);
 }
 
-async function emitDeploymentSucceededWebhook({ store, env, config, actor, site, route, deployment }) {
+async function emitDeploymentSucceededWebhook({ store, env, config, actor, site, route, deployment, trace }) {
+  const stage = trace
+    ? startDeploymentStage(trace, {
+        stage: 'webhook_delivery',
+        operation: 'site_deployed',
+      })
+    : null;
   try {
     const team =
       site.ownerType === 'team' && site.ownerId && typeof store.getTeam === 'function' ? await store.getTeam(site.ownerId) : null;
-    await deliverWebhookEventToSubscriptions({
+    const deliveries = await deliverWebhookEventToSubscriptions({
       store,
       env,
       config,
@@ -1238,7 +1876,32 @@ async function emitDeploymentSucceededWebhook({ store, env, config, actor, site,
       resolveHost: typeof env.resolveWebhookHost === 'function' ? env.resolveWebhookHost : undefined,
       now: () => deployment.completedAt || readNow(env),
     });
+    if (stage) {
+      if (deliveries.length === 0) {
+        await finishDeploymentStage(stage, { status: 'skipped' });
+      } else {
+        const failed = deliveries.some((delivery) => delivery?.deliveryStatus === 'failed');
+        await finishDeploymentStage(stage, {
+          status: failed ? 'failed' : 'succeeded',
+          ...(failed
+            ? {
+                errorCode: 'WEBHOOK_DELIVERY_FAILED',
+                errorMessage: 'Webhook delivery failed.',
+                diagnostics: { causeClass: 'webhook_delivery_error' },
+              }
+            : {}),
+        });
+      }
+    }
   } catch {
+    if (stage) {
+      await finishDeploymentStage(stage, {
+        status: 'failed',
+        errorCode: 'WEBHOOK_DELIVERY_FAILED',
+        errorMessage: 'Webhook delivery failed.',
+        diagnostics: { causeClass: 'webhook_delivery_error' },
+      });
+    }
     // Webhook delivery is best-effort and must not mask a committed deployment.
   }
 }
@@ -1266,29 +1929,57 @@ function deploymentReadForbidden() {
   return jsonError('DEPLOYMENT_READ_FORBIDDEN', 'Actor cannot read this deployment.', 403, 'Use a token with read:site scope.');
 }
 
-async function rollbackVersion(request, env, config, store, actor, versionId, ctx) {
+async function rollbackVersion(request, env, config, store, actor, versionId, ctx, trace, authStage) {
+  setRequestTraceStage(trace, 'intake', 'read_rollback_request');
   const idempotencyKey = readIdempotencyKey(request);
-  if (!idempotencyKey) return idempotencyKeyRequired();
+  if (!idempotencyKey) {
+    return traceFailureResponse(trace, idempotencyKeyRequired(), {
+      stage: 'intake',
+      operation: 'read_idempotency_key',
+      errorCode: 'IDEMPOTENCY_KEY_REQUIRED',
+      errorMessage: 'Idempotency-Key is required.',
+      diagnostics: { causeClass: 'request_validation_error' },
+    });
+  }
 
   let body;
   try {
     body = await readOptionalJsonBody(request, { maxBytes: 32 * 1024 });
   } catch {
-    return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
+    return traceFailureResponse(trace, jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.'), {
+      stage: 'intake',
+      operation: 'parse_json',
+      errorCode: 'INVALID_JSON',
+      errorMessage: 'Invalid JSON body.',
+      diagnostics: { causeClass: 'payload_validation_error' },
+    });
   }
+  queueRequestTraceSuccess(trace, 'intake', 'parse_json');
+  setRequestTraceStage(trace, 'payload_validation', 'rollback_validate');
 
   const exposureError = rejectUserExposureMutation(body);
   if (exposureError) return exposureError;
 
+  setRequestTraceStage(trace, 'auth_and_site_resolution', 'resolve_rollback_site');
   const version = await store.getSiteVersion(versionId, config.environment);
-  if (!version) return jsonError('VERSION_NOT_FOUND', 'Version not found.', 404, 'Check the version id.');
+  if (!version) {
+    const response = jsonError('VERSION_NOT_FOUND', 'Version not found.', 404, 'Check the version id.');
+    await finishRequestAuthStageFromResponse(authStage, response, 'site_resolution_error');
+    return response;
+  }
   const requestedSiteError = await validateRequestedRollbackSite(store, version, body, config.environment);
-  if (requestedSiteError) return requestedSiteError;
+  if (requestedSiteError) {
+    await finishRequestAuthStageFromResponse(authStage, requestedSiteError, 'site_resolution_error');
+    return requestedSiteError;
+  }
   const site = await store.getSiteForUser(version.siteId, actor.userId, actor, config.environment);
   if (!site || !actorCanDeploy(actor, site, 'rollback:site')) {
-    return jsonError('ROLLBACK_FORBIDDEN', 'Actor cannot rollback this site.', 403, 'Use a token scoped to this site.');
+    const response = jsonError('ROLLBACK_FORBIDDEN', 'Actor cannot rollback this site.', 403, 'Use a token scoped to this site.');
+    await finishRequestAuthStageFromResponse(authStage, response, 'authorization_error');
+    return response;
   }
 
+  setRequestTraceStage(trace, 'payload_validation', 'rollback_validate');
   const versionAvailabilityError = await validateRollbackVersion(store, version, config.environment);
   if (versionAvailabilityError) return versionAvailabilityError;
   let currentRoute = await store.getRouteBySiteId(site.id, config.environment);
@@ -1298,28 +1989,79 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
     siteId: body.siteId || null,
     siteSlug: body.siteSlug || null,
   });
-  const deploymentResult = await store.createDeploymentForIdempotency({
-    id: nextId(env, 'dep'),
-    environment: config.environment,
-    actorId: actor.actorId,
-    actorUserId: actor.userId,
-    actorType: actor.type,
-    source: 'api',
-    siteId: site.id,
-    operation: 'rollback',
-    idempotencyKey,
-    requestHash,
-    visibility: currentRoute.visibility,
-    status: 'pending',
-    versionId,
-    previousVersionId: currentRoute.activeVersionId,
-  });
-
-  if (deploymentResult.kind === 'conflict') return idempotencyConflict();
-  if (deploymentResult.kind === 'existing') {
-    const reconciled = await reconcileCommittedDeployment(store, deploymentResult.deployment, config.environment, env);
-    return jsonOk(await deploymentEnvelope(store, reconciled, {}, config.environment));
+  queueRequestTraceSuccess(trace, 'payload_validation', 'rollback_validate');
+  setRequestTraceStage(trace, 'deployment_record', 'create_deployment');
+  let deploymentResult;
+  try {
+    deploymentResult = await store.createDeploymentForIdempotency({
+      id: nextId(env, 'dep'),
+      environment: config.environment,
+      actorId: actor.actorId,
+      actorUserId: actor.userId,
+      actorType: actor.type,
+      source: 'api',
+      siteId: site.id,
+      operation: 'rollback',
+      idempotencyKey,
+      requestHash,
+      traceId: trace?.traceId || null,
+      visibility: currentRoute.visibility,
+      status: 'pending',
+      versionId,
+      previousVersionId: currentRoute.activeVersionId,
+    });
+  } catch {
+    await finishValidatedRequestTrace(trace, authStage);
+    return traceFailureResponse(trace, deploymentStateWriteFailed(), {
+      stage: 'deployment_record',
+      operation: 'create_deployment',
+      errorCode: 'DEPLOYMENT_STATE_WRITE_FAILED',
+      errorMessage: 'Deployment state could not be persisted.',
+      diagnostics: { causeClass: 'deployment_store_error' },
+    });
   }
+
+  if (deploymentResult.kind === 'conflict') {
+    await finishValidatedRequestTrace(trace, authStage);
+    return traceFailureResponse(trace, idempotencyConflict(), {
+      stage: 'payload_validation',
+      operation: 'idempotency_conflict',
+      errorCode: 'IDEMPOTENCY_CONFLICT',
+      errorMessage: 'Idempotency-Key conflicts with an existing deployment.',
+      diagnostics: { causeClass: 'idempotency_conflict' },
+    });
+  }
+  if (deploymentResult.kind === 'existing') {
+    const traceBinding = await bindExistingDeploymentTrace(trace, store, deploymentResult.deployment, config.environment);
+    const existingDeployment = traceBinding.deployment;
+    discardReplayRequestTrace(trace, authStage);
+    if (traceBinding.claimFailed) {
+      await recordDeploymentStage(trace, {
+        stage: 'deployment_record',
+        operation: 'claim_deployment_trace',
+        status: 'failed',
+        errorCode: 'DEPLOYMENT_STATE_WRITE_FAILED',
+        errorMessage: 'Deployment state could not be persisted.',
+        diagnostics: { causeClass: 'deployment_store_error' },
+      });
+    }
+    await traceSucceeded(trace, { stage: 'deployment_record', operation: 'idempotency_replay' });
+    clearRequestTraceStage(trace);
+    const reconciled = await reconcileCommittedDeployment(store, existingDeployment, config.environment, env, trace);
+    return withDeploymentTraceHeader(jsonOk(await deploymentEnvelope(store, reconciled, {}, config.environment)), trace.traceId);
+  }
+
+  bindDeploymentTrace(trace, { deploymentId: deploymentResult.deployment.id, siteId: site.id });
+  await finishValidatedRequestTrace(trace, authStage);
+  await traceSucceeded(trace, { stage: 'deployment_record', operation: 'create_deployment' });
+  clearRequestTraceStage(trace);
+  await recordSkippedDeploymentStages(trace, [
+    ['runtime_config', 'rollback_runtime_config_not_applicable'],
+    ['provider_upload', 'rollback_provider_upload_not_applicable'],
+    ['provider_verify', 'rollback_provider_verify_not_applicable'],
+    ['runtime_config_commit', 'rollback_runtime_config_commit_not_applicable'],
+    ['version_create', 'rollback_version_create_not_applicable'],
+  ]);
 
   const finalizeFailedRollback = (patch, { bestEffort = false } = {}) =>
     updateDeploymentToFailedAndNotify({
@@ -1331,10 +2073,17 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
       patch,
       actor,
       site,
+      trace,
       bestEffort,
     });
 
   let rollbackLease = null;
+  let rollbackPolicyStage = trace
+    ? startDeploymentStage(trace, {
+        stage: 'route_policy_lock',
+        operation: 'rollback_policy_lock',
+      })
+    : null;
   try {
     rollbackLease =
       typeof store.acquireSiteCommitLock === 'function'
@@ -1347,6 +2096,15 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
           })
         : null;
   } catch {
+    if (rollbackPolicyStage) {
+      await finishDeploymentStage(rollbackPolicyStage, {
+        status: 'failed',
+        errorCode: 'SITE_POLICY_LOCKED',
+        errorMessage: 'Site policy lock could not be acquired.',
+        diagnostics: { causeClass: 'site_policy_lock_error' },
+      });
+      rollbackPolicyStage = null;
+    }
     await finalizeFailedRollback(
       rollbackActivationFailurePatch(version, currentRoute, {
         errorCode: 'SITE_POLICY_LOCKED',
@@ -1364,6 +2122,15 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
     );
   }
   if (!rollbackLease) {
+    if (rollbackPolicyStage) {
+      await finishDeploymentStage(rollbackPolicyStage, {
+        status: 'failed',
+        errorCode: 'SITE_POLICY_CONFLICT',
+        errorMessage: 'Site policy changed while rollback was preparing.',
+        diagnostics: { causeClass: 'site_policy_conflict' },
+      });
+      rollbackPolicyStage = null;
+    }
     await finalizeFailedRollback(
       rollbackActivationFailurePatch(version, currentRoute, {
         errorCode: 'SITE_POLICY_CONFLICT',
@@ -1380,11 +2147,23 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
       'Refresh the site status and retry the rollback.'
     );
   }
+  if (rollbackPolicyStage) {
+    await finishDeploymentStage(rollbackPolicyStage, { status: 'succeeded' });
+    rollbackPolicyStage = null;
+  }
   const rollbackRouteBeforeActivation = currentRoute;
   let rollbackLatestRoute;
   try {
     rollbackLatestRoute = await store.getRouteBySiteId(site.id, config.environment);
   } catch {
+    await recordDeploymentStage(trace, {
+      stage: 'route_activate',
+      operation: 'rollback_route_state_read',
+      status: 'failed',
+      errorCode: 'ROLLBACK_ACTIVATION_FAILED',
+      errorMessage: 'Rollback route state could not be read.',
+      diagnostics: { causeClass: 'rollback_route_state_read_error' },
+    });
     await releaseSiteCommitLeaseBestEffort(rollbackLease);
     await finalizeFailedRollback(
       rollbackActivationFailurePatch(version, currentRoute, {
@@ -1403,6 +2182,14 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
     );
   }
   if (!rollbackLatestRoute) {
+    await recordDeploymentStage(trace, {
+      stage: 'route_activate',
+      operation: 'rollback_route_activate',
+      status: 'failed',
+      errorCode: 'ROUTE_ACTIVATION_CONFLICT',
+      errorMessage: 'Route changed while rollback was activating.',
+      diagnostics: { causeClass: 'route_activation_conflict' },
+    });
     await releaseSiteCommitLeaseBestEffort(rollbackLease);
     await finalizeFailedRollback(
       rollbackActivationFailurePatch(version, currentRoute, {
@@ -1418,11 +2205,19 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
   currentRoute = rollbackLatestRoute;
   let route;
   let rollbackProvider;
+  let rollbackOfficeNetStage = null;
+  let rollbackRouteActivateStage = null;
   try {
     await assertRouteSnapshotConverged(env, store, currentRoute, config.environment);
     rollbackProvider = createDeploymentProvider(env, config, store, site);
     const rollbackExposure = normalizeExposureForDeployment(currentRoute.exposure);
     assertCommitLeaseHealthy(rollbackLease);
+    rollbackOfficeNetStage = trace
+      ? startDeploymentStage(trace, {
+          stage: 'office_net',
+          operation: 'rollback_verify_public_office_net_absent',
+        })
+      : null;
     await ensurePublicWorkerOfficeNetAbsent(rollbackProvider, {
       store,
       environment: config.environment,
@@ -1451,7 +2246,19 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
         signal: rollbackLease.signal,
       });
     }
+    if (rollbackOfficeNetStage) {
+      await finishDeploymentStage(rollbackOfficeNetStage, {
+        status: rollbackExposure === 'public' ? 'succeeded' : 'skipped',
+      });
+      rollbackOfficeNetStage = null;
+    }
     assertCommitLeaseHealthy(rollbackLease);
+    rollbackRouteActivateStage = trace
+      ? startDeploymentStage(trace, {
+          stage: 'route_activate',
+          operation: 'rollback_route_activate',
+        })
+      : null;
     route = await store.activateSiteVersion(
       site.id,
       {
@@ -1470,7 +2277,40 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
       config.environment,
       { ...rollbackLatestRoute, exposure: normalizeExposureForDeployment(rollbackLatestRoute.exposure) }
     );
+    if (rollbackRouteActivateStage) {
+      await finishDeploymentStage(rollbackRouteActivateStage, {
+        status: route ? 'succeeded' : 'failed',
+        ...(!route
+          ? {
+              errorCode: 'ROUTE_ACTIVATION_CONFLICT',
+              errorMessage: 'Route changed while rollback was activating.',
+              diagnostics: { causeClass: 'route_activation_conflict' },
+            }
+          : {}),
+      });
+      rollbackRouteActivateStage = null;
+    }
   } catch (error) {
+    if (rollbackOfficeNetStage) {
+      await finishDeploymentStage(rollbackOfficeNetStage, {
+        status: 'failed',
+        error,
+        errorCode: error?.code || 'SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED',
+        errorMessage: error?.message || 'Public Worker OfficeNet verification failed.',
+        diagnostics: { causeClass: 'public_office_net_error' },
+      });
+      rollbackOfficeNetStage = null;
+    }
+    if (rollbackRouteActivateStage) {
+      await finishDeploymentStage(rollbackRouteActivateStage, {
+        status: 'failed',
+        error,
+        errorCode: error?.code || 'ROLLBACK_ACTIVATION_FAILED',
+        errorMessage: error?.message || 'Rollback activation failed.',
+        diagnostics: { causeClass: 'rollback_activation_error' },
+      });
+      rollbackRouteActivateStage = null;
+    }
     await releaseSiteCommitLeaseBestEffort(rollbackLease);
     if (isPublicOfficeNetFailure(error)) {
       await finalizeFailedRollback(
@@ -1559,11 +2399,28 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
       'Check the latest site status and retry the rollback with a new Idempotency-Key.'
     );
   }
+  const rollbackRouteSnapshotStage = trace
+    ? startDeploymentStage(trace, {
+        stage: 'route_snapshot',
+        operation: 'rollback_route_snapshot',
+      })
+    : null;
   try {
     assertCommitLeaseHealthy(rollbackLease);
     await writeSnapshot(env, store, { site, route, version });
     assertCommitLeaseHealthy(rollbackLease);
+    if (rollbackRouteSnapshotStage) {
+      await finishDeploymentStage(rollbackRouteSnapshotStage, { status: 'succeeded' });
+    }
   } catch {
+    if (rollbackRouteSnapshotStage) {
+      await finishDeploymentStage(rollbackRouteSnapshotStage, {
+        status: 'failed',
+        errorCode: 'ROUTE_SNAPSHOT_WRITE_FAILED',
+        errorMessage: 'Route snapshot write failed.',
+        diagnostics: { causeClass: 'route_snapshot_store_error' },
+      });
+    }
     let restoredRoute = null;
     let restoredOfficeNetError = null;
     try {
@@ -1633,6 +2490,28 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
       ? false
       : await clearRoutePointerAfterSnapshotFailure(env, restoredRoute || route);
     const repairRequired = Boolean(!restoredSnapshotWritten);
+    await recordDeploymentStage(trace, {
+      stage: 'cleanup_or_compensation',
+      operation: 'rollback_restore_route_after_snapshot_failure',
+      status: repairRequired ? 'failed' : 'compensated',
+      ...(repairRequired
+        ? {
+            errorCode: 'ROUTE_SNAPSHOT_WRITE_FAILED',
+            errorMessage: 'Rollback route snapshot compensation failed.',
+          }
+        : {}),
+      diagnostics: {
+        causeClass: repairRequired ? 'route_snapshot_compensation_error' : 'route_snapshot_compensated',
+        routePointerCommitted: false,
+        trafficImpact: repairRequired
+          ? routePointerCleared
+            ? 'site_unavailable'
+            : 'public_route_state_unknown'
+          : 'old_version_retained',
+        cleanupStatus: repairRequired ? 'failed' : 'succeeded',
+        operatorAction: repairRequired ? 'repair_route_snapshot' : undefined,
+      },
+    });
     if (repairRequired) {
       logDeploymentRepairRequired(env, {
         environment: config.environment,
@@ -1681,6 +2560,12 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
   await releaseSiteCommitLeaseBestEffort(rollbackLease);
 
   const completedAt = readNow(env);
+  const rollbackStateStage = trace
+    ? startDeploymentStage(trace, {
+        stage: 'deployment_state_persist',
+        operation: 'persist_succeeded_deployment',
+      })
+    : null;
   let completed;
   try {
     completed = await store.updateDeployment(deploymentResult.deployment.id, {
@@ -1689,13 +2574,27 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
       previousVersionId: currentRoute.activeVersionId,
       completedAt,
     });
-  } catch {
+    if (rollbackStateStage) await finishDeploymentStage(rollbackStateStage, { status: 'succeeded' });
+  } catch (cause) {
+    await recordDeploymentStatePersistFailure({
+      trace,
+      env,
+      deploymentId: deploymentResult.deployment.id,
+      operation: 'persist_succeeded_deployment',
+      stageHandle: rollbackStateStage,
+      cause,
+    });
     completed = synthesizeSucceededDeployment(deploymentResult.deployment, {
       versionId: version.id,
       previousVersionId: currentRoute.activeVersionId,
       completedAt,
     });
   }
+  await recordDeploymentStage(trace, {
+    stage: 'webhook_delivery',
+    operation: 'rollback_no_webhook',
+    status: 'skipped',
+  });
 
   return jsonOk(await deploymentEnvelope(store, completed, { version, route }), 201);
 }
@@ -2186,17 +3085,28 @@ function inactiveRouteVersion(route) {
 }
 
 async function cleanupUploadedWorker(provider, uploaded) {
-  if (typeof provider?.delete !== 'function') return;
+  const operation = 'worker_delete';
+  if (!uploaded || typeof provider?.delete !== 'function') {
+    return cleanupOutcome('not_needed', operation, { causeClass: 'cleanup_not_needed' });
+  }
   try {
     await provider.delete(uploaded);
-  } catch {
-    // Best-effort cleanup must not hide the original deployment failure.
+    return cleanupOutcome('succeeded', operation, { causeClass: 'cleanup_succeeded' });
+  } catch (error) {
+    return cleanupOutcome('failed', error?.operation || operation, { error });
   }
 }
 
 async function cleanupUploadedWorkerIfInactive(store, provider, uploaded, siteId, versionId, environment) {
-  const route = await store.getRouteBySiteId(siteId, environment);
-  if (routeReferencesUploadedWorker(route, uploaded, versionId)) return;
+  let route;
+  try {
+    route = await store.getRouteBySiteId(siteId, environment);
+  } catch {
+    return cleanupOutcome('failed', 'worker_delete', { causeClass: 'cleanup_state_read_error' });
+  }
+  if (routeReferencesUploadedWorker(route, uploaded, versionId)) {
+    return cleanupOutcome('not_needed', 'worker_delete', { causeClass: 'cleanup_not_needed' });
+  }
   return cleanupUploadedWorker(provider, uploaded);
 }
 
@@ -2210,10 +3120,16 @@ function routeReferencesUploadedWorker(route, uploaded, versionId) {
 }
 
 async function cleanupPreviousNormalWorkerSlot(provider, previousRoute, activeRoute, env) {
-  if (typeof provider?.cleanupRetainedSlot !== 'function') return;
-  if (previousRoute?.executionProvider !== 'normal-worker-slot') return;
-  if (!previousRoute.slotId || !previousRoute.activeVersionId) return;
-  if (previousRoute.slotId === activeRoute?.slotId) return;
+  const operation = 'worker_placeholder_put';
+  if (typeof provider?.cleanupRetainedSlot !== 'function') {
+    return cleanupOutcome('not_needed', operation, { causeClass: 'cleanup_not_needed' });
+  }
+  if (previousRoute?.executionProvider !== 'normal-worker-slot') {
+    return cleanupOutcome('not_needed', operation, { causeClass: 'cleanup_not_needed' });
+  }
+  if (!previousRoute.slotId || !previousRoute.activeVersionId || previousRoute.slotId === activeRoute?.slotId) {
+    return cleanupOutcome('not_needed', operation, { causeClass: 'cleanup_not_needed' });
+  }
   try {
     await provider.cleanupRetainedSlot({
       slotId: previousRoute.slotId,
@@ -2221,23 +3137,37 @@ async function cleanupPreviousNormalWorkerSlot(provider, previousRoute, activeRo
       activeSlotId: activeRoute?.slotId || null,
       updatedAt: readNow(env),
     });
-  } catch {
-    // Slot cleanup is a capacity optimization. It must fail closed without changing the successful route commit.
+    return cleanupOutcome('succeeded', operation, { causeClass: 'cleanup_succeeded' });
+  } catch (error) {
+    return cleanupOutcome('failed', error?.operation || operation, { error });
   }
 }
 
 async function enqueuePreviousWfpWorkerCleanup(store, env, config, previousRoute, activeRoute, deployment) {
-  if (typeof store.createDeploymentResourceCleanupTask !== 'function') return;
-  if (!previousRoute || previousRoute.routeStatus !== 'active') return;
-  if (previousRoute.executionProvider !== 'wfp' && previousRoute.dispatchType !== 'dispatch-namespace') return;
-  if (!previousRoute.workerName || !previousRoute.activeVersionId) return;
-  if (previousRoute.workerName === activeRoute?.workerName || previousRoute.activeVersionId === activeRoute?.activeVersionId)
-    return;
-  if (!isManagedWfpWorkerName(previousRoute.workerName, config.environment)) return;
+  const operation = 'worker_delete';
+  if (typeof store.createDeploymentResourceCleanupTask !== 'function') {
+    return cleanupOutcome('not_needed', operation, { causeClass: 'cleanup_not_needed' });
+  }
+  if (!previousRoute || previousRoute.routeStatus !== 'active') {
+    return cleanupOutcome('not_needed', operation, { causeClass: 'cleanup_not_needed' });
+  }
+  if (previousRoute.executionProvider !== 'wfp' && previousRoute.dispatchType !== 'dispatch-namespace') {
+    return cleanupOutcome('not_needed', operation, { causeClass: 'cleanup_not_needed' });
+  }
+  if (!previousRoute.workerName || !previousRoute.activeVersionId) {
+    return cleanupOutcome('not_needed', operation, { causeClass: 'cleanup_not_needed' });
+  }
+  if (previousRoute.workerName === activeRoute?.workerName || previousRoute.activeVersionId === activeRoute?.activeVersionId) {
+    return cleanupOutcome('not_needed', operation, { causeClass: 'cleanup_not_needed' });
+  }
+  if (!isManagedWfpWorkerName(previousRoute.workerName, config.environment)) {
+    return cleanupOutcome('not_needed', operation, { causeClass: 'cleanup_not_needed' });
+  }
 
+  const cleanupTaskId = nextId(env, 'cln');
   try {
     await store.createDeploymentResourceCleanupTask({
-      id: nextId(env, 'cln'),
+      id: cleanupTaskId,
       environment: config.environment,
       resourceType: 'wfp_user_worker',
       resourceRef: previousRoute.workerName,
@@ -2248,9 +3178,76 @@ async function enqueuePreviousWfpWorkerCleanup(store, env, config, previousRoute
       status: 'pending',
       cleanupAfter: cleanupAfterDrainWindow(env),
     });
+    return cleanupOutcome('scheduled', operation, {
+      cleanupTaskId,
+      causeClass: 'cleanup_scheduled',
+    });
   } catch {
-    // Cleanup is post-commit maintenance. A successful route cutover must stay successful if task enqueueing fails.
+    return cleanupOutcome('failed', operation, {
+      cleanupTaskId,
+      causeClass: 'cleanup_task_store_error',
+    });
   }
+}
+
+function cleanupOutcome(status, operation, { cleanupTaskId, error, causeClass } = {}) {
+  const provider = error ? providerDiagnosticsFromError(error) : undefined;
+  return omitUndefined({
+    status,
+    operation,
+    cleanupTaskId,
+    causeClass: causeClass || provider?.causeClass || (status === 'failed' ? 'cleanup_error' : 'cleanup_succeeded'),
+    provider,
+  });
+}
+
+async function recordCleanupOutcome(trace, outcome, { originalFailure, trafficImpact } = {}) {
+  if (!trace || !outcome) return outcome;
+  const eventStatus =
+    outcome.status === 'failed'
+      ? 'failed'
+      : outcome.status === 'not_needed'
+        ? 'skipped'
+        : outcome.status === 'succeeded'
+          ? 'compensated'
+          : 'succeeded';
+  await recordDeploymentStage(trace, {
+    stage: 'cleanup_or_compensation',
+    operation: outcome.operation,
+    status: eventStatus,
+    diagnostics: {
+      causeClass: outcome.causeClass,
+      trafficImpact,
+      cleanupStatus: outcome.status,
+      cleanupTaskId: outcome.cleanupTaskId,
+      originalFailure,
+      compensation: {
+        status: outcome.status,
+        operation: outcome.operation,
+        ...outcome.provider,
+      },
+    },
+  });
+  return outcome;
+}
+
+async function cleanupUploadedWorkerAndRecord(trace, provider, uploaded, context) {
+  const outcome = await cleanupUploadedWorker(provider, uploaded);
+  return recordCleanupOutcome(trace, outcome, context);
+}
+
+async function cleanupUploadedWorkerIfInactiveAndRecord(
+  trace,
+  store,
+  provider,
+  uploaded,
+  siteId,
+  versionId,
+  environment,
+  context
+) {
+  const outcome = await cleanupUploadedWorkerIfInactive(store, provider, uploaded, siteId, versionId, environment);
+  return recordCleanupOutcome(trace, outcome, context);
 }
 
 function cleanupAfterDrainWindow(env) {
@@ -2260,7 +3257,7 @@ function cleanupAfterDrainWindow(env) {
   return new Date(now + seconds * 1000).toISOString();
 }
 
-async function reconcileCommittedDeployment(store, deployment, environment, env) {
+async function reconcileCommittedDeployment(store, deployment, environment, env, trace = null) {
   if (!deployment || deployment.status === 'succeeded' || deployment.status === 'failed') return deployment;
   if (!deployment.siteId || !deployment.versionId) return deployment;
 
@@ -2278,11 +3275,48 @@ async function reconcileCommittedDeployment(store, deployment, environment, env)
     versionId: deployment.versionId,
     completedAt: deployment.completedAt || readNow(env),
   };
+  const reconciliationTrace = trace || (await traceForStoredDeployment(store, deployment, environment, env));
   try {
-    return (await store.updateDeployment(deployment.id, patch)) || synthesizeSucceededDeployment(deployment, patch);
-  } catch {
+    const reconciled = (await store.updateDeployment(deployment.id, patch)) || synthesizeSucceededDeployment(deployment, patch);
+    if (reconciliationTrace) {
+      await recordDeploymentStage(reconciliationTrace, {
+        stage: 'deployment_state_persist',
+        operation: 'reconcile_committed_deployment',
+        status: 'compensated',
+        diagnostics: {
+          causeClass: 'deployment_state_reconciled',
+          trafficImpact: 'new_version_active',
+        },
+      });
+    }
+    return reconciled;
+  } catch (cause) {
+    await recordDeploymentStatePersistFailure({
+      trace: reconciliationTrace,
+      env,
+      deploymentId: deployment.id,
+      operation: 'reconcile_committed_deployment',
+      cause,
+    });
     return synthesizeSucceededDeployment(deployment, patch);
   }
+}
+
+async function traceForStoredDeployment(store, deployment, environment, env) {
+  if (!deployment?.traceId) return null;
+  const trace = createDeploymentTraceContext(null, env, {
+    environment,
+    operation: deployment.operation,
+    store,
+    now: env?.now,
+  });
+  bindDeploymentTrace(trace, {
+    traceId: deployment.traceId,
+    deploymentId: deployment.id,
+    siteId: deployment.siteId,
+    attempt: await nextDeploymentTraceAttempt(store, environment, deployment.id),
+  });
+  return trace;
 }
 
 function synthesizeSucceededDeployment(deployment, patch) {
@@ -2314,6 +3348,7 @@ function buildDeploymentFailureDiagnostics({
   retryable = true,
   operatorAction = 'retry_deploy',
   cause,
+  provider,
 }) {
   return omitUndefined({
     schemaVersion: 1,
@@ -2333,6 +3368,27 @@ function buildDeploymentFailureDiagnostics({
     retryable,
     operatorAction,
     cause,
+    provider,
+  });
+}
+
+function buildProviderFailureDiagnostics(error, executionProvider) {
+  if (executionProvider !== 'wfp') return undefined;
+  const operation = error?.operation;
+  const clientCode = error?.code;
+  if (!PROVIDER_DIAGNOSTIC_OPERATIONS.has(operation) || !PROVIDER_DIAGNOSTIC_CLIENT_CODES.has(clientCode)) {
+    return undefined;
+  }
+  const diagnostics = providerDiagnosticsFromError(error);
+
+  return omitUndefined({
+    name: 'cloudflare_wfp',
+    operation,
+    httpStatus: diagnostics.httpStatus,
+    clientCode,
+    providerCode: diagnostics.providerCode,
+    providerMessage: diagnostics.providerMessage,
+    providerRequestId: diagnostics.providerRequestId,
   });
 }
 
@@ -2357,22 +3413,55 @@ function logDeploymentRepairRequired(env, input) {
   }
 }
 
-function deploymentStoreErrorCause(cause) {
-  return omitUndefined({
+function deploymentStoreErrorCause() {
+  return {
     code: 'DEPLOYMENT_STATE_WRITE_FAILED',
     class: 'deployment_store_error',
-    sourceCode: typeof cause?.code === 'string' ? cause.code : undefined,
-    sourceMessage: cause?.message ? String(cause.message).slice(0, 240) : undefined,
+  };
+}
+
+async function persistIntermediateDeploymentState(store, deploymentId, patch, operation) {
+  try {
+    return await store.updateDeployment(deploymentId, patch);
+  } catch (cause) {
+    const error = new Error('Deployment state could not be persisted.', { cause });
+    error.code = 'DEPLOYMENT_STATE_WRITE_FAILED';
+    error.deploymentStateOperation = operation;
+    throw error;
+  }
+}
+
+async function recordDeploymentStatePersistFailure({ trace, env, deploymentId, operation, stageHandle }) {
+  const failure = {
+    status: 'failed',
+    errorCode: 'DEPLOYMENT_STATE_WRITE_FAILED',
+    errorMessage: 'Deployment state could not be persisted.',
+    diagnostics: { causeClass: 'deployment_store_error' },
+  };
+  if (stageHandle) {
+    await finishDeploymentStage(stageHandle, failure);
+  } else if (trace) {
+    await recordDeploymentStage(trace, {
+      stage: 'deployment_state_persist',
+      operation,
+      ...failure,
+    });
+  }
+  logDeploymentStateWriteFailed(env, {
+    traceId: trace?.traceId || null,
+    deploymentId,
+    operation,
   });
 }
 
-function logDeploymentStateWriteFailed(env, { deploymentId, cause }) {
+function logDeploymentStateWriteFailed(env, { traceId, deploymentId, operation }) {
   const payload = {
     event: 'pages_deployment_state_write_failed',
+    traceId,
     deploymentId,
-    causeCode: typeof cause?.code === 'string' ? cause.code : null,
-    causeMessage: cause?.message ? String(cause.message).slice(0, 500) : null,
-    causeStack: cause?.stack ? String(cause.stack).slice(0, 2000) : null,
+    stage: 'deployment_state_persist',
+    operation,
+    causeClass: 'deployment_store_error',
   };
   try {
     const logger =
@@ -2506,7 +3595,7 @@ function runtimeConfigFailurePatch({
   };
 }
 
-function deploymentOperationFailurePatch({ errorCode, errorMessage }) {
+function deploymentOperationFailurePatch({ errorCode, errorMessage, operatorAction = 'retry_deploy' }) {
   return {
     errorCode,
     errorMessage,
@@ -2514,6 +3603,7 @@ function deploymentOperationFailurePatch({ errorCode, errorMessage }) {
     failureDiagnostics: buildDeploymentFailureDiagnostics({
       stage: 'deployment_operation',
       executionProvider: 'unknown',
+      operatorAction,
       cause: { code: errorCode, class: 'deployment_operation_error' },
     }),
   };
@@ -2528,9 +3618,16 @@ async function updateDeploymentToFailedAndNotify({
   patch,
   actor,
   site,
+  trace,
   bestEffort = false,
 }) {
   const before = await store.getDeployment(deploymentId, config.environment).catch(() => null);
+  const persistStage = trace
+    ? startDeploymentStage(trace, {
+        stage: 'deployment_state_persist',
+        operation: 'persist_failed_deployment',
+      })
+    : null;
   let updated;
   try {
     updated = await store.updateDeployment(deploymentId, {
@@ -2539,15 +3636,32 @@ async function updateDeploymentToFailedAndNotify({
       completedAt: patch.completedAt || readNow(env),
     });
   } catch (cause) {
+    await recordDeploymentStatePersistFailure({
+      trace,
+      env,
+      deploymentId,
+      operation: 'persist_failed_deployment',
+      stageHandle: persistStage,
+      cause,
+    });
     if (bestEffort) return null;
-    logDeploymentStateWriteFailed(env, { deploymentId, cause });
     const error = new Error('Deployment failure state could not be persisted.', { cause });
     error.code = 'DEPLOYMENT_STATE_WRITE_FAILED';
     throw error;
   }
-  if (!before || !updated || before.status === 'failed' || updated.status !== 'failed') return updated;
+  if (persistStage) await finishDeploymentStage(persistStage, { status: 'succeeded' });
+  if (!before || !updated || before.status === 'failed' || updated.status !== 'failed' || !site) {
+    if (trace) {
+      await recordDeploymentStage(trace, {
+        stage: 'webhook_delivery',
+        operation: 'site_failed',
+        status: 'skipped',
+      });
+    }
+    return updated;
+  }
 
-  await emitSiteFailedWebhook({ store, env, config, ctx, actor, site, deployment: updated });
+  await emitSiteFailedWebhook({ store, env, config, ctx, actor, site, deployment: updated, trace });
   return updated;
 }
 
@@ -2824,8 +3938,314 @@ function authErrorResponse(error) {
   return jsonError(error.code, error.message, error.status, error.action);
 }
 
+async function finishRequestAuthStage(handle, input) {
+  if (!handle || handle.finished) return null;
+  handle.finished = true;
+  if (input?.status === 'failed') {
+    await flushRequestTraceSuccesses(handle.trace);
+    markRequestTraceFailed(handle.trace);
+  }
+  return finishDeploymentStage(handle, input);
+}
+
+async function finishValidatedRequestTrace(trace, authStage) {
+  await flushRequestTraceSuccess(trace, 'intake');
+  await finishRequestAuthStage(authStage, { status: 'succeeded' });
+  await flushRequestTraceSuccess(trace, 'payload_validation');
+}
+
+function discardReplayRequestTrace(trace, authStage) {
+  const state = trace ? deploymentRequestTraceStates.get(trace) : null;
+  if (state?.pendingSuccesses) state.pendingSuccesses.length = 0;
+  if (authStage) authStage.finished = true;
+}
+
+async function finishRequestAuthStageFromResponse(handle, response, causeClass) {
+  let errorCode = 'AUTH_AND_SITE_RESOLUTION_FAILED';
+  let errorMessage = 'Authentication or site resolution failed.';
+  try {
+    const body = await response.clone().json();
+    if (typeof body?.error?.code === 'string') errorCode = body.error.code;
+    if (typeof body?.error?.message === 'string') errorMessage = body.error.message;
+  } catch {
+    // Keep the fixed safe fallback fields.
+  }
+  return finishRequestAuthStage(handle, {
+    status: 'failed',
+    errorCode,
+    errorMessage,
+    diagnostics: { causeClass },
+  });
+}
+
+async function traceFailureResponse(trace, response, { stage, operation, errorCode, errorMessage, diagnostics }) {
+  if (trace) {
+    await flushRequestTraceSuccesses(trace);
+    markRequestTraceFailed(trace);
+    await recordDeploymentStage(trace, {
+      stage,
+      operation,
+      status: 'failed',
+      errorCode,
+      errorMessage,
+      diagnostics,
+    });
+  }
+  return response;
+}
+
+function setRequestTraceStage(trace, stage, operation) {
+  if (!trace) return;
+  const current = deploymentRequestTraceStates.get(trace);
+  deploymentRequestTraceStates.set(trace, {
+    stage,
+    operation,
+    failed: current?.failed || false,
+    pendingSuccesses: current?.pendingSuccesses || [],
+  });
+}
+
+function queueRequestTraceSuccess(trace, stage, operation) {
+  if (!trace) return;
+  const current = deploymentRequestTraceStates.get(trace) || {
+    stage: null,
+    operation: null,
+    failed: false,
+    pendingSuccesses: [],
+  };
+  current.pendingSuccesses.push({
+    stage,
+    operation,
+    handle: startDeploymentStage(trace, { stage, operation }),
+  });
+  deploymentRequestTraceStates.set(trace, current);
+}
+
+async function flushRequestTraceSuccesses(trace) {
+  const current = trace ? deploymentRequestTraceStates.get(trace) : null;
+  if (!current?.pendingSuccesses?.length) return;
+  const pending = current.pendingSuccesses.splice(0);
+  for (const item of pending) await finishDeploymentStage(item.handle, { status: 'succeeded' });
+}
+
+async function flushRequestTraceSuccess(trace, stage) {
+  const current = trace ? deploymentRequestTraceStates.get(trace) : null;
+  if (!current?.pendingSuccesses?.length) return;
+  const matching = [];
+  const remaining = [];
+  for (const item of current.pendingSuccesses) {
+    if (item.stage === stage) matching.push(item);
+    else remaining.push(item);
+  }
+  current.pendingSuccesses = remaining;
+  for (const item of matching) await finishDeploymentStage(item.handle, { status: 'succeeded' });
+}
+
+function clearRequestTraceStage(trace) {
+  if (trace) deploymentRequestTraceStates.delete(trace);
+}
+
+function markRequestTraceFailed(trace) {
+  if (!trace) return;
+  const current = deploymentRequestTraceStates.get(trace);
+  deploymentRequestTraceStates.set(trace, {
+    stage: current?.stage || null,
+    operation: current?.operation || null,
+    failed: true,
+    pendingSuccesses: current?.pendingSuccesses || [],
+  });
+}
+
+async function ensureRequestFailureTraced(trace, response) {
+  const state = trace ? deploymentRequestTraceStates.get(trace) : null;
+  if (!state || state.failed || response.status < 400 || !state.stage) return response;
+
+  let errorCode = 'DEPLOYMENT_REQUEST_FAILED';
+  let errorMessage = 'Deployment request failed.';
+  try {
+    const body = await response.clone().json();
+    if (typeof body?.error?.code === 'string') errorCode = body.error.code;
+    if (typeof body?.error?.message === 'string') errorMessage = body.error.message;
+  } catch {
+    // Keep the fixed safe fallback fields.
+  }
+  await flushRequestTraceSuccesses(trace);
+  markRequestTraceFailed(trace);
+  await recordDeploymentStage(trace, {
+    stage: state.stage,
+    operation: state.operation,
+    status: 'failed',
+    errorCode,
+    errorMessage,
+    diagnostics: { causeClass: 'request_stage_error' },
+  });
+  return response;
+}
+
+async function traceUnexpectedRequestFailure(trace, { fallbackStage, fallbackOperation }) {
+  if (!trace) return;
+  const state = deploymentRequestTraceStates.get(trace);
+  if (state?.failed) return;
+  await flushRequestTraceSuccesses(trace);
+  markRequestTraceFailed(trace);
+  await recordDeploymentStage(trace, {
+    stage: state?.stage || fallbackStage,
+    operation: state?.operation || fallbackOperation,
+    status: 'failed',
+    errorCode: 'DEPLOYMENT_REQUEST_FAILED',
+    errorMessage: 'Deployment request could not be processed.',
+    diagnostics: { causeClass: 'unexpected_orchestration_error' },
+  });
+}
+
+async function recoverUnexpectedRequestFailure({ trace, store, env, config, ctx, actor, fallbackOperation }) {
+  const deploymentId = trace?.deploymentId || null;
+  try {
+    await traceUnexpectedRequestFailure(trace, {
+      fallbackStage: deploymentId ? 'deployment_operation' : 'intake',
+      fallbackOperation,
+    });
+  } catch {
+    // Trace persistence must not prevent best-effort terminal state recovery.
+  }
+  if (!deploymentId) return null;
+
+  let deployment;
+  try {
+    deployment = await store.getDeployment(deploymentId, config.environment);
+  } catch {
+    logDeploymentStateWriteFailed(env, {
+      traceId: trace.traceId,
+      deploymentId,
+      operation: 'persist_unexpected_deployment_failure',
+    });
+    return null;
+  }
+  if (!deployment || TERMINAL_DEPLOYMENT_STATUSES.has(deployment.status)) return deployment || null;
+
+  try {
+    const reconciled = await reconcileCommittedDeployment(store, deployment, config.environment, env, trace);
+    if (TERMINAL_DEPLOYMENT_STATUSES.has(reconciled?.status)) return reconciled;
+    deployment = reconciled || deployment;
+  } catch {
+    logDeploymentRepairRequired(env, {
+      environment: config.environment,
+      siteId: trace.siteId,
+      deploymentId,
+      reason: 'deployment_commit_reconciliation_failed',
+    });
+    return deployment;
+  }
+
+  let site = null;
+  if (trace.siteId && typeof store.getSite === 'function') {
+    try {
+      site = await store.getSite(trace.siteId, config.environment);
+    } catch {
+      // Failure persistence is still useful when optional webhook context cannot be loaded.
+    }
+  }
+  return updateDeploymentToFailedAndNotify({
+    store,
+    env,
+    config,
+    ctx,
+    deploymentId,
+    patch: deploymentOperationFailurePatch({
+      errorCode: 'DEPLOYMENT_REQUEST_FAILED',
+      errorMessage: 'Deployment request could not be processed.',
+      operatorAction: trace.operation === 'rollback' ? 'retry_rollback' : 'retry_deploy',
+    }),
+    actor,
+    site,
+    trace,
+    bestEffort: true,
+  });
+}
+
+async function bindExistingDeploymentTrace(trace, store, deployment, environment) {
+  let existing = deployment;
+  let claimFailed = false;
+  if (!existing.traceId && typeof store.claimDeploymentTrace === 'function') {
+    try {
+      existing =
+        (await store.claimDeploymentTrace({
+          id: existing.id,
+          environment,
+          traceId: trace.traceId,
+        })) || existing;
+    } catch {
+      claimFailed = true;
+    }
+  }
+  const attempt = await nextDeploymentTraceAttempt(store, environment, existing.id);
+  bindDeploymentTrace(trace, {
+    traceId: existing.traceId || trace.traceId,
+    deploymentId: existing.id,
+    siteId: existing.siteId,
+    attempt,
+  });
+  return { claimFailed, deployment: existing };
+}
+
+async function nextDeploymentTraceAttempt(store, environment, deploymentId) {
+  if (typeof store.listDeploymentEvents !== 'function') return 2;
+  try {
+    const events = await store.listDeploymentEvents({ environment, deploymentId });
+    return Math.max(1, ...events.map((event) => Number(event.attempt) || 1)) + 1;
+  } catch {
+    return 2;
+  }
+}
+
+async function traceSucceeded(trace, { stage, operation, diagnostics }) {
+  if (!trace) return null;
+  return recordDeploymentStage(trace, {
+    stage,
+    operation,
+    status: 'succeeded',
+    diagnostics,
+  });
+}
+
+async function recordSkippedDeploymentStages(trace, stages) {
+  if (!trace) return;
+  for (const [stage, operation] of stages) {
+    await recordDeploymentStage(trace, {
+      stage,
+      operation,
+      status: 'skipped',
+    });
+  }
+}
+
+function withRequestTraceHeader(response, trace) {
+  if (!trace) return response;
+  return withDeploymentTraceHeader(response, response.headers.get('X-Deployment-Trace-Id') || trace.traceId);
+}
+
 function idempotencyKeyRequired() {
   return jsonError('IDEMPOTENCY_KEY_REQUIRED', 'Idempotency-Key is required.', 400, 'Send an Idempotency-Key header.');
+}
+
+async function unexpectedRequestResponse(store, deployment, environment) {
+  if (deployment?.status === 'succeeded') {
+    try {
+      return jsonOk(await deploymentEnvelope(store, deployment, {}, environment), 201);
+    } catch {
+      // Fall back to a status-first action when the committed envelope cannot be reconstructed.
+    }
+  }
+  return deploymentRequestFailed();
+}
+
+function deploymentRequestFailed() {
+  return jsonError(
+    'DEPLOYMENT_REQUEST_FAILED',
+    'Deployment request could not be processed.',
+    500,
+    'Check deployment status using the trace id. Retry with a new Idempotency-Key only when no terminal deployment exists.'
+  );
 }
 
 function idempotencyConflict() {

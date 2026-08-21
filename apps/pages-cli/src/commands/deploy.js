@@ -183,6 +183,7 @@ export async function runDeploy(parsed, context) {
         errors: (decision.diagnostics || []).filter((diagnostic) => diagnostic.severity === 'error'),
       },
       runtime: runtimeEnvelope(runtime),
+      ...(deployed.deploymentTraceId ? { deploymentTraceId: deployed.deploymentTraceId } : {}),
       deployment: deployed.deployment || null,
       version: deployed.version || null,
       route: deployed.route || null,
@@ -196,6 +197,7 @@ export async function runDeploy(parsed, context) {
   context.output(`识别结果：${humanDeploymentLabel(decision)}`);
   context.output(`找不到文件时：${humanFallbackLabel(decision.resolvedFallback)}`);
   context.output(`部署：${deployed.deployment?.id || 'created'} ${deployed.deployment?.status || ''}`.trim());
+  if (deployed.deploymentTraceId) context.output(`追踪：${deployed.deploymentTraceId}`);
   if (url) context.output(`发布完成：${url}`);
   return 0;
 }

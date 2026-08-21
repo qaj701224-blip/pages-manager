@@ -20,6 +20,12 @@ export function buildOpenApi(config) {
             'Connection assertions carry the deploy:site, read:site, and rollback:site scopes and cannot manage access keys.',
         },
       },
+      headers: {
+        DeploymentTraceId: {
+          description: 'Server-generated deployment trace id for correlating API, D1, Provider, and Console diagnostics.',
+          schema: { type: 'string', pattern: '^dtr_[A-Za-z0-9_-]{1,128}$' },
+        },
+      },
       schemas: {
         ErrorResponse: {
           type: 'object',
@@ -931,6 +937,7 @@ export function buildOpenApi(config) {
             'DEPLOYMENT_UPLOAD_FAILED',
             'DEPLOYMENT_VERIFY_FAILED',
             'DEPLOYMENT_STATE_WRITE_FAILED',
+            'DEPLOYMENT_REQUEST_FAILED',
             'DEPLOYMENT_CAPACITY_EXHAUSTED',
             'SITE_POLICY_LOCKED',
             'SITE_POLICY_CONFLICT',
@@ -947,13 +954,16 @@ export function buildOpenApi(config) {
             'IDEMPOTENCY_CONFLICT',
           ],
           responses: {
-            201: { description: 'Deployment created; ownerTransfer is present when deployment changed site ownership' },
-            400: { description: 'Invalid deployment request' },
-            413: { description: 'Deployment payload too large for the current upload path' },
-            500: { description: 'Deployment platform configuration invalid' },
-            502: { description: 'Deployment upload or verification failed' },
-            503: { description: 'Deployment capacity exhausted, site creation, or route snapshot write failed' },
-            409: { description: 'Idempotency conflict' },
+            201: deploymentTraceResponse('Deployment created; ownerTransfer is present when deployment changed site ownership'),
+            400: deploymentTraceResponse('Invalid deployment request'),
+            401: deploymentTraceResponse('Authentication required or invalid'),
+            403: deploymentTraceResponse('Actor cannot deploy the requested site or exposure'),
+            404: deploymentTraceResponse('Requested site or team was not found'),
+            413: deploymentTraceResponse('Deployment payload too large for the current upload path'),
+            500: deploymentTraceResponse('Deployment platform configuration invalid or request processing failed'),
+            502: deploymentTraceResponse('Deployment upload or verification failed'),
+            503: deploymentTraceResponse('Deployment capacity exhausted, site creation, or route snapshot write failed'),
+            409: deploymentTraceResponse('Idempotency conflict'),
           },
         },
       },
@@ -999,14 +1009,30 @@ export function buildOpenApi(config) {
             'SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED',
             'ROUTE_ACTIVATION_CONFLICT',
             'ROUTE_SNAPSHOT_WRITE_FAILED',
+            'DEPLOYMENT_REQUEST_FAILED',
             'IDEMPOTENCY_CONFLICT',
           ],
           responses: {
-            201: { description: 'Rollback deployment created' },
-            409: { description: 'Idempotency conflict' },
+            201: deploymentTraceResponse('Rollback deployment created'),
+            400: deploymentTraceResponse('Invalid rollback request'),
+            401: deploymentTraceResponse('Authentication required or invalid'),
+            403: deploymentTraceResponse('Actor cannot rollback the requested site or exposure'),
+            404: deploymentTraceResponse('Requested version or site was not found'),
+            409: deploymentTraceResponse('Idempotency, policy, route activation, or version availability conflict'),
+            500: deploymentTraceResponse('Rollback request processing failed'),
+            503: deploymentTraceResponse('Rollback activation, state persistence, or route snapshot operation failed'),
           },
         },
       },
+    },
+  };
+}
+
+function deploymentTraceResponse(description) {
+  return {
+    description,
+    headers: {
+      'X-Deployment-Trace-Id': { $ref: '#/components/headers/DeploymentTraceId' },
     },
   };
 }

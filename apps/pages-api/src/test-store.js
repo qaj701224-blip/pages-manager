@@ -49,6 +49,7 @@ class TestPagesStore {
     this.webhookSubscriptions = new Map();
     this.webhookDeliveries = new Map();
     this.deployments = new Map();
+    this.deploymentEvents = new Map();
     this.deploymentIdempotencyIndex = new Map();
     this.auditEvents = [];
   }
@@ -2648,6 +2649,60 @@ class TestPagesStore {
     return cloneRecord(record);
   }
 
+  async claimDeploymentTrace({ id, environment, traceId }) {
+    const record = this.deployments.get(id);
+    if (!record || record.environment !== environment) return null;
+    if (!record.traceId) record.traceId = traceId;
+    return cloneRecord(record);
+  }
+
+  async createDeploymentEvent(input) {
+    const record = {
+      id: input.id,
+      environment: input.environment,
+      traceId: input.traceId,
+      inboundRayId: input.inboundRayId || null,
+      deploymentId: input.deploymentId || null,
+      siteId: input.siteId || null,
+      attempt: Number.isInteger(input.attempt) && input.attempt > 0 ? input.attempt : 1,
+      stage: input.stage,
+      operation: input.operation || null,
+      status: input.status,
+      startedAt: input.startedAt,
+      completedAt: input.completedAt || null,
+      durationMs: Number.isInteger(input.durationMs) && input.durationMs >= 0 ? input.durationMs : null,
+      errorCode: input.errorCode || null,
+      errorMessage: input.errorMessage || null,
+      diagnostics: input.diagnostics || null,
+      createdAt: input.createdAt || this.now(),
+    };
+    if (!record.id || !record.environment || !record.traceId || !record.stage || !record.status || !record.startedAt) {
+      throw new Error('DEPLOYMENT_EVENT_INVALID');
+    }
+    if (this.deploymentEvents.has(record.id)) throw new Error('DEPLOYMENT_EVENT_EXISTS');
+    this.deploymentEvents.set(record.id, record);
+    return cloneRecord(record);
+  }
+
+  async listDeploymentEvents({ environment, deploymentId, traceId } = {}) {
+    if (!environment || (!deploymentId && !traceId)) return [];
+    return cloneRecord(
+      [...this.deploymentEvents.values()]
+        .filter(
+          (event) =>
+            event.environment === environment &&
+            (!deploymentId || event.deploymentId === deploymentId) &&
+            (!traceId || event.traceId === traceId)
+        )
+        .sort(
+          (left, right) =>
+            left.startedAt.localeCompare(right.startedAt) ||
+            left.createdAt.localeCompare(right.createdAt) ||
+            left.id.localeCompare(right.id)
+        )
+    );
+  }
+
   async createDeploymentForIdempotency(input) {
     const scope = deploymentIdempotencyScope(input);
     const key = `${scope}:${input.idempotencyKey}`;
@@ -2673,6 +2728,7 @@ class TestPagesStore {
       idempotencyKey: input.idempotencyKey,
       idempotencyScope: scope,
       requestHash: input.requestHash,
+      traceId: input.traceId || null,
       terminalResponseJson: input.terminalResponseJson || null,
       previousVersionId: input.previousVersionId || null,
       errorCode: input.errorCode || null,

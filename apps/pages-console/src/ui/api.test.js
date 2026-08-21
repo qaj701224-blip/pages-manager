@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import * as consoleApi from './api.js';
 import {
   createAdminWebhook,
   createAccessKey,
@@ -115,6 +116,20 @@ test('fetchJson sends csrf header for write requests', async () => {
   });
 
   assert.deepEqual(payload, null);
+});
+
+test('admin deployment trace helper uses the encoded admin detail endpoint', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push([url, init.method]);
+    return Response.json({ deployment: { id: 'dep/1' }, events: [] });
+  };
+
+  assert.equal(typeof consoleApi.getAdminDeploymentTrace, 'function');
+  const payload = await consoleApi.getAdminDeploymentTrace('dep/1', { fetchImpl });
+
+  assert.deepEqual(calls, [['/api/console/admin/deployments/dep%2F1/trace', 'GET']]);
+  assert.equal(payload.deployment.id, 'dep/1');
 });
 
 test('readCsrfToken reads __Host-xd_cell_csrf cookie when document is available', () => {

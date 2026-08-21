@@ -90,6 +90,9 @@ test('lifecycle payloads expose only safe failure and visibility-change fields',
       id: 'dep_1',
       status: 'failed',
       operation: 'deploy',
+      traceId: 'dtr_hidden',
+      inboundRayId: 'ray-hidden',
+      events: [{ providerRequestId: 'provider-ray-hidden' }],
       failureStage: 'upload_worker',
       errorCode: 'DEPLOYMENT_UPLOAD_FAILED',
       errorMessage: 'raw provider failure',
@@ -101,6 +104,9 @@ test('lifecycle payloads expose only safe failure and visibility-change fields',
   assert.equal(failed.deployment.errorCode, 'DEPLOYMENT_UPLOAD_FAILED');
   assert.equal(failed.deployment.errorMessage, undefined);
   assert.equal(failed.deployment.failureDiagnostics, undefined);
+  assert.equal(failed.deployment.traceId, undefined);
+  assert.equal(failed.deployment.inboundRayId, undefined);
+  assert.equal(failed.deployment.events, undefined);
   assert.equal(failed.site.status, undefined);
 
   const disabled = buildStandardWebhookPayload({
