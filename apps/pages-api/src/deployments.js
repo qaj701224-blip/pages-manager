@@ -1755,7 +1755,6 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
   let route;
   let rollbackProvider;
   let rollbackOfficeNetStage = null;
-  let rollbackRouteActivateStage = null;
   try {
     await assertRouteSnapshotConverged(env, store, currentRoute, config.environment);
     rollbackProvider = createDeploymentProvider(env, config, store, site);
@@ -1790,13 +1789,13 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
       rollbackOfficeNetStage = null;
     }
     assertCommitLeaseHealthy(rollbackLease);
-    rollbackRouteActivateStage = trace
-      ? startDeploymentStage(trace, {
-          stage: 'route_activate',
-          operation: 'rollback_route_activate',
-        })
-      : null;
-    const rollbackRouteActivation = createDeploymentRouteActivationApplication(store, env);
+    const rollbackRouteActivation = createDeploymentRouteActivationApplication(store, env, trace, {
+      operation: 'rollback_route_activate',
+      conflictMessage: 'Route changed while rollback was activating.',
+      failureCode: 'ROLLBACK_ACTIVATION_FAILED',
+      failureMessage: 'Rollback activation failed.',
+      failureCauseClass: 'rollback_activation_error',
+    });
     const activationResult = await rollbackRouteActivation.activate({
       siteId: site.id,
       environment: config.environment,
@@ -1812,19 +1811,6 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
       requiredArtifactAvailability: 'active',
     });
     route = activationResult.ok ? activationResult.route : null;
-    if (rollbackRouteActivateStage) {
-      await finishDeploymentStage(rollbackRouteActivateStage, {
-        status: route ? 'succeeded' : 'failed',
-        ...(!route
-          ? {
-              errorCode: 'ROUTE_ACTIVATION_CONFLICT',
-              errorMessage: 'Route changed while rollback was activating.',
-              diagnostics: { causeClass: 'route_activation_conflict' },
-            }
-          : {}),
-      });
-      rollbackRouteActivateStage = null;
-    }
   } catch (error) {
     if (rollbackOfficeNetStage) {
       await finishDeploymentStage(rollbackOfficeNetStage, {
@@ -1835,16 +1821,6 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
         diagnostics: { causeClass: 'public_office_net_error' },
       });
       rollbackOfficeNetStage = null;
-    }
-    if (rollbackRouteActivateStage) {
-      await finishDeploymentStage(rollbackRouteActivateStage, {
-        status: 'failed',
-        error,
-        errorCode: error?.code || 'ROLLBACK_ACTIVATION_FAILED',
-        errorMessage: error?.message || 'Rollback activation failed.',
-        diagnostics: { causeClass: 'rollback_activation_error' },
-      });
-      rollbackRouteActivateStage = null;
     }
     await releaseSiteCommitLeaseBestEffort(rollbackLease);
     if (isPublicOfficeNetFailure(error)) {
@@ -3236,7 +3212,12 @@ function createDeploymentVersionCreationApplication(store, env) {
   });
 }
 
-function createDeploymentRouteActivationApplication(store, env, trace = null) {
+function createDeploymentRouteActivationApplication(store, env, trace = null, profile = {}) {
+  const operation = profile.operation || 'activate_route';
+  const conflictMessage = profile.conflictMessage || 'Route changed while deployment was activating.';
+  const failureCode = profile.failureCode || 'ROUTE_ACTIVATION_FAILED';
+  const failureMessage = profile.failureMessage || 'Route activation failed.';
+  const failureCauseClass = profile.failureCauseClass || 'route_activation_error';
   return createDeploymentRouteActivation({
     routes: createDeploymentRoutesPort(store),
     telemetry: {
@@ -3244,7 +3225,7 @@ function createDeploymentRouteActivationApplication(store, env, trace = null) {
         trace
           ? startDeploymentStage(trace, {
               stage: 'route_activate',
-              operation: 'activate_route',
+              operation,
             })
           : null,
       finish: (stage, outcome) => {
@@ -3253,7 +3234,7 @@ function createDeploymentRouteActivationApplication(store, env, trace = null) {
           return finishDeploymentStage(stage, {
             status: 'failed',
             errorCode: 'ROUTE_ACTIVATION_CONFLICT',
-            errorMessage: 'Route changed while deployment was activating.',
+            errorMessage: conflictMessage,
             diagnostics: { causeClass: 'route_activation_conflict' },
           });
         }
@@ -3261,9 +3242,9 @@ function createDeploymentRouteActivationApplication(store, env, trace = null) {
           return finishDeploymentStage(stage, {
             status: 'failed',
             error: outcome.cause,
-            errorCode: outcome.cause?.code || 'ROUTE_ACTIVATION_FAILED',
-            errorMessage: outcome.cause?.message || 'Route activation failed.',
-            diagnostics: { causeClass: 'route_activation_error' },
+            errorCode: outcome.cause?.code || failureCode,
+            errorMessage: outcome.cause?.message || failureMessage,
+            diagnostics: { causeClass: failureCauseClass },
           });
         }
         return finishDeploymentStage(stage, { status: outcome.status });
