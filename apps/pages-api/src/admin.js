@@ -49,6 +49,7 @@ import {
 } from './application/governance/list-admin-resources.js';
 import { createTeamMemberManagement } from './application/teams/manage-team-members.js';
 import { createTeamManagement } from './application/teams/manage-team.js';
+import { createDepartmentTeamMerge } from './application/teams/merge-department-teams.js';
 import { createPlatformAdminManagement } from './application/governance/manage-platform-admins.js';
 import { createNormalWorkerAdminClient } from './infrastructure/providers/normal-worker-admin-client.js';
 import {
@@ -2306,24 +2307,23 @@ async function mergeDepartmentTeam(request, config, store, session, sourceTeamId
     return jsonError('TEAM_MERGE_TARGET_REQUIRED', 'Target team id is required.', 400, 'Choose a target department team.');
   }
 
-  try {
-    const merge = await store.mergeDepartmentTeams({
-      sourceTeamId,
-      targetTeamId,
-      actorUserId: session.userId,
-      reason: normalizeNullableString(body.reason),
-      environment: config.environment,
-    });
-    return jsonOk({
-      merge: {
-        sourceTeam: formatAdminTeam(merge.sourceTeam),
-        targetTeam: formatAdminTeam(merge.targetTeam),
-        counts: merge.counts,
-      },
-    });
-  } catch (error) {
-    return adminMergeErrorResponse(error);
-  }
+  const result = await createDepartmentTeamMerge({
+    teams: { merge: (command) => store.mergeDepartmentTeams(command) },
+  }).execute({
+    sourceTeamId,
+    targetTeamId,
+    actorUserId: session.userId,
+    reason: normalizeNullableString(body.reason),
+    environment: config.environment,
+  });
+  if (!result.ok) return adminMergeErrorResponse(result.errorCode);
+  return jsonOk({
+    merge: {
+      sourceTeam: formatAdminTeam(result.merge.sourceTeam),
+      targetTeam: formatAdminTeam(result.merge.targetTeam),
+      counts: result.merge.counts,
+    },
+  });
 }
 
 async function listAuditEvents(config, store) {
@@ -2489,8 +2489,7 @@ function createDeploymentTraceQueryApplication(store) {
   });
 }
 
-function adminMergeErrorResponse(error) {
-  const code = String(error?.message || '').split(':', 1)[0];
+function adminMergeErrorResponse(code) {
   if (code === 'TEAM_NOT_FOUND') return jsonError('TEAM_NOT_FOUND', 'Team not found.', 404, 'Check team ids.');
   if (code === 'TEAM_MERGE_TARGET_INVALID') {
     return jsonError(
@@ -2514,7 +2513,7 @@ function adminMergeErrorResponse(error) {
   if (code === 'TEAM_MERGE_SOURCE_INACTIVE' || code === 'TEAM_MERGE_TARGET_INACTIVE') {
     return jsonError(code, 'Team cannot be merged in its current state.', 409, 'Refresh teams and retry.');
   }
-  throw error;
+  throw new Error('TEAM_MERGE_RESULT_INVALID');
 }
 
 function methodNotAllowed() {
