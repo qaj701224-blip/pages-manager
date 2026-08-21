@@ -48,6 +48,7 @@ import {
   projectAdminTeamMember as formatAdminTeamMember,
 } from './application/governance/list-admin-resources.js';
 import { createTeamMemberManagement } from './application/teams/manage-team-members.js';
+import { createTeamManagement } from './application/teams/manage-team.js';
 import { createNormalWorkerAdminClient } from './infrastructure/providers/normal-worker-admin-client.js';
 import {
   createV1SitesAdminClient as createInfrastructureV1SitesAdminClient,
@@ -2205,17 +2206,6 @@ function adminTeamMemberMutationError(reason) {
 async function updateAdminTeamSettings(request, config, store, teamId) {
   const team = await getAdminTeamRecord(config, store, teamId);
   if (team instanceof Response) return team;
-  if (team.teamType === 'department') {
-    return jsonError(
-      'DEPARTMENT_TEAM_SETTINGS_READONLY',
-      'Department team settings are read-only.',
-      403,
-      'Use admin team merge tooling if the department path changed.'
-    );
-  }
-  if (typeof store.updateTeamSettings !== 'function') {
-    return jsonError('TEAM_SETTINGS_UNSUPPORTED', 'Team settings are unavailable.', 503, 'Retry later.');
-  }
 
   let body;
   try {
@@ -2224,18 +2214,66 @@ async function updateAdminTeamSettings(request, config, store, teamId) {
     return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
   }
 
-  const updated = await store.updateTeamSettings({
+  const result = await createAdminTeamManagement(store).updateSettings({
+    environment: config.environment,
     teamId,
     name: body.name,
     description: body.description,
+    capability: 'platform_admin',
   });
-  return jsonOk({ team: formatAdminTeam(updated) });
+  if (!result.ok) return adminTeamManagementError(result.reason);
+  return jsonOk({ team: formatAdminTeam(result.team) });
 }
 
 async function deleteAdminTeam(config, store, session, teamId) {
   const team = await getAdminTeamRecord(config, store, teamId);
   if (team instanceof Response) return team;
-  if (team.teamType === 'department') {
+  const result = await createAdminTeamManagement(store).deleteTeam({
+    environment: config.environment,
+    teamId,
+    actorUserId: session.userId,
+    capability: 'platform_admin',
+  });
+  if (!result.ok) return adminTeamManagementError(result.reason);
+  return jsonOk({ team: formatAdminTeam(result.team) });
+}
+
+function createAdminTeamManagement(store) {
+  return createTeamManagement({
+    teams: {
+      get: (teamId) => store.getTeam(teamId),
+      ...(typeof store.updateTeamSettings === 'function'
+        ? {
+            updateSettings: (command) =>
+              store.updateTeamSettings({
+                teamId: command.teamId,
+                name: command.name,
+                description: command.description,
+              }),
+          }
+        : {}),
+      ...(typeof store.deleteCustomTeam === 'function'
+        ? { deleteCustom: (command) => store.deleteCustomTeam(command) }
+        : {}),
+    },
+    members: { get: (query) => store.getTeamMember(query) },
+  });
+}
+
+function adminTeamManagementError(reason) {
+  if (reason === 'team_not_found') return jsonError('TEAM_NOT_FOUND', 'Team not found.', 404, 'Check the team id.');
+  if (reason === 'department_settings_readonly') {
+    return jsonError(
+      'DEPARTMENT_TEAM_SETTINGS_READONLY',
+      'Department team settings are read-only.',
+      403,
+      'Use admin team merge tooling if the department path changed.'
+    );
+  }
+  if (reason === 'settings_unsupported') {
+    return jsonError('TEAM_SETTINGS_UNSUPPORTED', 'Team settings are unavailable.', 503, 'Retry later.');
+  }
+  if (reason === 'department_delete_forbidden') {
     return jsonError(
       'DEPARTMENT_TEAM_DELETE_FORBIDDEN',
       'Department teams cannot be deleted from admin team settings.',
@@ -2243,22 +2281,15 @@ async function deleteAdminTeam(config, store, session, teamId) {
       'Use platform admin team merge tooling.'
     );
   }
-
-  try {
-    const deleted = await store.deleteCustomTeam({ teamId, actorUserId: session.userId });
-    if (!deleted) return jsonError('TEAM_NOT_FOUND', 'Team not found.', 404, 'Check the team id.');
-    return jsonOk({ team: formatAdminTeam(deleted) });
-  } catch (error) {
-    if (String(error?.message || error).includes('TEAM_HAS_BLOCKING_ASSETS')) {
-      return jsonError(
-        'TEAM_HAS_BLOCKING_ASSETS',
-        'Team still owns sites or active access keys.',
-        409,
-        'Delete or transfer team sites and revoke team access keys first.'
-      );
-    }
-    throw error;
+  if (reason === 'blocking_assets') {
+    return jsonError(
+      'TEAM_HAS_BLOCKING_ASSETS',
+      'Team still owns sites or active access keys.',
+      409,
+      'Delete or transfer team sites and revoke team access keys first.'
+    );
   }
+  throw new Error('ADMIN_TEAM_MANAGEMENT_RESULT_INVALID');
 }
 
 async function mergeDepartmentTeam(request, config, store, session, sourceTeamId) {
