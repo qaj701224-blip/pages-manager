@@ -33,6 +33,7 @@ import { createDeploymentTraceQuery } from './application/governance/get-deploym
 import { createAuditEventsQuery } from './application/governance/list-audit-events.js';
 import { createExposureUpdatePreparation } from './application/governance/prepare-exposure-update.js';
 import { createExposureOfficeNetVerification } from './application/governance/ensure-exposure-office-net.js';
+import { createExposureSnapshotFinalization } from './application/governance/finalize-exposure-snapshot.js';
 import { buildRouteSnapshot, clearRoutePointerIfCurrent, readRouteSnapshotState } from './route-snapshot.js';
 import { createDeploymentProvider } from './execution-provider.js';
 import { sanitizeDeploymentTraceDiagnostics } from './deployment-trace.js';
@@ -2354,93 +2355,24 @@ async function updateAdminSiteExposure(request, env, config, store, session, sit
         },
       });
 
-      const committedSite = mutation.site || currentSite;
-      const committedRoute = mutation.route || currentRoute;
-      const committedVersion = committedRoute.activeVersionId
-        ? await store.getSiteVersion(committedRoute.activeVersionId, config.environment)
-        : null;
-      const snapshotResult = await writeAdminExposureSnapshot(env, store, committedSite, committedRoute, config.environment);
-      if (snapshotResult.error) {
-        let restoredRoute = null;
-        let compensationError = null;
-        try {
-          restoredRoute = await restoreSiteVisibilityAfterSnapshotFailure(
-            store,
-            currentSite.id,
-            currentSite,
-            currentRoute,
-            committedRoute,
-            config.environment
-          );
-          if (!restoredRoute || restoredRoute.exposure !== currentExposure) {
-            compensationError = new Error('ROUTE_POLICY_REPAIR_REQUIRED');
-          }
-        } catch (error) {
-          compensationError = error;
-        }
-
-        if (!compensationError) {
-          const restoredSite = (await store.getAdminSiteById(currentSite.id, config.environment)) || currentSite;
-          const safeSnapshotResult = await writeAdminExposureSnapshot(
-            env,
-            store,
-            restoredSite,
-            restoredRoute,
-            config.environment
-          );
-          if (safeSnapshotResult.error) compensationError = new Error('ROUTE_POLICY_REPAIR_REQUIRED');
-        }
-
-        if (compensationError) {
-          try {
-            const state = await readRouteSnapshotState(
-              env,
-              buildRouteSnapshot({
-                site: currentSite,
-                route: committedRoute,
-                version: committedVersion,
-                aclEntries: mutation.aclEntries || (await store.listSiteAclEntries(currentSite.id)),
-              })
-            );
-            if (state.pointer) await clearRoutePointerIfCurrent(env, state.pointer);
-          } catch {
-            // The repair-required response remains fail-closed even if pointer cleanup is unavailable.
-          }
-        }
-
-        const compensationStage = compensationError ? 'compensation_failed' : 'compensated_failure';
-        try {
-          await store.recordAuditEvent({
-            id: `${operationId}:${compensationStage}`,
-            environment: config.environment,
-            traceId: operationId,
-            eventType: 'admin.site.exposure',
-            actorUserId: session.userId,
-            actorType: 'platform_admin',
-            siteId: currentSite.id,
-            routeId: currentRoute.id,
-            decision: 'deny',
-            statusCode: 503,
-            metadata: {
-              ...auditMetadata,
-              previousExposure: currentExposure,
-              authorityExposure: (await store.getRouteBySiteId(currentSite.id, config.environment))?.exposure || null,
-              effectiveExposure: null,
-              stage: compensationStage,
-              compensation: compensationError ? 'failed' : 'restored_internal',
-            },
-            createdAt: now,
-          });
-        } catch {
-          // Audit failure must not mask the repair-required response.
-        }
-
+      const finalization = await createExposureSnapshotFinalizationApplication({ store, env }).finalize({
+        environment: config.environment,
+        actorUserId: session.userId,
+        currentSite,
+        currentRoute,
+        currentExposure,
+        mutation,
+        operation: { operationId, now, auditMetadata },
+      });
+      if (!finalization.ok) {
         const error = new Error('ROUTE_POLICY_REPAIR_REQUIRED');
         error.code = 'ROUTE_POLICY_REPAIR_REQUIRED';
         error.exposureAuditRecorded = true;
-        error.cause = snapshotResult.error;
+        error.cause = finalization.error.cause;
         throw error;
       }
+      const committedSite = finalization.site;
+      const committedRoute = finalization.route;
 
       let auditStatus = 'confirmed';
       try {
@@ -2531,6 +2463,37 @@ function createExposureOfficeNetVerificationApplication({ env, config, store, si
           })
         ),
     },
+  });
+}
+
+function createExposureSnapshotFinalizationApplication({ store, env }) {
+  return createExposureSnapshotFinalization({
+    snapshots: {
+      commit: ({ site, route, environment }) => writeAdminExposureSnapshot(env, store, site, route, environment),
+      clearFailed: async ({ site, route, version, aclEntries }) => {
+        const state = await readRouteSnapshotState(
+          env,
+          buildRouteSnapshot({ site, route, version, aclEntries })
+        );
+        if (state.pointer) await clearRoutePointerIfCurrent(env, state.pointer);
+      },
+    },
+    policies: {
+      restore: ({ siteId, currentSite, currentRoute, committedRoute, environment }) =>
+        restoreSiteVisibilityAfterSnapshotFailure(
+          store,
+          siteId,
+          currentSite,
+          currentRoute,
+          committedRoute,
+          environment
+        ),
+    },
+    sites: { get: (siteId, environment) => store.getAdminSiteById(siteId, environment) },
+    routes: { get: (siteId, environment) => store.getRouteBySiteId(siteId, environment) },
+    versions: { get: (versionId, environment) => store.getSiteVersion(versionId, environment) },
+    aclEntries: { list: (siteId) => store.listSiteAclEntries(siteId) },
+    audits: { record: (event) => store.recordAuditEvent(event) },
   });
 }
 
