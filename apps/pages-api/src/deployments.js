@@ -6,6 +6,7 @@ import {
   createDeploymentCompletion,
   synthesizeSucceededDeployment,
 } from './application/deployments/complete-deployment.js';
+import { createDeploymentPreviousResourceCleanup } from './application/deployments/cleanup-previous-resources.js';
 import { createDeploymentRouteSnapshotCommit } from './application/deployments/commit-route-snapshot.js';
 import { createDeploymentRuntimeConfigCommit } from './application/deployments/commit-runtime-config.js';
 import { createDeploymentVersionCreation } from './application/deployments/create-version.js';
@@ -18,6 +19,7 @@ import { createDeploymentRuntimeConfigResolution } from './application/deploymen
 import { createDeploymentRuntimeConfigRestoration } from './application/deployments/restore-runtime-config.js';
 import { createDeploymentRuntimeConfigSnapshotValidation } from './application/deployments/validate-runtime-config-snapshot.js';
 import { createDeploySiteResolutionPort } from './application/ports/deploy-site-resolution.js';
+import { createDeploymentCleanupTasksPort } from './application/ports/deployment-cleanup.js';
 import { createDeploymentCompletionPort } from './application/ports/deployment-completion.js';
 import { createDeploymentProviderPort } from './application/ports/deployment-provider.js';
 import { createDeploymentRecordsPort } from './application/ports/deployment-records.js';
@@ -1452,10 +1454,17 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
     stageHandle: deploymentStateStage,
   });
 
-  await recordCleanupOutcome(trace, await cleanupPreviousNormalWorkerSlot(provider, previousRoute, route, env), {
+  const previousResourceCleanup = createDeploymentPreviousResourceCleanupApplication({ store, env, provider });
+  const cleanupCommand = {
+    environment: config.environment,
+    previousRoute,
+    activeRoute: route,
+    deployment: completed,
+  };
+  await recordCleanupOutcome(trace, await previousResourceCleanup.cleanupPreviousSlot(cleanupCommand), {
     trafficImpact: 'new_version_active',
   });
-  await recordCleanupOutcome(trace, await enqueuePreviousWfpWorkerCleanup(store, env, config, previousRoute, route, completed), {
+  await recordCleanupOutcome(trace, await previousResourceCleanup.enqueuePreviousWorker(cleanupCommand), {
     trafficImpact: 'new_version_active',
   });
   const webhookDelivery = emitDeploymentSucceededWebhook({
@@ -2508,77 +2517,6 @@ function routeReferencesUploadedWorker(route, uploaded, versionId) {
   );
 }
 
-async function cleanupPreviousNormalWorkerSlot(provider, previousRoute, activeRoute, env) {
-  const operation = 'worker_placeholder_put';
-  if (typeof provider?.cleanupRetainedSlot !== 'function') {
-    return cleanupOutcome('not_needed', operation, { causeClass: 'cleanup_not_needed' });
-  }
-  if (previousRoute?.executionProvider !== 'normal-worker-slot') {
-    return cleanupOutcome('not_needed', operation, { causeClass: 'cleanup_not_needed' });
-  }
-  if (!previousRoute.slotId || !previousRoute.activeVersionId || previousRoute.slotId === activeRoute?.slotId) {
-    return cleanupOutcome('not_needed', operation, { causeClass: 'cleanup_not_needed' });
-  }
-  try {
-    await provider.cleanupRetainedSlot({
-      slotId: previousRoute.slotId,
-      versionId: previousRoute.activeVersionId,
-      activeSlotId: activeRoute?.slotId || null,
-      updatedAt: readNow(env),
-    });
-    return cleanupOutcome('succeeded', operation, { causeClass: 'cleanup_succeeded' });
-  } catch (error) {
-    return cleanupOutcome('failed', error?.operation || operation, { error });
-  }
-}
-
-async function enqueuePreviousWfpWorkerCleanup(store, env, config, previousRoute, activeRoute, deployment) {
-  const operation = 'worker_delete';
-  if (typeof store.createDeploymentResourceCleanupTask !== 'function') {
-    return cleanupOutcome('not_needed', operation, { causeClass: 'cleanup_not_needed' });
-  }
-  if (!previousRoute || previousRoute.routeStatus !== 'active') {
-    return cleanupOutcome('not_needed', operation, { causeClass: 'cleanup_not_needed' });
-  }
-  if (previousRoute.executionProvider !== 'wfp' && previousRoute.dispatchType !== 'dispatch-namespace') {
-    return cleanupOutcome('not_needed', operation, { causeClass: 'cleanup_not_needed' });
-  }
-  if (!previousRoute.workerName || !previousRoute.activeVersionId) {
-    return cleanupOutcome('not_needed', operation, { causeClass: 'cleanup_not_needed' });
-  }
-  if (previousRoute.workerName === activeRoute?.workerName || previousRoute.activeVersionId === activeRoute?.activeVersionId) {
-    return cleanupOutcome('not_needed', operation, { causeClass: 'cleanup_not_needed' });
-  }
-  if (!isManagedWfpWorkerName(previousRoute.workerName, config.environment)) {
-    return cleanupOutcome('not_needed', operation, { causeClass: 'cleanup_not_needed' });
-  }
-
-  const cleanupTaskId = nextId(env, 'cln');
-  try {
-    await store.createDeploymentResourceCleanupTask({
-      id: cleanupTaskId,
-      environment: config.environment,
-      resourceType: 'wfp_user_worker',
-      resourceRef: previousRoute.workerName,
-      siteId: previousRoute.siteId,
-      versionId: previousRoute.activeVersionId,
-      deploymentId: deployment.id,
-      cleanupReason: 'blue_green_previous_worker',
-      status: 'pending',
-      cleanupAfter: cleanupAfterDrainWindow(env),
-    });
-    return cleanupOutcome('scheduled', operation, {
-      cleanupTaskId,
-      causeClass: 'cleanup_scheduled',
-    });
-  } catch {
-    return cleanupOutcome('failed', operation, {
-      cleanupTaskId,
-      causeClass: 'cleanup_task_store_error',
-    });
-  }
-}
-
 function cleanupOutcome(status, operation, { cleanupTaskId, error, causeClass } = {}) {
   const provider = error ? providerDiagnosticsFromError(error) : undefined;
   return omitUndefined({
@@ -2592,6 +2530,7 @@ function cleanupOutcome(status, operation, { cleanupTaskId, error, causeClass } 
 
 async function recordCleanupOutcome(trace, outcome, { originalFailure, trafficImpact } = {}) {
   if (!trace || !outcome) return outcome;
+  const provider = outcome.provider || (outcome.error ? providerDiagnosticsFromError(outcome.error) : undefined);
   const eventStatus =
     outcome.status === 'failed'
       ? 'failed'
@@ -2605,7 +2544,7 @@ async function recordCleanupOutcome(trace, outcome, { originalFailure, trafficIm
     operation: outcome.operation,
     status: eventStatus,
     diagnostics: {
-      causeClass: outcome.causeClass,
+      causeClass: outcome.error ? provider?.causeClass || outcome.causeClass : outcome.causeClass,
       trafficImpact,
       cleanupStatus: outcome.status,
       cleanupTaskId: outcome.cleanupTaskId,
@@ -2613,7 +2552,7 @@ async function recordCleanupOutcome(trace, outcome, { originalFailure, trafficIm
       compensation: {
         status: outcome.status,
         operation: outcome.operation,
-        ...outcome.provider,
+        ...provider,
       },
     },
   });
@@ -2637,13 +2576,6 @@ async function cleanupUploadedWorkerIfInactiveAndRecord(
 ) {
   const outcome = await cleanupUploadedWorkerIfInactive(store, provider, uploaded, siteId, versionId, environment);
   return recordCleanupOutcome(trace, outcome, context);
-}
-
-function cleanupAfterDrainWindow(env) {
-  const now = Date.parse(readNow(env));
-  const configured = Number(env?.WFP_WORKER_CLEANUP_DRAIN_SECONDS || env?.WFP_CLEANUP_DRAIN_SECONDS || 300);
-  const seconds = Number.isFinite(configured) && configured >= 0 ? Math.min(configured, 24 * 60 * 60) : 300;
-  return new Date(now + seconds * 1000).toISOString();
 }
 
 async function reconcileCommittedDeployment(store, deployment, environment, env, trace = null) {
@@ -3284,6 +3216,19 @@ function createDeploymentRecordApplication(store, env) {
 function createDeploymentCompletionApplication(store) {
   return createDeploymentCompletion({
     deployments: createDeploymentCompletionPort(store),
+  });
+}
+
+function createDeploymentPreviousResourceCleanupApplication({ store, env, provider }) {
+  return createDeploymentPreviousResourceCleanup({
+    provider,
+    cleanupTasks: createDeploymentCleanupTasksPort(store),
+    clock: { now: () => readNow(env) },
+    ids: { next: (prefix) => nextId(env, prefix) },
+    managedWorkers: { isManaged: isManagedWfpWorkerName },
+    config: {
+      cleanupDrainSeconds: env?.WFP_WORKER_CLEANUP_DRAIN_SECONDS || env?.WFP_CLEANUP_DRAIN_SECONDS || 300,
+    },
   });
 }
 
