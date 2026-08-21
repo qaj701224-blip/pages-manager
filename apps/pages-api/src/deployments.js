@@ -2,6 +2,7 @@ import { validateSiteSlug } from '@xd/pages-runtime-protocol';
 
 import { isManagedWfpWorkerName } from './admin-resource-governance.js';
 import { createDeploymentRuntimeConfigCommit } from './application/deployments/commit-runtime-config.js';
+import { createDeploymentVersionCreation } from './application/deployments/create-version.js';
 import { createDeploymentRecord } from './application/deployments/deployment-record.js';
 import { createDeploymentProviderOperations } from './application/deployments/provider-operations.js';
 import { createDeploySiteResolution } from './application/deployments/resolve-deploy-site.js';
@@ -12,6 +13,7 @@ import { createDeploymentRuntimeConfigSnapshotValidation } from './application/d
 import { createDeploySiteResolutionPort } from './application/ports/deploy-site-resolution.js';
 import { createDeploymentProviderPort } from './application/ports/deployment-provider.js';
 import { createDeploymentRecordsPort } from './application/ports/deployment-records.js';
+import { createDeploymentVersionsPort } from './application/ports/deployment-versions.js';
 import { createRollbackSiteResolutionPort } from './application/ports/rollback-site-resolution.js';
 import {
   createDeploymentRuntimeConfigMutationPort,
@@ -19,10 +21,7 @@ import {
   createDeploymentRuntimeConfigSnapshotPort,
 } from './application/ports/runtime-config.js';
 import { canonicalRequestHash } from './crypto.js';
-import {
-  runtimeConfigHashInput,
-  runtimeSecretSnapshotRecords,
-} from './deployment-runtime-config.js';
+import { runtimeConfigHashInput, runtimeSecretSnapshotRecords } from './deployment-runtime-config.js';
 import { canonicalDeploymentContentHash, decisionRequiresAssets, decisionRequiresWorker } from './deployment-plan.js';
 import {
   bindDeploymentTrace,
@@ -48,7 +47,6 @@ import {
   writeRouteSnapshot,
 } from './route-snapshot.js';
 import { createDeploymentProvider, normalizeWorkerBundle } from './execution-provider.js';
-import { runtimeConfigSnapshot } from './runtime-config.js';
 import { notifyDeploymentCapacityExhausted } from './slack-alerts.js';
 import { buildSiteOwnerTransferAuditEvent, rejectUserExposureMutation } from './sites.js';
 import { deliverWebhookEventToSubscriptions } from './webhooks.js';
@@ -894,49 +892,24 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
           operation: 'create_site_version',
         })
       : null;
-    version = await store.createSiteVersion({
-      id: versionId,
+    const versionResult = await createDeploymentVersionCreationApplication(store, env).create({
+      versionId,
       siteId,
       deploymentId: deployment.id,
       workerName,
-      runtime: uploaded.runtime || 'worker',
-      executionProvider: uploaded.executionProvider || provider.executionProvider || 'wfp',
-      dispatchType: uploaded.dispatchType || 'dispatch-namespace',
-      dispatchBindingName: uploaded.dispatchBindingName || null,
-      slotId: uploaded.slotId || null,
-      artifactRef: uploaded.artifactRef,
+      uploaded,
+      executionProvider: provider.executionProvider,
+      decision,
       contentHash: canonicalContentHash,
-      deploymentShape: decision.deploymentShape,
-      requestedFallback: decision.requestedFallback,
-      resolvedFallback: decision.resolvedFallback,
-      routingMode: decision.routingMode,
-      workerEntry: decision.workerEntry,
-      assetsConfigJson: assetsConfigForDecisionStorage(decision),
-      workerModulesJson: artifactBundle
-        ? artifactBundle.modules.map((module) => ({
-            moduleName: module.name,
-            contentType: module.type,
-            size: module.content.length,
-          }))
-        : null,
-      assetManifestJson: assetManifest
-        ? Object.entries(assetManifest).map(([assetPath, entry]) => ({
-            path: assetPath,
-            hash: entry.hash,
-            size: Number(entry.size),
-            contentType: entry.content_type || null,
-          }))
-        : null,
-      canonicalContentHash,
-      varNamesJson: Object.keys(runtimeVars).sort(),
-      secretNamesJson: runtimeSecrets.map((secret) => secret.name).sort(),
-      runtimeConfigSnapshotJson: runtimeConfigSnapshot(
-        runtimeVarRecords,
-        await runtimeSecretSnapshotRecords(env, runtimeSecrets)
-      ),
-      artifactAvailability: 'active',
-      createdBy: actor.userId,
+      artifactBundle,
+      assetManifest,
+      runtimeVars,
+      runtimeVarRecords,
+      runtimeSecrets,
+      actorId: actor.userId,
     });
+    if (!versionResult.ok) throw versionResult.error.cause;
+    version = versionResult.version;
     if (versionCreateStage) {
       await finishDeploymentStage(versionCreateStage, { status: 'succeeded' });
       versionCreateStage = null;
@@ -2427,19 +2400,6 @@ function formatVersionDecision(version) {
   };
 }
 
-function assetsConfigForDecisionStorage(decision) {
-  if (!decisionRequiresAssets(decision)) return null;
-  return {
-    not_found_handling:
-      decision.resolvedFallback === 'index'
-        ? 'single-page-application'
-        : decision.resolvedFallback === 'not-found'
-          ? '404-page'
-          : 'none',
-    ...(decision.routingMode === 'worker-first' ? { run_worker_first: true } : {}),
-  };
-}
-
 function formatRoute(route) {
   return {
     id: route.id,
@@ -3400,6 +3360,15 @@ function createDeploymentRecordApplication(store, env) {
 function createDeploymentProviderApplication({ env, config, store }) {
   return createDeploymentProviderOperations({
     providers: createDeploymentProviderPort((site) => createDeploymentProvider(env, config, store, site)),
+  });
+}
+
+function createDeploymentVersionCreationApplication(store, env) {
+  return createDeploymentVersionCreation({
+    versions: createDeploymentVersionsPort(store),
+    runtimeConfig: {
+      snapshotSecrets: (secrets) => runtimeSecretSnapshotRecords(env, secrets),
+    },
   });
 }
 

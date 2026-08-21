@@ -289,6 +289,8 @@ node --test apps/pages-api/src/route-snapshot.test.js apps/pages-api/src/runtime
   - [x] runtime vars commit 与失败补偿；
 - [x] Provider upload/verify；
 - [ ] version create / route commit；
+  - [x] immutable version record 构造、runtime snapshot hash 与 repository 写入；
+  - [ ] route lease / CAS、OfficeNet 与 activation；
 - [ ] route snapshot / terminal persistence；
 - [ ] cleanup/webhook；
 - [ ] compensation/recovery；
