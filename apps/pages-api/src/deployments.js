@@ -89,6 +89,19 @@ import {
   createSiteCreationApplication,
   siteCreateErrorResponse,
 } from './transport/shared/site-creation-application.js';
+import {
+  clearRequestTraceStage,
+  discardReplayRequestTrace,
+  ensureRequestFailureTraced,
+  finishRequestAuthStage,
+  finishRequestAuthStageFromResponse,
+  finishValidatedRequestTrace,
+  queueRequestTraceSuccess,
+  setRequestTraceStage,
+  traceFailureResponse,
+  traceUnexpectedRequestFailure,
+  withRequestTraceHeader,
+} from './transport/public/deployment-request-trace.js';
 import { createDeploymentsHttpHandlers } from './transport/public/deployments-handler.js';
 import {
   readDeploymentIntakeHeaders,
@@ -105,7 +118,6 @@ import {
 
 const PROVIDER_DIAGNOSTIC_CLIENT_CODES = new Set(['WFP_API_ERROR', 'WFP_API_INVALID_JSON', 'WFP_NETWORK_ERROR']);
 const PROVIDER_DIAGNOSTIC_OPERATIONS = new Set(['assets_upload_session', 'assets_upload', 'worker_put', 'worker_get']);
-const deploymentRequestTraceStates = new WeakMap();
 
 const deploymentHttpHandlers = createDeploymentsHttpHandlers({
   deploy: createDeployment,
@@ -3421,166 +3433,6 @@ function readNow(env) {
   return new Date().toISOString();
 }
 
-async function finishRequestAuthStage(handle, input) {
-  if (!handle || handle.finished) return null;
-  handle.finished = true;
-  if (input?.status === 'failed') {
-    await flushRequestTraceSuccesses(handle.trace);
-    markRequestTraceFailed(handle.trace);
-  }
-  return finishDeploymentStage(handle, input);
-}
-
-async function finishValidatedRequestTrace(trace, authStage) {
-  await flushRequestTraceSuccess(trace, 'intake');
-  await finishRequestAuthStage(authStage, { status: 'succeeded' });
-  await flushRequestTraceSuccess(trace, 'payload_validation');
-}
-
-function discardReplayRequestTrace(trace, authStage) {
-  const state = trace ? deploymentRequestTraceStates.get(trace) : null;
-  if (state?.pendingSuccesses) state.pendingSuccesses.length = 0;
-  if (authStage) authStage.finished = true;
-}
-
-async function finishRequestAuthStageFromResponse(handle, response, causeClass) {
-  let errorCode = 'AUTH_AND_SITE_RESOLUTION_FAILED';
-  let errorMessage = 'Authentication or site resolution failed.';
-  try {
-    const body = await response.clone().json();
-    if (typeof body?.error?.code === 'string') errorCode = body.error.code;
-    if (typeof body?.error?.message === 'string') errorMessage = body.error.message;
-  } catch {
-    // Keep the fixed safe fallback fields.
-  }
-  return finishRequestAuthStage(handle, {
-    status: 'failed',
-    errorCode,
-    errorMessage,
-    diagnostics: { causeClass },
-  });
-}
-
-async function traceFailureResponse(trace, response, { stage, operation, errorCode, errorMessage, diagnostics }) {
-  if (trace) {
-    await flushRequestTraceSuccesses(trace);
-    markRequestTraceFailed(trace);
-    await recordDeploymentStage(trace, {
-      stage,
-      operation,
-      status: 'failed',
-      errorCode,
-      errorMessage,
-      diagnostics,
-    });
-  }
-  return response;
-}
-
-function setRequestTraceStage(trace, stage, operation) {
-  if (!trace) return;
-  const current = deploymentRequestTraceStates.get(trace);
-  deploymentRequestTraceStates.set(trace, {
-    stage,
-    operation,
-    failed: current?.failed || false,
-    pendingSuccesses: current?.pendingSuccesses || [],
-  });
-}
-
-function queueRequestTraceSuccess(trace, stage, operation) {
-  if (!trace) return;
-  const current = deploymentRequestTraceStates.get(trace) || {
-    stage: null,
-    operation: null,
-    failed: false,
-    pendingSuccesses: [],
-  };
-  current.pendingSuccesses.push({
-    stage,
-    operation,
-    handle: startDeploymentStage(trace, { stage, operation }),
-  });
-  deploymentRequestTraceStates.set(trace, current);
-}
-
-async function flushRequestTraceSuccesses(trace) {
-  const current = trace ? deploymentRequestTraceStates.get(trace) : null;
-  if (!current?.pendingSuccesses?.length) return;
-  const pending = current.pendingSuccesses.splice(0);
-  for (const item of pending) await finishDeploymentStage(item.handle, { status: 'succeeded' });
-}
-
-async function flushRequestTraceSuccess(trace, stage) {
-  const current = trace ? deploymentRequestTraceStates.get(trace) : null;
-  if (!current?.pendingSuccesses?.length) return;
-  const matching = [];
-  const remaining = [];
-  for (const item of current.pendingSuccesses) {
-    if (item.stage === stage) matching.push(item);
-    else remaining.push(item);
-  }
-  current.pendingSuccesses = remaining;
-  for (const item of matching) await finishDeploymentStage(item.handle, { status: 'succeeded' });
-}
-
-function clearRequestTraceStage(trace) {
-  if (trace) deploymentRequestTraceStates.delete(trace);
-}
-
-function markRequestTraceFailed(trace) {
-  if (!trace) return;
-  const current = deploymentRequestTraceStates.get(trace);
-  deploymentRequestTraceStates.set(trace, {
-    stage: current?.stage || null,
-    operation: current?.operation || null,
-    failed: true,
-    pendingSuccesses: current?.pendingSuccesses || [],
-  });
-}
-
-async function ensureRequestFailureTraced(trace, response) {
-  const state = trace ? deploymentRequestTraceStates.get(trace) : null;
-  if (!state || state.failed || response.status < 400 || !state.stage) return response;
-
-  let errorCode = 'DEPLOYMENT_REQUEST_FAILED';
-  let errorMessage = 'Deployment request failed.';
-  try {
-    const body = await response.clone().json();
-    if (typeof body?.error?.code === 'string') errorCode = body.error.code;
-    if (typeof body?.error?.message === 'string') errorMessage = body.error.message;
-  } catch {
-    // Keep the fixed safe fallback fields.
-  }
-  await flushRequestTraceSuccesses(trace);
-  markRequestTraceFailed(trace);
-  await recordDeploymentStage(trace, {
-    stage: state.stage,
-    operation: state.operation,
-    status: 'failed',
-    errorCode,
-    errorMessage,
-    diagnostics: { causeClass: 'request_stage_error' },
-  });
-  return response;
-}
-
-async function traceUnexpectedRequestFailure(trace, { fallbackStage, fallbackOperation }) {
-  if (!trace) return;
-  const state = deploymentRequestTraceStates.get(trace);
-  if (state?.failed) return;
-  await flushRequestTraceSuccesses(trace);
-  markRequestTraceFailed(trace);
-  await recordDeploymentStage(trace, {
-    stage: state?.stage || fallbackStage,
-    operation: state?.operation || fallbackOperation,
-    status: 'failed',
-    errorCode: 'DEPLOYMENT_REQUEST_FAILED',
-    errorMessage: 'Deployment request could not be processed.',
-    diagnostics: { causeClass: 'unexpected_orchestration_error' },
-  });
-}
-
 async function recoverUnexpectedRequestFailure({ trace, store, env, config, ctx, actor, fallbackOperation }) {
   return createUnexpectedRequestFailureRecoveryApplication({ store, env, config, ctx }).recover({
     trace,
@@ -3652,11 +3504,6 @@ async function recordSkippedDeploymentStages(trace, stages) {
       status: 'skipped',
     });
   }
-}
-
-function withRequestTraceHeader(response, trace) {
-  if (!trace) return response;
-  return withDeploymentTraceHeader(response, response.headers.get('X-Deployment-Trace-Id') || trace.traceId);
 }
 
 async function unexpectedRequestResponse(store, deployment, environment) {
