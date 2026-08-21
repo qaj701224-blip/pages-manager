@@ -1636,21 +1636,15 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
   currentRoute = rollbackLatestRoute;
   let route;
   let rollbackProvider;
-  let rollbackOfficeNetStage = null;
   try {
     await assertRouteSnapshotConverged(env, store, currentRoute, config.environment);
     rollbackProvider = createDeploymentProvider(env, config, store, site);
     const rollbackExposure = normalizeExposureForDeployment(currentRoute.exposure);
     assertCommitLeaseHealthy(rollbackLease);
-    rollbackOfficeNetStage = trace
-      ? startDeploymentStage(trace, {
-          stage: 'office_net',
-          operation: 'rollback_verify_public_office_net_absent',
-        })
-      : null;
     const rollbackOfficeNetResult = await createRollbackOfficeNetVerificationApplication({
       store,
       provider: rollbackProvider,
+      trace,
     }).verify({
       environment: config.environment,
       siteId: site.id,
@@ -1660,15 +1654,7 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
       signal: rollbackLease.signal,
     });
     if (!rollbackOfficeNetResult.ok) {
-      throw deploymentOperationError(rollbackOfficeNetResult.error.code, {
-        message: 'The current public Worker version could not be verified before rollback.',
-      });
-    }
-    if (rollbackOfficeNetStage) {
-      await finishDeploymentStage(rollbackOfficeNetStage, {
-        status: rollbackExposure === 'public' ? 'succeeded' : 'skipped',
-      });
-      rollbackOfficeNetStage = null;
+      throw rollbackOfficeNetOperationError(rollbackOfficeNetResult.error);
     }
     assertCommitLeaseHealthy(rollbackLease);
     const rollbackRouteActivation = createDeploymentRouteActivationApplication(store, env, trace, {
@@ -1694,16 +1680,6 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
     });
     route = activationResult.ok ? activationResult.route : null;
   } catch (error) {
-    if (rollbackOfficeNetStage) {
-      await finishDeploymentStage(rollbackOfficeNetStage, {
-        status: 'failed',
-        error,
-        errorCode: error?.code || 'SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED',
-        errorMessage: error?.message || 'Public Worker OfficeNet verification failed.',
-        diagnostics: { causeClass: 'public_office_net_error' },
-      });
-      rollbackOfficeNetStage = null;
-    }
     await releaseSiteCommitLeaseBestEffort(rollbackLease);
     if (isPublicOfficeNetFailure(error)) {
       await finalizeFailedRollback(
@@ -2625,6 +2601,12 @@ function publicOfficeNetOperationError(error) {
   });
 }
 
+function rollbackOfficeNetOperationError(error) {
+  return deploymentOperationError(error.code, {
+    message: 'The current public Worker version could not be verified before rollback.',
+  });
+}
+
 function isPublicOfficeNetFailure(error) {
   return error?.code === 'SITE_PUBLIC_OFFICE_NET_REMOVE_FAILED' || error?.code === 'SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED';
 }
@@ -3092,11 +3074,35 @@ function createPublicWorkerOfficeNetGuardApplication(store, trace = null) {
   });
 }
 
-function createRollbackOfficeNetVerificationApplication({ store, provider }) {
+function createRollbackOfficeNetVerificationApplication({ store, provider, trace = null }) {
   return createRollbackOfficeNetVerification({
     versions: createRollbackOfficeNetVersionsPort(store),
     officeNet: {
       ensure: (command) => ensurePublicWorkerOfficeNetAbsent(provider, { store, ...command }),
+    },
+    telemetry: {
+      start: () =>
+        trace
+          ? startDeploymentStage(trace, {
+              stage: 'office_net',
+              operation: 'rollback_verify_public_office_net_absent',
+            })
+          : null,
+      finish: (stage, outcome) => {
+        if (!stage) return undefined;
+        const error = outcome.error ? rollbackOfficeNetOperationError(outcome.error) : outcome.cause;
+        return finishDeploymentStage(stage, {
+          status: outcome.status,
+          ...(outcome.status === 'failed'
+            ? {
+                error,
+                errorCode: error?.code || 'SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED',
+                errorMessage: error?.message || 'Public Worker OfficeNet verification failed.',
+                diagnostics: { causeClass: 'public_office_net_error' },
+              }
+            : {}),
+        });
+      },
     },
   });
 }

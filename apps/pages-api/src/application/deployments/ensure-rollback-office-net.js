@@ -1,10 +1,38 @@
-export function createRollbackOfficeNetVerification({ versions, officeNet }) {
+export function createRollbackOfficeNetVerification({ versions, officeNet, telemetry }) {
   if (typeof versions?.getById !== 'function') throw new TypeError('versions.getById is required');
   if (typeof officeNet?.ensure !== 'function') throw new TypeError('officeNet.ensure is required');
+  if (typeof telemetry?.start !== 'function') throw new TypeError('telemetry.start is required');
+  if (typeof telemetry?.finish !== 'function') throw new TypeError('telemetry.finish is required');
 
   return { verify };
 
-  async function verify(command) {
+  function verify(command) {
+    const stage = telemetry.start();
+    return verifyAfterStart(command, stage);
+  }
+
+  async function verifyAfterStart(command, stage) {
+    let result;
+    try {
+      result = await verifyVersions(command);
+    } catch (cause) {
+      await telemetry.finish(stage, { status: 'failed', cause });
+      throw cause;
+    }
+    if (!result.ok) {
+      await telemetry.finish(stage, { status: 'failed', error: result.error });
+      return result;
+    }
+    try {
+      await telemetry.finish(stage, { status: command.exposure === 'public' ? 'succeeded' : 'skipped' });
+    } catch (cause) {
+      await telemetry.finish(stage, { status: 'failed', cause });
+      throw cause;
+    }
+    return result;
+  }
+
+  async function verifyVersions(command) {
     await officeNet.ensure(officeNetCommand(command, command.version));
 
     if (
