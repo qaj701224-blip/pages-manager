@@ -36,6 +36,7 @@ import { createExposureOfficeNetVerification } from './application/governance/en
 import { createExposureSnapshotFinalization } from './application/governance/finalize-exposure-snapshot.js';
 import { createSiteExposureUpdate } from './application/governance/update-site-exposure.js';
 import { createWorkerOrphanScan } from './application/governance/scan-worker-orphans.js';
+import { createWorkerOrphanBackfill } from './application/governance/backfill-worker-orphans.js';
 import { buildRouteSnapshot, clearRoutePointerIfCurrent, readRouteSnapshotState } from './route-snapshot.js';
 import { createDeploymentProvider } from './execution-provider.js';
 import { sanitizeDeploymentTraceDiagnostics } from './deployment-trace.js';
@@ -64,7 +65,6 @@ const NORMAL_WORKER_BULK_DELETE_CONCURRENCY = 5;
 const WFP_ORPHAN_BACKFILL_LIMIT = 100;
 const V1_SITE_BULK_RETIRE_LIMIT = 100;
 const DEFAULT_WFP_ORPHAN_SCAN_MAX_WORKERS = 10_000;
-const ACTIVE_CLEANUP_STATUSES = new Set(['pending', 'failed', 'running']);
 const CLEANUP_TASK_LOCK_SECONDS = 5 * 60;
 const CLEANUP_TASK_FAILED_CODE = 'CLEANUP_TASK_FAILED';
 const CLEANUP_TASK_FAILED_MESSAGE = 'Cleanup task failed unexpectedly.';
@@ -1101,15 +1101,12 @@ async function backfillAdminWorkerOrphans(request, env, config, store, session) 
     );
   }
 
-  let inventory;
-  let references;
-  try {
-    const configuredLimit = readWorkerOrphanScanLimit(env);
-    [inventory, references] = await Promise.all([
-      client.listWorkers({ maxWorkers: configuredLimit }),
-      store.listWorkerOrphanScanReferences({ environment: config.environment, limit: configuredLimit }),
-    ]);
-  } catch {
+  const result = await createWorkerOrphanBackfillApplication({ env, config, store, session, client }).backfill({
+    environment: config.environment,
+    limit: readWorkerOrphanScanLimit(env),
+    workerNames,
+  });
+  if (result.reason === 'revalidation_failed') {
     return jsonError(
       'WORKER_ORPHAN_BACKFILL_FAILED',
       'Worker orphan backfill could not revalidate resources.',
@@ -1117,7 +1114,7 @@ async function backfillAdminWorkerOrphans(request, env, config, store, session) 
       'Retry later.'
     );
   }
-  if (Array.isArray(inventory) || inventory?.completeness !== 'complete') {
+  if (result.reason === 'scan_incomplete') {
     return jsonError(
       'WORKER_ORPHAN_SCAN_INCOMPLETE',
       'Worker orphan backfill requires a complete server-side inventory.',
@@ -1125,14 +1122,7 @@ async function backfillAdminWorkerOrphans(request, env, config, store, session) 
       'Run a complete orphan scan and retry.'
     );
   }
-  const inventoryWorkers = Array.isArray(inventory?.workers) ? inventory.workers : [];
-  const configuredLimit = readWorkerOrphanScanLimit(env);
-  if (
-    inventoryWorkers.length > configuredLimit ||
-    inventory.scannedCount > configuredLimit ||
-    inventory.namespaceScriptCount > configuredLimit ||
-    references?.scanLimitExceeded
-  ) {
+  if (result.reason === 'limit_exceeded') {
     return jsonError(
       'WORKER_ORPHAN_SCAN_LIMIT_EXCEEDED',
       'Worker orphan scan exceeds the configured inventory limit.',
@@ -1140,88 +1130,24 @@ async function backfillAdminWorkerOrphans(request, env, config, store, session) 
       'Increase PAGES_WFP_ORPHAN_SCAN_MAX_WORKERS or narrow the upstream inventory before retrying.'
     );
   }
+  if (result.ok) return jsonOk({ summary: result.summary, results: result.results });
+  throw new Error('WORKER_ORPHAN_BACKFILL_RESULT_INVALID');
+}
 
-  const inventoryNames = new Set(inventoryWorkers.map((worker) => worker?.name).filter(Boolean));
-  const activeRoutesByWorker = groupAdminReferences(references?.activeRoutes, (item) => item.workerName);
-  const versionsByWorker = groupAdminReferences(references?.versions, (item) => item.workerName);
-  const cleanupTasksByWorker = groupAdminReferences(
-    (references?.cleanupTasks || []).filter((item) => ACTIVE_CLEANUP_STATUSES.has(item.status)),
-    (item) => item.resourceRef
-  );
-  const results = [];
-  for (const workerName of workerNames) {
-    const skipReason = backfillSkipReason({
-      workerName,
-      environment: config.environment,
-      inventoryNames,
-      activeRoutes: activeRoutesByWorker.get(workerName) || [],
-      versions: versionsByWorker.get(workerName) || [],
-      cleanupTasks: cleanupTasksByWorker.get(workerName) || [],
-    });
-    if (skipReason) {
-      const result = { workerName, status: 'skipped', reason: skipReason };
-      results.push(result);
-      await recordResourceGovernanceAuditSafe(store, env, config, session, {
-        eventType: 'admin.worker_orphan_backfill',
-        stage: 'backfill',
-        decision: 'skip',
-        statusCode: 409,
-        metadata: { workerName, result: result.status, reason: skipReason },
-      });
-      continue;
-    }
-    const versions = versionsByWorker.get(workerName) || [];
-    const latestVersion = latestWorkerVersion(versions);
-    const rollbackEligible = versions.some((version) => !version.siteDeletedAt && version.artifactAvailability === 'active');
-    const cleanupReason =
-      versions.length > 0 && versions.every((version) => Boolean(version.siteDeletedAt))
-        ? 'site_deleted_backfill'
-        : 'orphan_backfill';
-    try {
-      await store.createDeploymentResourceCleanupTask({
-        id: newId('cln'),
-        environment: config.environment,
-        resourceType: 'wfp_user_worker',
-        resourceRef: workerName,
-        siteId: latestVersion?.siteId || null,
-        versionId: latestVersion?.id || null,
-        deploymentId: null,
-        cleanupReason,
-        status: 'pending',
-        // Backfilled orphans have carried no active route for a long time already; the
-        // blue-green drain window protects fresh cutovers and does not apply here.
-        cleanupAfter: readNow(env),
-        createdAt: readNow(env),
-        updatedAt: readNow(env),
-      });
-      const result = { workerName, status: 'created', rollbackEligible };
-      results.push(result);
-      await recordResourceGovernanceAuditSafe(store, env, config, session, {
-        eventType: 'admin.worker_orphan_backfill',
-        stage: 'backfill',
-        decision: 'allow',
-        statusCode: 201,
-        metadata: { workerName, result: result.status, cleanupReason },
-      });
-    } catch {
-      const result = { workerName, status: 'skipped', reason: 'cleanup_task_create_failed' };
-      results.push(result);
-      await recordResourceGovernanceAuditSafe(store, env, config, session, {
-        eventType: 'admin.worker_orphan_backfill',
-        stage: 'backfill',
-        decision: 'deny',
-        statusCode: 502,
-        metadata: { workerName, result: result.status, reason: result.reason },
-      });
-    }
-  }
-  return jsonOk({
-    summary: {
-      requested: workerNames.length,
-      created: results.filter((item) => item.status === 'created').length,
-      skipped: results.filter((item) => item.status === 'skipped').length,
+function createWorkerOrphanBackfillApplication({ env, config, store, session, client }) {
+  return createWorkerOrphanBackfill({
+    inventory: { list: (query) => client.listWorkers(query) },
+    references: { list: (query) => store.listWorkerOrphanScanReferences(query) },
+    workers: {
+      isManaged: isManagedWfpWorkerName,
+      isResource: isWfpWorkerResource,
     },
-    results,
+    cleanupTasks: { create: (task) => store.createDeploymentResourceCleanupTask(task) },
+    audits: {
+      record: (input) => recordResourceGovernanceAuditSafe(store, env, config, session, input),
+    },
+    ids: { next: newId },
+    clock: { now: () => readNow(env) },
   });
 }
 
@@ -1257,39 +1183,6 @@ function normalizeBackfillWorkerNames(values) {
     names.push(name);
   }
   return names;
-}
-
-function groupAdminReferences(items, keyOf) {
-  const grouped = new Map();
-  for (const item of Array.isArray(items) ? items : []) {
-    const key = keyOf(item);
-    if (typeof key !== 'string' || key === '') continue;
-    const values = grouped.get(key) || [];
-    values.push(item);
-    grouped.set(key, values);
-  }
-  return grouped;
-}
-
-function backfillSkipReason({ workerName, environment, inventoryNames, activeRoutes, versions, cleanupTasks }) {
-  if (!isManagedWfpWorkerName(workerName, environment)) return 'worker_not_managed';
-  if (!inventoryNames.has(workerName)) return 'worker_not_in_complete_inventory';
-  if ([...activeRoutes, ...versions].some((record) => !isWfpWorkerResource(record, environment))) {
-    return 'worker_not_wfp_resource';
-  }
-  if (activeRoutes.length > 0) return 'active_route_reference';
-  if (cleanupTasks.length > 0) return 'cleanup_task_exists';
-  return null;
-}
-
-function latestWorkerVersion(versions) {
-  return (
-    [...versions].sort(
-      (left, right) =>
-        String(right.createdAt || '').localeCompare(String(left.createdAt || '')) ||
-        String(right.id || '').localeCompare(String(left.id || ''))
-    )[0] || null
-  );
 }
 
 async function runDeploymentCleanupTask(env, config, store, session, taskId) {
