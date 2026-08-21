@@ -33,6 +33,7 @@ function createApplication(overrides = {}) {
   return createDeploymentSucceededWebhook({
     teams: { get: null },
     webhooks: { deliver: async () => [] },
+    telemetry: { start: () => null, finish: async () => null },
     clock: { now: () => '2026-08-21T00:02:00.000Z' },
     ids: { next: () => 'evt_1' },
     ...overrides,
@@ -155,9 +156,45 @@ test('successful deployment webhook isolates failed deliveries and integration e
   );
 });
 
+test('successful deployment webhook traces around delivery and preserves its outcome', async () => {
+  const calls = [];
+  const stage = { operation: 'site_deployed' };
+  const application = createApplication({
+    webhooks: {
+      async deliver() {
+        calls.push(['deliver']);
+        return [{ deliveryStatus: 'succeeded' }];
+      },
+    },
+    telemetry: {
+      start() {
+        calls.push(['start']);
+        return stage;
+      },
+      async finish(receivedStage, outcome) {
+        calls.push(['finish', receivedStage, outcome]);
+      },
+    },
+  });
+
+  assert.deepEqual(await application.deliver(command), { status: 'succeeded' });
+  assert.deepEqual(calls, [
+    ['start'],
+    ['deliver'],
+    ['finish', stage, { status: 'succeeded' }],
+  ]);
+});
+
 test('successful deployment webhook requires only its narrow capabilities', () => {
   assert.throws(
-    () => createDeploymentSucceededWebhook({ teams: {}, webhooks: {}, clock: { now() {} }, ids: { next() {} } }),
+    () =>
+      createDeploymentSucceededWebhook({
+        teams: {},
+        webhooks: {},
+        telemetry: {},
+        clock: { now() {} },
+        ids: { next() {} },
+      }),
     /webhooks\.deliver is required/
   );
 });

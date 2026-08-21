@@ -1468,14 +1468,12 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
     deployment: completed,
   };
   await previousResourceCleanup.cleanup(cleanupCommand);
-  const webhookDelivery = emitDeploymentSucceededWebhook({
-    application: createDeploymentSucceededWebhookApplication({ store, env, config }),
+  const webhookDelivery = createDeploymentSucceededWebhookApplication({ store, env, config, trace }).deliver({
     actor,
     site,
     route,
     deployment: completed,
     environment: config.environment,
-    trace,
   });
   if (ctx && typeof ctx.waitUntil === 'function') {
     ctx.waitUntil(webhookDelivery);
@@ -1485,27 +1483,6 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
   await emitSiteDisabledWebhook({ store, env, config, ctx, actor, site, previousRoute, route });
 
   return jsonOk(await deploymentEnvelope(store, completed, { version, route, decision, ownerTransfer }), 201);
-}
-
-async function emitDeploymentSucceededWebhook({ application, actor, site, route, deployment, environment, trace }) {
-  const stage = trace
-    ? startDeploymentStage(trace, {
-        stage: 'webhook_delivery',
-        operation: 'site_deployed',
-      })
-    : null;
-  const outcome = await application.deliver({ actor, site, route, deployment, environment });
-  if (!stage) return;
-  await finishDeploymentStage(stage, {
-    status: outcome.status,
-    ...(outcome.status === 'failed'
-      ? {
-          errorCode: 'WEBHOOK_DELIVERY_FAILED',
-          errorMessage: 'Webhook delivery failed.',
-          diagnostics: { causeClass: outcome.causeClass },
-        }
-      : {}),
-  });
 }
 
 async function emitDeploymentFailedWebhook({ application, actor, site, deployment, environment, trace, ctx }) {
@@ -3177,10 +3154,32 @@ function rollbackRouteSnapshotRecoveryError(failure) {
   return failure.error;
 }
 
-function createDeploymentSucceededWebhookApplication({ store, env, config }) {
+function createDeploymentSucceededWebhookApplication({ store, env, config, trace }) {
   return createDeploymentSucceededWebhook({
     teams: createDeploymentWebhookTeamsPort(store),
     webhooks: createDeploymentWebhookDispatcher({ store, env, config }),
+    telemetry: {
+      start: () =>
+        trace
+          ? startDeploymentStage(trace, {
+              stage: 'webhook_delivery',
+              operation: 'site_deployed',
+            })
+          : null,
+      finish: (stage, outcome) =>
+        stage
+          ? finishDeploymentStage(stage, {
+              status: outcome.status,
+              ...(outcome.status === 'failed'
+                ? {
+                    errorCode: 'WEBHOOK_DELIVERY_FAILED',
+                    errorMessage: 'Webhook delivery failed.',
+                    diagnostics: { causeClass: outcome.causeClass },
+                  }
+                : {}),
+            })
+          : undefined,
+    },
     clock: { now: () => readNow(env) },
     ids: { next: (prefix) => nextId(env, prefix) },
   });
