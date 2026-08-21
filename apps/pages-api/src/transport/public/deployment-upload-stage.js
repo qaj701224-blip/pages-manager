@@ -158,7 +158,7 @@ export async function prepareDeploymentUpload({
             executionProvider: 'unknown',
             plannedVersionId: null,
             routePointerCommitted: false,
-            cause: deploymentStoreErrorCause(error),
+            cause: deploymentStoreErrorCause(),
           }),
           completedAt: readNow(env),
         }
@@ -331,7 +331,7 @@ export async function prepareDeploymentUpload({
             executionProvider: 'unknown',
             plannedVersionId: versionId,
             routePointerCommitted: false,
-            cause: deploymentStoreErrorCause(error),
+            cause: deploymentStoreErrorCause(),
           }),
           completedAt: readNow(env),
         }
