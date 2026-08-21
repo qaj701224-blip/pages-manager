@@ -5,13 +5,16 @@ import { createDeploymentRecord } from './application/deployments/deployment-rec
 import { createDeploySiteResolution } from './application/deployments/resolve-deploy-site.js';
 import { createRollbackSiteResolution } from './application/deployments/resolve-rollback-site.js';
 import { createDeploymentRuntimeConfigResolution } from './application/deployments/resolve-runtime-config.js';
+import { createDeploymentRuntimeConfigSnapshotValidation } from './application/deployments/validate-runtime-config-snapshot.js';
 import { createDeploySiteResolutionPort } from './application/ports/deploy-site-resolution.js';
 import { createDeploymentRecordsPort } from './application/ports/deployment-records.js';
 import { createRollbackSiteResolutionPort } from './application/ports/rollback-site-resolution.js';
-import { createDeploymentRuntimeConfigResolutionPort } from './application/ports/runtime-config.js';
+import {
+  createDeploymentRuntimeConfigResolutionPort,
+  createDeploymentRuntimeConfigSnapshotPort,
+} from './application/ports/runtime-config.js';
 import { canonicalRequestHash } from './crypto.js';
 import {
-  assertRuntimeConfigSnapshotUnchanged,
   restoreSiteVarsAfterFailedDeployment,
   runtimeConfigHashInput,
   runtimeSecretSnapshotRecords,
@@ -447,13 +450,12 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
     return deploymentStateWriteFailed();
   }
   const runtimeSnapshotError = decisionRequiresWorker(decision)
-    ? await assertRuntimeConfigSnapshotUnchanged(
-        store,
-        config.environment,
+    ? await validateDeploymentRuntimeConfigSnapshot(store, {
+        environment: config.environment,
         siteId,
-        workerRuntimeVarsProvided ? originalRuntimeVarRecords : runtimeVarRecords,
-        runtimeSecrets
-      )
+        expectedVars: workerRuntimeVarsProvided ? originalRuntimeVarRecords : runtimeVarRecords,
+        expectedSecrets: runtimeSecrets,
+      })
     : null;
   if (runtimeSnapshotError) {
     await recordDeploymentStage(trace, {
@@ -562,13 +564,12 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
 
   const workerName = uploaded.workerName || plannedWorkerName;
   const postUploadRuntimeSnapshotError = decisionRequiresWorker(decision)
-    ? await assertRuntimeConfigSnapshotUnchanged(
-        store,
-        config.environment,
+    ? await validateDeploymentRuntimeConfigSnapshot(store, {
+        environment: config.environment,
         siteId,
-        workerRuntimeVarsProvided ? originalRuntimeVarRecords : runtimeVarRecords,
-        runtimeSecrets
-      )
+        expectedVars: workerRuntimeVarsProvided ? originalRuntimeVarRecords : runtimeVarRecords,
+        expectedSecrets: runtimeSecrets,
+      })
     : null;
   if (postUploadRuntimeSnapshotError) {
     await recordDeploymentStage(trace, {
@@ -722,13 +723,12 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
       await finalizeFailedDeployment(runtimeConfigFailurePatch());
       return runtimeConfigUnavailable();
     }
-    const preCommitRuntimeSnapshotError = await assertRuntimeConfigSnapshotUnchanged(
-      store,
-      config.environment,
+    const preCommitRuntimeSnapshotError = await validateDeploymentRuntimeConfigSnapshot(store, {
+      environment: config.environment,
       siteId,
-      originalRuntimeVarRecords,
-      runtimeSecrets
-    );
+      expectedVars: originalRuntimeVarRecords,
+      expectedSecrets: runtimeSecrets,
+    });
     if (preCommitRuntimeSnapshotError) {
       if (runtimeConfigCommitStage) {
         await finishDeploymentStage(runtimeConfigCommitStage, {
@@ -812,7 +812,12 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
     await persistIntermediateDeploymentState(store, deployment.id, { status: 'verified' }, 'persist_verified_deployment');
     previousRoute = await store.getRouteBySiteId(siteId, config.environment);
     const preActivationRuntimeSnapshotError = decisionRequiresWorker(decision)
-      ? await assertRuntimeConfigSnapshotUnchanged(store, config.environment, siteId, runtimeVarRecords, runtimeSecrets)
+      ? await validateDeploymentRuntimeConfigSnapshot(store, {
+          environment: config.environment,
+          siteId,
+          expectedVars: runtimeVarRecords,
+          expectedSecrets: runtimeSecrets,
+        })
       : null;
     if (preActivationRuntimeSnapshotError) {
       await cleanupUploadedWorkerAndRecord(trace, provider, uploaded, {
@@ -3193,6 +3198,23 @@ function initialRuntimeConfigResolutionFailure(error) {
   );
 }
 
+function runtimeConfigSnapshotFailure(error) {
+  if (error.code === 'RUNTIME_CONFIG_CHANGED') {
+    return {
+      code: 'RUNTIME_CONFIG_CHANGED',
+      message: 'Runtime configuration changed while deployment was starting.',
+      status: 409,
+      action: 'Retry the deployment with a new Idempotency-Key.',
+    };
+  }
+  return {
+    code: 'RUNTIME_CONFIG_UNSUPPORTED',
+    message: 'Runtime configuration is unavailable.',
+    status: 503,
+    action: 'Check runtime configuration and retry with a new Idempotency-Key.',
+  };
+}
+
 function normalizeExposureForDeployment(value) {
   return value === 'public' ? 'public' : 'internal';
 }
@@ -3405,6 +3427,14 @@ function createDeploymentRuntimeConfigResolutionApplication(store, env) {
       hashInput: (vars, secrets) => runtimeConfigHashInput(env, vars, secrets),
     }),
   });
+}
+
+async function validateDeploymentRuntimeConfigSnapshot(store, command) {
+  const application = createDeploymentRuntimeConfigSnapshotValidation({
+    runtimeConfig: createDeploymentRuntimeConfigSnapshotPort(store),
+  });
+  const result = await application.validate(command);
+  return result.ok ? null : runtimeConfigSnapshotFailure(result.error);
 }
 
 function normalizeOptionalString(value) {

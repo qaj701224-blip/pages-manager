@@ -2804,6 +2804,41 @@ test('deployment runtime snapshot hashes use the active access-key pepper when e
   );
 });
 
+test('deployment fails closed when the runtime config snapshot authority cannot be read', async () => {
+  const store = await createSeededStore();
+  const originalListEnabledSiteVars = store.listEnabledSiteVars.bind(store);
+  let reads = 0;
+  store.listEnabledSiteVars = async (...args) => {
+    reads += 1;
+    if (reads === 2) throw new Error('snapshot authority unavailable');
+    return originalListEnabledSiteVars(...args);
+  };
+  const uploads = [];
+  const response = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'runtime_snapshot_authority_unavailable',
+    }),
+    testEnv(store, createSnapshotStore(), {
+      WFP_PROVIDER: {
+        upload: async () => {
+          uploads.push('upload');
+          return { artifactRef: 'wfp://unexpected' };
+        },
+        verify: async () => ({ ok: true }),
+      },
+    })
+  );
+
+  assert.equal(response.status, 503, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.error.code, 'RUNTIME_CONFIG_UNSUPPORTED');
+  assert.equal(body.error.action, 'Check runtime configuration and retry with a new Idempotency-Key.');
+  assert.deepEqual(uploads, []);
+  const deployment = await store.getDeployment('dep_1');
+  assert.equal(deployment.status, 'failed');
+  assert.equal(deployment.failureStage, 'runtime_config_snapshot');
+});
+
 test('deployment fails closed when site secrets change before provider upload', async () => {
   const store = await createSeededStore();
   await store.putSiteSecret({

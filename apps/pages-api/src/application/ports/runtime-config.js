@@ -9,9 +9,15 @@ export function createRuntimeConfigMutationPort(store) {
 export function createDeploymentRuntimeConfigResolutionPort(store, { hashInput } = {}) {
   if (typeof hashInput !== 'function') throw new TypeError('runtime config hashInput is required');
   return {
+    ...createDeploymentRuntimeConfigSnapshotPort(store),
+    hashInput,
+  };
+}
+
+export function createDeploymentRuntimeConfigSnapshotPort(store) {
+  return {
     listVars: bindOptional(store, 'listEnabledSiteVars'),
     listSecrets: bindOptional(store, 'listEnabledSiteSecrets'),
-    hashInput,
   };
 }
 
