@@ -1,5 +1,9 @@
+import { readConnectionAuthConfig } from './infrastructure/config/identity-config.js';
+
 const encoder = new globalThis.TextEncoder();
 const decoder = new globalThis.TextDecoder();
+
+export { readConnectionAuthConfig };
 
 const MAX_ASSERTION_LENGTH = 8192;
 const MAX_JWKS_KEYS = 32;
@@ -24,29 +28,6 @@ const defaultJwksCache = new Map();
 
 export function createConnectionJwksCache() {
   return new Map();
-}
-
-export function readConnectionAuthConfig(env) {
-  const audience = typeof env?.CINDY_CONNECTION_AUDIENCE === 'string' ? env.CINDY_CONNECTION_AUDIENCE.trim() : '';
-  const audienceMatch = audience.match(/^([a-z0-9][a-z0-9-]{0,30}):([a-z0-9][a-z0-9-]{0,30})$/);
-  if (!audienceMatch || audience.length > 64) return null;
-
-  const issuers = String(env?.CINDY_CONNECTION_ISSUERS || '')
-    .split(',')
-    .map((value) => value.trim())
-    .filter(Boolean);
-  if (issuers.length === 0) return null;
-  for (const issuer of issuers) {
-    let url;
-    try {
-      url = new URL(issuer);
-    } catch {
-      return null;
-    }
-    if (url.protocol !== 'https:' || url.origin !== issuer) return null;
-  }
-
-  return { audience, orgSlug: audienceMatch[1], issuers };
 }
 
 export function isConnectionAssertionCandidate(token) {

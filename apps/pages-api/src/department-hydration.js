@@ -1,4 +1,5 @@
 import { fetchOrgUsersByEmail } from './org-directory.js';
+import { readOrgDirectoryConfig } from './infrastructure/config/org-directory-config.js';
 
 const DEPARTMENT_HYDRATION_SUCCESS_TTL_SECONDS = 24 * 60 * 60;
 const DEPARTMENT_HYDRATION_FAILURE_RETRY_SECONDS = 10 * 60;
@@ -9,18 +10,15 @@ export async function hydrateUserDepartmentFromDirectory({ env, store, environme
   if (!userId || !email || !environment) return unavailableHydration();
 
   const checkedAt = new Date(readNow(env) * 1000).toISOString();
-  const token = typeof env.XDS_OPENAI_TOKEN === 'string' ? env.XDS_OPENAI_TOKEN.trim() : '';
-  if (!token) return recordUnavailableDepartmentCheck({ store, userId, checkedAt });
-
-  const xdsFetch = resolveXdsFetch(env);
-  if (!xdsFetch) return recordUnavailableDepartmentCheck({ store, userId, checkedAt });
+  const directoryConfig = readOrgDirectoryConfig(env);
+  if (!directoryConfig) return recordUnavailableDepartmentCheck({ store, userId, checkedAt });
 
   let directoryUsers;
   try {
     directoryUsers = await fetchOrgUsersByEmail({
       emails: [email],
-      token,
-      fetchImpl: xdsFetch,
+      token: directoryConfig.token,
+      fetchImpl: directoryConfig.fetchImpl,
     });
   } catch {
     return recordUnavailableDepartmentCheck({ store, userId, checkedAt });
@@ -62,14 +60,6 @@ export function shouldHydrateUserDepartment(user, clock = {}) {
     ? DEPARTMENT_HYDRATION_SUCCESS_TTL_SECONDS
     : DEPARTMENT_HYDRATION_FAILURE_RETRY_SECONDS;
   return now - checkedAtSeconds >= ttlSeconds;
-}
-
-function resolveXdsFetch(env) {
-  if (typeof env.XDS_FETCH === 'function') return env.XDS_FETCH;
-  if (env?.XD_OFFICE_NET && typeof env.XD_OFFICE_NET.fetch === 'function') {
-    return env.XD_OFFICE_NET.fetch.bind(env.XD_OFFICE_NET);
-  }
-  return null;
 }
 
 function normalizeRequiredString(value) {

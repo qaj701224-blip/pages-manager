@@ -89,16 +89,16 @@ node --test tests/project-policy.test.js
 
 - Add: `apps/pages-api/src/transport/router.js`
 - Add: `apps/pages-api/src/transport/router.test.js`
-- Add: `apps/pages-api/src/transport/shared/http.js`
 - Add: `apps/pages-api/src/transport/shared/request-context.js`
+- Add: `apps/pages-api/src/transport/scheduled.js`
 - Modify: `apps/pages-api/src/index.js`
 
 **Steps**
 
-- [ ] 用现有 `index.test.js` route matrix 锁定 host/path/method、HTTPS、legacy token、health/docs/internal/console/public 分发顺序。
-- [ ] 将路由判定和 store-unavailable 映射机械移动到 router/request context。
-- [ ] 保留旧 handler 签名，由 adapter 调用；不移动领域逻辑。
-- [ ] `index.js` 只创建 runtime 并转发 `fetch`/`scheduled`，继续 export `RoutePointerDO`。
+- [x] 用现有 `index.test.js` route matrix 锁定 host/path/method、HTTPS、legacy token、health/docs/internal/console/public 分发顺序。
+- [x] 将路由判定和 store-unavailable 映射机械移动到 router/request context。
+- [x] 保留旧 handler 签名，由 adapter 调用；不移动领域逻辑。
+- [x] `index.js` 只创建 runtime 并转发 `fetch`/`scheduled`，继续 export `RoutePointerDO`。
 
 **Verify**
 
@@ -117,10 +117,10 @@ node --test apps/pages-api/src/index.test.js apps/pages-api/src/transport/router
 
 **Steps**
 
-- [ ] 按 API、WFP/provider、identity、runtime config、org directory、legacy、webhook/alert 拆最小只读值对象。
-- [ ] required base config 继续 fail closed 为 `API_ENV_INVALID`。
-- [ ] optional capability 仅在使用对应 use case 时产生原有错误，不扩大启动失败面。
-- [ ] 旧 `config.js` 暂作 re-export facade，并为删除条件加 architecture test。
+- [x] 按 API、WFP/provider、identity、runtime config、org directory、legacy、webhook/alert 拆最小只读值对象。
+- [x] required base config 继续 fail closed 为 `API_ENV_INVALID`。
+- [x] optional capability 仅在使用对应 use case 时产生原有错误，不扩大启动失败面。
+- [x] 旧 `config.js` 暂作 re-export facade，最终阶段以 production caller 搜索为删除条件。
 
 **Verify**
 

@@ -1,4 +1,5 @@
 import { hashAccessKey } from './crypto.js';
+import { readRuntimeConfigHashPepper } from './infrastructure/config/runtime-config.js';
 
 export async function runtimeConfigHashInput(env, vars = {}, secrets = []) {
   return {
@@ -34,33 +35,6 @@ async function runtimeVarValueHash(env, name, value) {
 
 async function runtimeSecretValueHash(env, name, value) {
   return hashAccessKey(`xd-pages-runtime-secret-v1\0${name}\0${value}`, readRuntimeConfigHashPepper(env));
-}
-
-function readRuntimeConfigHashPepper(env) {
-  const explicit = env.RUNTIME_CONFIG_HASH_PEPPER;
-  if (typeof explicit === 'string' && explicit) return explicit;
-  const activePepperId = String(env.ACCESS_KEY_ACTIVE_PEPPER_ID || '').trim();
-  if (activePepperId) {
-    const registry = String(env.ACCESS_KEY_PEPPERS || '').trim();
-    for (const entry of registry.split(',')) {
-      const [pepperId, secretEnvName] = entry.split(':').map((part) => part.trim());
-      if (pepperId !== activePepperId || !secretEnvName) continue;
-      const value = env[secretEnvName];
-      if (typeof value === 'string' && value) return value;
-    }
-  }
-  const requestHashPepper = env.REQUEST_HASH_PEPPER;
-  if (typeof requestHashPepper === 'string' && requestHashPepper) return requestHashPepper;
-  if (!activePepperId) {
-    const registry = String(env.ACCESS_KEY_PEPPERS || '').trim();
-    for (const entry of registry.split(',')) {
-      const [, secretEnvName] = entry.split(':').map((part) => part.trim());
-      if (!secretEnvName) continue;
-      const value = env[secretEnvName];
-      if (typeof value === 'string' && value) return value;
-    }
-  }
-  throw new Error('RUNTIME_CONFIG_HASH_PEPPER_REQUIRED');
 }
 
 export async function assertRuntimeConfigSnapshotUnchanged(store, environment, siteId, expectedVars, expectedSecrets) {

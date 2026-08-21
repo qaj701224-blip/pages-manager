@@ -6,6 +6,7 @@ import {
 } from '@xd/pages-access-policy';
 
 import { departmentTeamDisplayName, deriveDepartmentTeamIdentity, normalizeDepartmentPath } from './department-path.js';
+import { readSiteSecretStoreConfig } from './infrastructure/config/runtime-config.js';
 import { MAX_RUNTIME_VARS, runtimeVarObjectsEqual, runtimeVarsObject, validateRuntimeBindingQuotas } from './runtime-config.js';
 import { markRuntimeConfigError } from './runtime-config-diagnostics.js';
 
@@ -21,9 +22,7 @@ const ADMIN_EXPOSURE_TERMINAL_FAILURE_STAGES = new Set(['failed', 'compensated_f
 export function createPagesStore(env = {}) {
   if (env.PAGES_STORE) return env.PAGES_STORE;
   if (!env.PAGES_METADATA) throw new Error('PAGES_METADATA binding is required');
-  return new D1PagesStore(env.PAGES_METADATA, {
-    secretEncryptionKey: env.SITE_SECRET_ENCRYPTION_KEY || env.PAGES_SECRET_ENCRYPTION_KEY,
-  });
+  return new D1PagesStore(env.PAGES_METADATA, readSiteSecretStoreConfig(env));
 }
 
 
