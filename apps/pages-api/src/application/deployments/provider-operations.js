@@ -1,7 +1,9 @@
-export function createDeploymentProviderOperations({ providers, uploadTelemetry }) {
+export function createDeploymentProviderOperations({ providers, uploadTelemetry, verifyTelemetry }) {
   if (typeof providers?.create !== 'function') throw new TypeError('providers.create is required');
   if (typeof uploadTelemetry?.start !== 'function') throw new TypeError('uploadTelemetry.start is required');
   if (typeof uploadTelemetry?.finish !== 'function') throw new TypeError('uploadTelemetry.finish is required');
+  if (typeof verifyTelemetry?.start !== 'function') throw new TypeError('verifyTelemetry.start is required');
+  if (typeof verifyTelemetry?.finish !== 'function') throw new TypeError('verifyTelemetry.finish is required');
 
   return { prepare, upload, verify };
 
@@ -39,12 +41,29 @@ export function createDeploymentProviderOperations({ providers, uploadTelemetry 
     }
   }
 
-  async function verify(command) {
+  function verify(command) {
+    const stage = verifyTelemetry.start();
+    return verifyAfterStart(command, stage);
+  }
+
+  async function verifyAfterStart(command, stage) {
     const { provider, ...input } = command;
+    let result;
     try {
       await provider.verify(input);
-      return { ok: true };
+      result = { ok: true };
     } catch (cause) {
+      result = failed('DEPLOYMENT_PROVIDER_VERIFY_FAILED', cause);
+    }
+    if (!result.ok) {
+      await verifyTelemetry.finish(stage, { status: 'failed', cause: result.error.cause });
+      return result;
+    }
+    try {
+      await verifyTelemetry.finish(stage, { status: 'succeeded' });
+      return result;
+    } catch (cause) {
+      await verifyTelemetry.finish(stage, { status: 'failed', cause });
       return failed('DEPLOYMENT_PROVIDER_VERIFY_FAILED', cause);
     }
   }

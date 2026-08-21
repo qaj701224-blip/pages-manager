@@ -4,6 +4,7 @@ import test from 'node:test';
 import { createDeploymentProviderOperations } from './provider-operations.js';
 
 const uploadTelemetry = { start: () => null, finish: async () => null };
+const verifyTelemetry = { start: () => null, finish: async () => null };
 
 test('deployment Provider operations prepare a provider through the narrow factory port', () => {
   const calls = [];
@@ -16,6 +17,7 @@ test('deployment Provider operations prepare a provider through the narrow facto
       },
     },
     uploadTelemetry,
+    verifyTelemetry,
   });
   const site = { id: 'site_1' };
 
@@ -32,6 +34,7 @@ test('deployment Provider operations map configuration failures without throwing
       },
     },
     uploadTelemetry,
+    verifyTelemetry,
   });
 
   assert.deepEqual(application.prepare({ site: { id: 'site_1' } }), {
@@ -43,7 +46,7 @@ test('deployment Provider operations map configuration failures without throwing
 test('deployment Provider operations forward upload input and return its artifact result', async () => {
   const inputs = [];
   const uploaded = { artifactRef: 'wfp://artifact', workerName: 'pages-v2-guide-ver-1' };
-  const application = createDeploymentProviderOperations({ providers: { create() {} }, uploadTelemetry });
+  const application = createDeploymentProviderOperations({ providers: { create() {} }, uploadTelemetry, verifyTelemetry });
   const provider = {
     async upload(input) {
       inputs.push(input);
@@ -71,7 +74,7 @@ test('deployment Provider operations forward upload input and return its artifac
 test('deployment Provider operations preserve upload and verify causes in typed failures', async () => {
   const uploadCause = Object.assign(new Error('upload failed'), { operation: 'worker_put' });
   const verifyCause = new Error('verify failed');
-  const application = createDeploymentProviderOperations({ providers: { create() {} }, uploadTelemetry });
+  const application = createDeploymentProviderOperations({ providers: { create() {} }, uploadTelemetry, verifyTelemetry });
 
   assert.deepEqual(
     await application.upload({
@@ -105,7 +108,7 @@ test('deployment Provider operations preserve upload and verify causes in typed 
 
 test('deployment Provider operations require their factory capability', () => {
   assert.throws(
-    () => createDeploymentProviderOperations({ providers: {}, uploadTelemetry }),
+    () => createDeploymentProviderOperations({ providers: {}, uploadTelemetry, verifyTelemetry }),
     /providers\.create is required/
   );
 });
@@ -125,6 +128,7 @@ test('deployment Provider upload traces success and failure around the provider 
           calls.push(['finish', receivedStage, outcome]);
         },
       },
+      verifyTelemetry,
     });
 
   const uploaded = { operation: 'worker_put' };
@@ -163,6 +167,7 @@ test('deployment Provider upload converts success finish errors using failure pr
         if (outcome.status === 'succeeded') throw finishError;
       },
     },
+    verifyTelemetry,
   });
 
   assert.deepEqual(await application.upload({ provider: { upload: async () => ({}) } }), {
@@ -185,10 +190,69 @@ test('deployment Provider upload starts telemetry synchronously', () => {
       },
       finish: async () => assert.fail('finish must not run'),
     },
+    verifyTelemetry,
   });
 
   assert.throws(
     () => application.upload({ provider: { upload: async () => assert.fail('upload must not run') } }),
     (error) => error === startError
   );
+});
+
+test('deployment Provider verify traces success and failure around the provider call', async () => {
+  const calls = [];
+  const stage = { operation: 'provider_verify' };
+  const createApplication = () =>
+    createDeploymentProviderOperations({
+      providers: { create() {} },
+      uploadTelemetry,
+      verifyTelemetry: {
+        start() {
+          calls.push(['start']);
+          return stage;
+        },
+        async finish(receivedStage, outcome) {
+          calls.push(['finish', receivedStage, outcome]);
+        },
+      },
+    });
+
+  assert.deepEqual(
+    await createApplication().verify({ provider: { verify: async () => calls.push(['verify']) } }),
+    { ok: true }
+  );
+  assert.deepEqual(calls.splice(0), [
+    ['start'],
+    ['verify'],
+    ['finish', stage, { status: 'succeeded' }],
+  ]);
+
+  const cause = new Error('verify failed');
+  assert.deepEqual(
+    await createApplication().verify({ provider: { verify: async () => Promise.reject(cause) } }),
+    { ok: false, error: { code: 'DEPLOYMENT_PROVIDER_VERIFY_FAILED', cause } }
+  );
+  assert.deepEqual(calls, [
+    ['start'],
+    ['finish', stage, { status: 'failed', cause }],
+  ]);
+});
+
+test('deployment Provider verify converts success finish errors using failure precedence', async () => {
+  const finishError = new Error('trace finish failed');
+  const application = createDeploymentProviderOperations({
+    providers: { create() {} },
+    uploadTelemetry,
+    verifyTelemetry: {
+      start: () => null,
+      async finish(_stage, outcome) {
+        if (outcome.status === 'succeeded') throw finishError;
+      },
+    },
+  });
+
+  assert.deepEqual(await application.verify({ provider: { verify: async () => null } }), {
+    ok: false,
+    error: { code: 'DEPLOYMENT_PROVIDER_VERIFY_FAILED', cause: finishError },
+  });
 });

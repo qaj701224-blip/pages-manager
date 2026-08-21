@@ -641,12 +641,6 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
     );
     return deploymentStateWriteFailed();
   }
-  const providerVerifyStage = trace
-    ? startDeploymentStage(trace, {
-        stage: 'provider_verify',
-        operation: 'provider_verify',
-      })
-    : null;
   const providerVerifyResult = await providerApplication.verify({
     provider,
     site,
@@ -655,30 +649,11 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
     artifactRef: uploaded.artifactRef,
     ...uploaded,
   });
-  let providerVerifyFailed = !providerVerifyResult.ok;
-  let providerVerifyError = providerVerifyResult.error?.cause;
-  if (!providerVerifyFailed) {
-    try {
-      if (providerVerifyStage) await finishDeploymentStage(providerVerifyStage, { status: 'succeeded' });
-    } catch (error) {
-      providerVerifyFailed = true;
-      providerVerifyError = error;
-    }
-  }
-  if (providerVerifyFailed) {
-    const error = providerVerifyError;
+  if (!providerVerifyResult.ok) {
+    const error = providerVerifyResult.error?.cause;
     const code = publicProviderErrorCode(null, 'verify');
     const executionProvider = uploaded.executionProvider || provider.executionProvider || 'wfp';
     const disposition = providerFailureDisposition(error, 'verify');
-    if (providerVerifyStage) {
-      await finishDeploymentStage(providerVerifyStage, {
-        status: 'failed',
-        error,
-        errorCode: code,
-        errorMessage: 'Deployment verification failed.',
-        diagnostics: { causeClass: 'provider_verify_error' },
-      });
-    }
     await cleanupUploadedWorkerAndRecord(trace, provider, uploaded, {
       originalFailure: { stage: 'provider_verify', code },
       trafficImpact: 'old_version_retained',
@@ -3011,6 +2986,29 @@ function createDeploymentProviderApplication({ env, config, store, trace = null 
                     errorMessage: 'Deployment upload failed.',
                     diagnostics: { causeClass: 'provider_upload_error' },
                   }),
+            })
+          : undefined,
+    },
+    verifyTelemetry: {
+      start: () =>
+        trace
+          ? startDeploymentStage(trace, {
+              stage: 'provider_verify',
+              operation: 'provider_verify',
+            })
+          : null,
+      finish: (stage, outcome) =>
+        stage
+          ? finishDeploymentStage(stage, {
+              status: outcome.status,
+              ...(outcome.status === 'failed'
+                ? {
+                    error: outcome.cause,
+                    errorCode: publicProviderErrorCode(null, 'verify'),
+                    errorMessage: 'Deployment verification failed.',
+                    diagnostics: { causeClass: 'provider_verify_error' },
+                  }
+                : {}),
             })
           : undefined,
     },
