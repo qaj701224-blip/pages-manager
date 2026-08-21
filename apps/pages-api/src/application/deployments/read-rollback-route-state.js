@@ -1,14 +1,24 @@
-export function createRollbackRouteStateRead({ routes }) {
+export function createRollbackRouteStateRead({ routes, telemetry }) {
   if (typeof routes?.getBySiteId !== 'function') throw new TypeError('routes.getBySiteId is required');
+  if (typeof telemetry?.failed !== 'function') throw new TypeError('telemetry.failed is required');
 
   return { read };
 
   async function read(command) {
-    let route;
+    let result;
     try {
-      route = await routes.getBySiteId(command.siteId, command.environment);
+      const route = await routes.getBySiteId(command.siteId, command.environment);
+      result = route
+        ? { ok: true, route }
+        : {
+            ok: false,
+            error: {
+              code: 'ROUTE_ACTIVATION_CONFLICT',
+              reason: 'route_missing',
+            },
+          };
     } catch (cause) {
-      return {
+      result = {
         ok: false,
         error: {
           code: 'ROLLBACK_ACTIVATION_FAILED',
@@ -17,14 +27,7 @@ export function createRollbackRouteStateRead({ routes }) {
         },
       };
     }
-    return route
-      ? { ok: true, route }
-      : {
-          ok: false,
-          error: {
-            code: 'ROUTE_ACTIVATION_CONFLICT',
-            reason: 'route_missing',
-          },
-        };
+    if (!result.ok) await telemetry.failed(result.error);
+    return result;
   }
 }

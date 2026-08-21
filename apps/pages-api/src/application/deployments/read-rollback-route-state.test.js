@@ -4,6 +4,7 @@ import test from 'node:test';
 import { createRollbackRouteStateRead } from './read-rollback-route-state.js';
 
 const command = { siteId: 'site_1', environment: 'production' };
+const telemetry = { failed: async () => null };
 
 test('rollback route state read returns the authoritative route through its narrow capability', async () => {
   const route = { id: 'route_1', activeVersionId: 'ver_2' };
@@ -15,6 +16,7 @@ test('rollback route state read returns the authoritative route through its narr
         return route;
       },
     },
+    telemetry,
   });
 
   assert.deepEqual(await application.read(command), { ok: true, route });
@@ -22,7 +24,7 @@ test('rollback route state read returns the authoritative route through its narr
 });
 
 test('rollback route state read distinguishes a missing route from a store failure', async () => {
-  const missing = createRollbackRouteStateRead({ routes: { getBySiteId: async () => null } });
+  const missing = createRollbackRouteStateRead({ routes: { getBySiteId: async () => null }, telemetry });
   assert.deepEqual(await missing.read(command), {
     ok: false,
     error: {
@@ -38,6 +40,7 @@ test('rollback route state read distinguishes a missing route from a store failu
         throw cause;
       },
     },
+    telemetry,
   });
   assert.deepEqual(await failed.read(command), {
     ok: false,
@@ -49,6 +52,43 @@ test('rollback route state read distinguishes a missing route from a store failu
   });
 });
 
-test('rollback route state read requires its route capability', () => {
-  assert.throws(() => createRollbackRouteStateRead({ routes: {} }), /routes\.getBySiteId is required/);
+test('rollback route state read requires its route and telemetry capabilities', () => {
+  assert.throws(() => createRollbackRouteStateRead({ routes: {}, telemetry }), /routes\.getBySiteId is required/);
+  assert.throws(
+    () => createRollbackRouteStateRead({ routes: { getBySiteId: async () => null }, telemetry: {} }),
+    /telemetry\.failed is required/
+  );
+});
+
+test('rollback route state read records typed failures after the authoritative read', async () => {
+  const calls = [];
+  const tracedTelemetry = {
+    async failed(error) {
+      calls.push(['failed', error]);
+    },
+  };
+  const missing = createRollbackRouteStateRead({
+    routes: {
+      async getBySiteId() {
+        calls.push(['read']);
+        return null;
+      },
+    },
+    telemetry: tracedTelemetry,
+  });
+  const missingResult = await missing.read(command);
+  assert.deepEqual(calls.splice(0), [['read'], ['failed', missingResult.error]]);
+
+  const cause = new Error('route store unavailable');
+  const failed = createRollbackRouteStateRead({
+    routes: {
+      async getBySiteId() {
+        calls.push(['read']);
+        throw cause;
+      },
+    },
+    telemetry: tracedTelemetry,
+  });
+  const failedResult = await failed.read(command);
+  assert.deepEqual(calls, [['read'], ['failed', failedResult.error]]);
 });

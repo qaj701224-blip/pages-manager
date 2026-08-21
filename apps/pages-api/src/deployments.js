@@ -1475,19 +1475,11 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
   }
   const rollbackLease = rollbackLeaseResult.lease;
   const rollbackRouteBeforeActivation = currentRoute;
-  const rollbackRouteState = await createRollbackRouteStateReadApplication(store).read({
+  const rollbackRouteState = await createRollbackRouteStateReadApplication(store, trace).read({
     siteId: site.id,
     environment: config.environment,
   });
   if (!rollbackRouteState.ok && rollbackRouteState.error.reason === 'route_read_failed') {
-    await recordDeploymentStage(trace, {
-      stage: 'route_activate',
-      operation: 'rollback_route_state_read',
-      status: 'failed',
-      errorCode: 'ROLLBACK_ACTIVATION_FAILED',
-      errorMessage: 'Rollback route state could not be read.',
-      diagnostics: { causeClass: 'rollback_route_state_read_error' },
-    });
     await releaseSiteCommitLeaseBestEffort(rollbackLease);
     await finalizeFailedRollback(
       rollbackActivationFailurePatch(version, currentRoute, {
@@ -1505,14 +1497,6 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
     );
   }
   if (!rollbackRouteState.ok) {
-    await recordDeploymentStage(trace, {
-      stage: 'route_activate',
-      operation: 'rollback_route_activate',
-      status: 'failed',
-      errorCode: 'ROUTE_ACTIVATION_CONFLICT',
-      errorMessage: 'Route changed while rollback was activating.',
-      diagnostics: { causeClass: 'route_activation_conflict' },
-    });
     await releaseSiteCommitLeaseBestEffort(rollbackLease);
     await finalizeFailedRollback(
       rollbackActivationFailurePatch(version, currentRoute, {
@@ -3143,9 +3127,27 @@ function createRollbackLeaseAcquisitionApplication(store, env, trace) {
   });
 }
 
-function createRollbackRouteStateReadApplication(store) {
+function createRollbackRouteStateReadApplication(store, trace = null) {
   return createRollbackRouteStateRead({
     routes: createRollbackRouteStatePort(store),
+    telemetry: {
+      failed: (error) => {
+        if (!trace) return undefined;
+        const routeReadFailed = error.reason === 'route_read_failed';
+        return recordDeploymentStage(trace, {
+          stage: 'route_activate',
+          operation: routeReadFailed ? 'rollback_route_state_read' : 'rollback_route_activate',
+          status: 'failed',
+          errorCode: routeReadFailed ? 'ROLLBACK_ACTIVATION_FAILED' : 'ROUTE_ACTIVATION_CONFLICT',
+          errorMessage: routeReadFailed
+            ? 'Rollback route state could not be read.'
+            : 'Route changed while rollback was activating.',
+          diagnostics: {
+            causeClass: routeReadFailed ? 'rollback_route_state_read_error' : 'route_activation_conflict',
+          },
+        });
+      },
+    },
   });
 }
 
