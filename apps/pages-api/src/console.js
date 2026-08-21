@@ -8,15 +8,16 @@ import { departmentTeamDisplayName } from './department-path.js';
 import { isSiteVisibility, teamOwnerSupportsVisibility } from './domain/sites/access-policy.js';
 import { viewerCanAdminSite, viewerCanPublishSite } from './domain/sites/authorization.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
+import { nextId } from './id.js';
 import { MAX_SITE_SECRET_VALUE_BYTES, normalizeRuntimeSecretName, normalizeRuntimeVars } from './runtime-config.js';
 import { logRuntimeConfigFailure, readRuntimeConfigErrorDiagnostic } from './runtime-config-diagnostics.js';
+import { buildSiteOwnerTransferAuditEvent } from './application/sites/build-owner-transfer-audit-event.js';
 import {
-  normalizeSlug,
-  normalizeAclEntries,
+  normalizeSiteAclInput,
+  normalizeSiteSlug,
   rejectUserExposureMutation,
-  buildSiteOwnerTransferAuditEvent,
-  validateSlug,
-} from './sites.js';
+  validateSiteSlugInput,
+} from './transport/shared/site-input.js';
 import {
   createRuntimeConfigApplication,
   runtimeConfigSyncErrorResponse,
@@ -174,10 +175,10 @@ async function createConsoleSite(request, env, config, store, session) {
   const exposureError = rejectUserExposureMutation(body);
   if (exposureError) return exposureError;
 
-  const slug = normalizeSlug(body.slug);
+  const slug = normalizeSiteSlug(body.slug);
   const visibility = body.visibility || 'org';
   const ownerType = body.ownerType === 'team' ? 'team' : 'user';
-  const slugError = validateSlug(slug, config.environment);
+  const slugError = validateSiteSlugInput(slug, config.environment);
   if (slugError) return slugError;
   if (!isSiteVisibility(visibility)) {
     return jsonError(
@@ -305,14 +306,15 @@ async function updateConsoleSiteSettings(request, env, config, store, session, s
       site,
       target,
       buildAuditEvent: (updatedAt) =>
-        buildSiteOwnerTransferAuditEvent(
-          env,
-          config,
-          { type: 'user', userId: session.userId },
+        buildSiteOwnerTransferAuditEvent({
+          id: nextId(env, 'aud'),
+          environment: config.environment,
+          actor: { type: 'user', userId: session.userId },
           site,
           target,
-          { source: 'console', createdAt: updatedAt }
-        ),
+          source: 'console',
+          createdAt: updatedAt,
+        }),
       compensateSnapshotFailure: true,
     });
     updated = result.site;
@@ -438,7 +440,7 @@ export async function updateSiteAccess(request, env, config, store, session, sit
     );
   }
   if (!teamOwnerSupportsVisibility(site, visibility)) return teamOwnerVisibilityUnsupported();
-  const aclEntries = 'aclEntries' in body ? normalizeAclEntries(body.aclEntries, env) : previousAclEntries;
+  const aclEntries = 'aclEntries' in body ? normalizeSiteAclInput(body.aclEntries, env) : previousAclEntries;
   if (aclEntries instanceof Response) return aclEntries;
 
   const mutation = await mutateUserSiteAccessPolicy({

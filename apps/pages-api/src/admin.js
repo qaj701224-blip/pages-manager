@@ -15,12 +15,10 @@ import {
 import { jsonError, jsonOk, readJsonBody } from './http.js';
 import { newId, nextId } from './id.js';
 import { handleConsoleAdminWebhooksApi } from './webhooks.js';
-import {
-  buildSiteOwnerTransferAuditEvent,
-  restoreSiteVisibilityAfterSnapshotFailure,
-} from './sites.js';
+import { buildSiteOwnerTransferAuditEvent } from './application/sites/build-owner-transfer-audit-event.js';
 import {
   refreshCurrentRouteSnapshot,
+  restoreSiteVisibilityAfterSnapshotFailure,
 } from './transport/shared/site-route-snapshots.js';
 import {
   createSiteOwnershipApplication,
@@ -2038,14 +2036,15 @@ async function updateAdminSiteSettings(request, env, config, store, session, sit
       site,
       target: { ...target, ownerUserId: target.ownerUserId || session.userId },
       buildAuditEvent: (updatedAt) =>
-        buildSiteOwnerTransferAuditEvent(
-          env,
-          config,
-          { type: 'user', userId: session.userId },
+        buildSiteOwnerTransferAuditEvent({
+          id: nextId(env, 'aud'),
+          environment: config.environment,
+          actor: { type: 'user', userId: session.userId },
           site,
           target,
-          { source: 'console-admin', createdAt: updatedAt }
-        ),
+          source: 'console-admin',
+          createdAt: updatedAt,
+        }),
       compensateSnapshotFailure: true,
     });
     updated = result.site;

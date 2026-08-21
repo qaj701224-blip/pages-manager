@@ -19,6 +19,28 @@ export function createRuntimeConfigApplication({ store, env, config }) {
   });
 }
 
+export async function syncActiveWfpSecret(store, env, config, site, input) {
+  try {
+    return await createActiveRuntimeConfigSync({ store, env, config }).syncSecret({
+      site,
+      mutation: input,
+    });
+  } catch (error) {
+    return runtimeConfigSyncErrorResponse(error, { env, config, site, kind: 'secret' });
+  }
+}
+
+export async function syncActiveWfpPlainTextBindings(store, env, config, site, snapshot) {
+  try {
+    return await createActiveRuntimeConfigSync({ store, env, config }).syncPlainText({
+      site,
+      snapshot,
+    });
+  } catch (error) {
+    return runtimeConfigSyncErrorResponse(error, { env, config, site, kind: 'var' });
+  }
+}
+
 export function runtimeConfigSyncErrorResponse(error, { env, config, site, kind }) {
   if (error?.code === 'RUNTIME_CONFIG_CHANGED' && error?.reason === 'runtime_config_changed') {
     const message =
@@ -67,4 +89,12 @@ export function runtimeConfigSyncErrorResponse(error, { env, config, site, kind 
 function readNow(env) {
   if (typeof env?.now === 'function') return env.now();
   return new Date().toISOString();
+}
+
+function createActiveRuntimeConfigSync({ store, env, config }) {
+  return createRuntimeConfigSync({
+    store,
+    environment: config.environment,
+    createProvider: () => createWfpDeploymentProvider(env, config),
+  });
 }

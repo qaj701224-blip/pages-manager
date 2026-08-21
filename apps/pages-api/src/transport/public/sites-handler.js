@@ -1,52 +1,40 @@
-import { validateSiteSlug } from '@xd/pages-runtime-protocol';
-
-import { authenticateApiRequest } from './auth.js';
+import { buildSiteOwnerTransferAuditEvent } from '../../application/sites/build-owner-transfer-audit-event.js';
+import { authenticateApiRequest } from '../../auth.js';
 import {
   isSiteVisibility,
   mergeSiteAclEntries,
-  normalizeSiteAclEntries,
   removeSiteAclEntries,
   teamOwnerSupportsVisibility,
-} from './domain/sites/access-policy.js';
+} from '../../domain/sites/access-policy.js';
 import {
   actorCanManageSite,
   actorCanReadSitesApi,
   actorHasPublishScope,
-} from './domain/sites/authorization.js';
-import { jsonError, jsonOk, readJsonBody } from './http.js';
-import { nextId } from './id.js';
-import {
-  MAX_SITE_SECRET_VALUE_BYTES,
-  normalizeRuntimeSecretName,
-  normalizeRuntimeVars,
-} from './runtime-config.js';
-import { logRuntimeConfigFailure, readRuntimeConfigErrorDiagnostic } from './runtime-config-diagnostics.js';
-import { createRuntimeConfigSync } from './infrastructure/providers/runtime-config-sync.js';
-import { createDeploymentProvider as createWfpDeploymentProvider } from './wfp-provider.js';
-import { emitSiteDisabledWebhook } from './lifecycle-webhooks.js';
-import {
-  createRuntimeConfigApplication,
-  runtimeConfigSyncErrorResponse,
-} from './transport/shared/runtime-config-application.js';
-import { mutateUserSiteAccessPolicy, siteAclErrorResponse } from './transport/shared/site-policy-application.js';
+} from '../../domain/sites/authorization.js';
+import { jsonError, jsonOk, readJsonBody } from '../../http.js';
+import { nextId } from '../../id.js';
+import { emitSiteDisabledWebhook } from '../../lifecycle-webhooks.js';
+import { createSiteCreationApplication, siteCreateErrorResponse } from '../shared/site-creation-application.js';
+import { createSiteLifecycleApplication, siteDeleteErrorResponse } from '../shared/site-lifecycle-application.js';
 import {
   createSiteOwnershipApplication,
   siteTransferErrorResponse,
-} from './transport/shared/site-ownership-application.js';
+} from '../shared/site-ownership-application.js';
+import { mutateUserSiteAccessPolicy } from '../shared/site-policy-application.js';
 import {
-  createSiteLifecycleApplication,
-  siteDeleteErrorResponse,
-} from './transport/shared/site-lifecycle-application.js';
+  normalizeSiteAclInput,
+  normalizeSiteSlug,
+  rejectUserExposureMutation,
+  validateSiteSlugInput,
+} from '../shared/site-input.js';
 import {
-  createSiteCreationApplication,
-  siteCreateErrorResponse,
-} from './transport/shared/site-creation-application.js';
+  deleteSiteSecret,
+  deleteSiteVar,
+  putSiteSecret,
+  putSiteVar,
+} from './site-runtime-config-handler.js';
 
-export { actorCanManageSite };
-
-const MAX_RUNTIME_VAR_BODY_BYTES = 64 * 1024;
 const VISIBILITY_ACTION = '请使用 internal、org、acl、owner 或 disabled。';
-const RESERVED_SITE_SLUG_ACTION = '该站点名是 XD Cell 平台保留项，请换一个业务站点名。';
 
 export async function handleSitesApi(request, env, config, store, ctx) {
   const auth = await authenticateApiRequest(request, env, store, config, readNow(env));
@@ -101,302 +89,6 @@ export async function handleSitesApi(request, env, config, store, ctx) {
 
   return null;
 }
-
-async function putSiteVar(request, env, config, store, actor, siteSlug) {
-  const site = await getRuntimeManageableSiteBySlug(store, actor, siteSlug, config.environment);
-  if (site instanceof Response) return site;
-  if (typeof store.mutateSiteVar !== 'function') {
-    logRuntimeConfigFailure(env, {
-      operation: 'var_put',
-      environment: config.environment,
-      siteId: site.id,
-      stage: 'capability_check',
-      reason: 'capability_unavailable',
-      errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
-    });
-    return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime config store is unavailable.', 503, 'Retry later.');
-  }
-
-  let body;
-  try {
-    body = await readJsonBody(request, { maxBytes: MAX_RUNTIME_VAR_BODY_BYTES });
-  } catch {
-    return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
-  }
-  if (!hasExactKeys(body, ['name', 'value'])) return runtimeVarInvalid();
-  const name = typeof body.name === 'string' ? body.name.trim() : '';
-  let normalized;
-  try {
-    normalized = normalizeRuntimeVars({ [name]: body.value });
-  } catch (error) {
-    return runtimeVarValidationError(error);
-  }
-
-  let mutation;
-  let syncResult;
-  try {
-    const result = await createRuntimeConfigApplication({ store, env, config }).mutateVar({
-      environment: config.environment,
-      site,
-      actor,
-      operation: 'put',
-      name,
-      value: normalized[name],
-    });
-    mutation = result.mutation;
-    syncResult = result.syncResult;
-  } catch (error) {
-    const syncResponse = runtimeConfigSyncErrorResponse(error, { env, config, site, kind: 'var' });
-    if (syncResponse) return syncResponse;
-    const response = runtimeVarMutationError(error);
-    if (response.status >= 500) {
-      const diagnostic = readRuntimeConfigErrorDiagnostic(error, {
-        stage: 'unknown',
-        reason: 'store_operation_failed',
-      });
-      logRuntimeConfigFailure(env, {
-        operation: 'var_put',
-        environment: config.environment,
-        siteId: site.id,
-        ...diagnostic,
-        errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
-      });
-    }
-    return response;
-  }
-  return jsonOk({
-    var: formatVar(site.slug, mutation.record, { deleted: false, appliesTo: syncResult.appliesTo }),
-  });
-}
-
-async function deleteSiteVar(request, env, config, store, actor, siteSlug) {
-  const site = await getRuntimeManageableSiteBySlug(store, actor, siteSlug, config.environment);
-  if (site instanceof Response) return site;
-  if (typeof store.mutateSiteVar !== 'function') {
-    logRuntimeConfigFailure(env, {
-      operation: 'var_delete',
-      environment: config.environment,
-      siteId: site.id,
-      stage: 'capability_check',
-      reason: 'capability_unavailable',
-      errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
-    });
-    return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime config store is unavailable.', 503, 'Retry later.');
-  }
-
-  let body;
-  try {
-    body = await readJsonBody(request, { maxBytes: 32 * 1024 });
-  } catch {
-    return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
-  }
-  if (!hasExactKeys(body, ['name'])) return runtimeVarInvalid();
-  const name = typeof body.name === 'string' ? body.name.trim() : '';
-  try {
-    normalizeRuntimeVars({ [name]: '' });
-  } catch (error) {
-    return runtimeVarValidationError(error);
-  }
-
-  let mutation;
-  let syncResult;
-  try {
-    const result = await createRuntimeConfigApplication({ store, env, config }).mutateVar({
-      environment: config.environment,
-      site,
-      actor,
-      operation: 'delete',
-      name,
-    });
-    mutation = result.mutation;
-    syncResult = result.syncResult;
-  } catch (error) {
-    const syncResponse = runtimeConfigSyncErrorResponse(error, { env, config, site, kind: 'var' });
-    if (syncResponse) return syncResponse;
-    const response = runtimeVarMutationError(error);
-    if (response.status >= 500) {
-      const diagnostic = readRuntimeConfigErrorDiagnostic(error, {
-        stage: 'unknown',
-        reason: 'store_operation_failed',
-      });
-      logRuntimeConfigFailure(env, {
-        operation: 'var_delete',
-        environment: config.environment,
-        siteId: site.id,
-        ...diagnostic,
-        errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
-      });
-    }
-    return response;
-  }
-  return jsonOk({
-    var: formatVar(site.slug, mutation.record, { deleted: true, appliesTo: syncResult.appliesTo }),
-  });
-}
-
-async function putSiteSecret(request, env, config, store, actor, siteSlug) {
-  const site = await getRuntimeManageableSiteBySlug(store, actor, siteSlug, config.environment);
-  if (site instanceof Response) return site;
-  if (typeof store.putSiteSecretWithAudit !== 'function') {
-    logRuntimeConfigFailure(env, {
-      operation: 'secret_put',
-      environment: config.environment,
-      siteId: site.id,
-      stage: 'capability_check',
-      reason: 'capability_unavailable',
-      errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
-    });
-    return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime secret store is unavailable.', 503, 'Retry later.');
-  }
-
-  let body;
-  try {
-    body = await readJsonBody(request, { maxBytes: 64 * 1024 });
-  } catch {
-    return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
-  }
-  const name = normalizeSecretNameForResponse(body.name);
-  if (name instanceof Response) return name;
-  if (typeof body.value !== 'string' || body.value.length === 0) {
-    return jsonError('SECRET_VALUE_INVALID', 'Secret value is invalid.', 400, 'Send a non-empty string value.');
-  }
-  if (byteLength(body.value) > MAX_SITE_SECRET_VALUE_BYTES) {
-    return jsonError('SECRET_VALUE_TOO_LARGE', 'Secret value is too large.', 413, 'Use a secret value no larger than 8 KiB.');
-  }
-  try {
-    const { secret } = await createRuntimeConfigApplication({ store, env, config }).putSecret({
-      environment: config.environment,
-      site,
-      actor,
-      name,
-      value: body.value,
-    });
-    return jsonOk({ secret: formatSecret(site.slug, secret, { deleted: false }) });
-  } catch (error) {
-    const syncResponse = runtimeConfigSyncErrorResponse(error, { env, config, site, kind: 'secret' });
-    if (syncResponse) return syncResponse;
-    if (error?.message === 'RUNTIME_BINDING_NAME_CONFLICT') {
-      return jsonError(
-        'RUNTIME_BINDING_NAME_CONFLICT',
-        'Runtime binding names conflict.',
-        400,
-        'Use unique names for vars and site secrets.'
-      );
-    }
-    if (error?.message === 'RUNTIME_BINDINGS_LIMIT_EXCEEDED') {
-      return jsonError(
-        'RUNTIME_BINDINGS_LIMIT_EXCEEDED',
-        'Runtime bindings exceed platform limits.',
-        413,
-        'Reduce vars or site secrets and retry.'
-      );
-    }
-    if (isRuntimeConfigConflict(error)) {
-      return jsonError(
-        'RUNTIME_CONFIG_CHANGED',
-        'Runtime secret changed while it was being updated.',
-        409,
-        'Retry the secret command.'
-      );
-    }
-    const response = jsonError(
-      'RUNTIME_CONFIG_UNSUPPORTED',
-      'Runtime secret store is unavailable.',
-      503,
-      'Check runtime secret store configuration.'
-    );
-    logRuntimeConfigFailure(env, {
-      operation: 'secret_put',
-      environment: config.environment,
-      siteId: site.id,
-      ...readRuntimeConfigErrorDiagnostic(error, { stage: 'unknown', reason: 'store_operation_failed' }),
-      errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
-    });
-    return response;
-  }
-}
-
-async function deleteSiteSecret(request, env, config, store, actor, siteSlug) {
-  const site = await getRuntimeManageableSiteBySlug(store, actor, siteSlug, config.environment);
-  if (site instanceof Response) return site;
-  if (typeof store.deleteSiteSecretWithAudit !== 'function') {
-    logRuntimeConfigFailure(env, {
-      operation: 'secret_delete',
-      environment: config.environment,
-      siteId: site.id,
-      stage: 'capability_check',
-      reason: 'capability_unavailable',
-      errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
-    });
-    return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime secret store is unavailable.', 503, 'Retry later.');
-  }
-
-  let body;
-  try {
-    body = await readJsonBody(request, { maxBytes: 32 * 1024 });
-  } catch {
-    return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
-  }
-  const name = normalizeSecretNameForResponse(body.name);
-  if (name instanceof Response) return name;
-  try {
-    const { secret } = await createRuntimeConfigApplication({ store, env, config }).deleteSecret({
-      environment: config.environment,
-      site,
-      actor,
-      name,
-    });
-    return jsonOk({ secret: formatSecret(site.slug, secret || { name }, { deleted: true }) });
-  } catch (error) {
-    const syncResponse = runtimeConfigSyncErrorResponse(error, { env, config, site, kind: 'secret' });
-    if (syncResponse) return syncResponse;
-    if (isRuntimeConfigConflict(error)) {
-      return jsonError(
-        'RUNTIME_CONFIG_CHANGED',
-        'Runtime secret changed while it was being deleted.',
-        409,
-        'Retry the secret command.'
-      );
-    }
-    const response = jsonError(
-      'RUNTIME_CONFIG_UNSUPPORTED',
-      'Runtime secret store is unavailable.',
-      503,
-      'Check runtime secret store configuration.'
-    );
-    logRuntimeConfigFailure(env, {
-      operation: 'secret_delete',
-      environment: config.environment,
-      siteId: site.id,
-      ...readRuntimeConfigErrorDiagnostic(error, { stage: 'unknown', reason: 'store_operation_failed' }),
-      errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
-    });
-    return response;
-  }
-}
-
-export async function syncActiveWfpSecret(store, env, config, site, input) {
-  try {
-    return await runtimeConfigSync(store, env, config).syncSecret({
-      site,
-      mutation: input,
-    });
-  } catch (error) {
-    return runtimeConfigSyncErrorResponse(error, { env, config, site, kind: 'secret' });
-  }
-}
-
-export async function syncActiveWfpPlainTextBindings(store, env, config, site, snapshot) {
-  try {
-    return await runtimeConfigSync(store, env, config).syncPlainText({
-      site,
-      snapshot,
-    });
-  } catch (error) {
-    return runtimeConfigSyncErrorResponse(error, { env, config, site, kind: 'var' });
-  }
-}
-
 
 async function listSites(store, actor, environment) {
   if (!actorCanReadSitesApi(actor)) {
@@ -513,7 +205,12 @@ async function transferSiteOwner(request, env, config, store, actor, siteId) {
       site,
       target,
       buildAuditEvent: (updatedAt) =>
-        buildSiteOwnerTransferAuditEvent(env, config, actor, site, target, {
+        buildSiteOwnerTransferAuditEvent({
+          id: nextId(env, 'aud'),
+          environment: config.environment,
+          actor,
+          site,
+          target,
           source: 'api',
           createdAt: updatedAt,
         }),
@@ -602,47 +299,6 @@ async function resolveTeamTransferTarget(store, actor, teamId, environment) {
   return { team, role: member.role };
 }
 
-export function buildSiteOwnerTransferAuditEvent(env, config, actor, site, target, { source, createdAt } = {}) {
-  return {
-    id: nextId(env, 'aud'),
-    environment: config.environment,
-    traceId: null,
-    eventType: 'site.owner.transfer',
-    actorUserId: actor.userId || null,
-    actorType: actor.type,
-    siteId: site.id,
-    routeId: site.route?.id || null,
-    versionId: null,
-    decision: 'allow',
-    statusCode: 200,
-    ipHash: null,
-    userAgentHash: null,
-    metadata: {
-      siteSlug: site.slug,
-      fromOwner: {
-        type: site.ownerType || 'user',
-        id: site.ownerId || site.ownerUserId,
-      },
-      toOwner: {
-        type: target.ownerType,
-        id: target.ownerId,
-      },
-      source: source || 'api',
-    },
-    createdAt: createdAt || readNow(env),
-  };
-}
-
-export function rejectUserExposureMutation(body) {
-  if (!body || typeof body !== 'object' || Array.isArray(body) || !Object.hasOwn(body, 'exposure')) return null;
-  return jsonError(
-    'SITE_EXPOSURE_ADMIN_REQUIRED',
-    'Site exposure can only be changed by a platform admin.',
-    403,
-    'Use the Admin Console exposure control.'
-  );
-}
-
 async function listSiteAcl(store, actor, siteId, environment) {
   const site = await store.getSiteForUser(siteId, actor.userId, actor, environment);
   if (!site) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
@@ -673,7 +329,7 @@ async function replaceSiteAcl(request, env, config, store, actor, siteId) {
   const exposureError = rejectUserExposureMutation(body);
   if (exposureError) return exposureError;
 
-  const normalized = normalizeAclEntries(body.entries, env);
+  const normalized = normalizeSiteAclInput(body.entries, env);
   if (normalized instanceof Response) return normalized;
 
   const mutation = await mutateUserSiteAccessPolicy({
@@ -744,10 +400,10 @@ async function createSite(request, env, config, store, actor) {
   const exposureError = rejectUserExposureMutation(body);
   if (exposureError) return exposureError;
 
-  const slug = normalizeSlug(body.slug);
+  const slug = normalizeSiteSlug(body.slug);
   const visibility = body.visibility || 'org';
   const ownerType = body.ownerType === 'team' ? 'team' : 'user';
-  const slugError = validateSlug(slug, config.environment);
+  const slugError = validateSiteSlugInput(slug, config.environment);
   if (slugError) return slugError;
   if (!isSiteVisibility(visibility)) {
     return jsonError('SITE_VISIBILITY_INVALID', 'Site visibility is invalid.', 400, VISIBILITY_ACTION);
@@ -801,20 +457,6 @@ async function resolveTeamPublishOwner(store, userId, teamIdValue, environment) 
   return { ownerId: team.id };
 }
 
-export function validateSlug(slug, environment) {
-  const validation = validateSiteSlug(slug, { environment });
-  if (validation.ok) return null;
-  if (validation.error.code === 'RESERVED_SLUG') {
-    return jsonError('SITE_SLUG_RESERVED', 'Site slug is reserved.', 400, RESERVED_SITE_SLUG_ACTION);
-  }
-  return jsonError(
-    'SITE_SLUG_INVALID',
-    'Site slug is invalid.',
-    400,
-    'Use 2-50 lowercase letters, numbers, and hyphens; the first and last characters must be alphanumeric.'
-  );
-}
-
 function formatSite(site) {
   const route = site.route || null;
   return {
@@ -859,130 +501,6 @@ async function getOwnerSite(store, actor, siteId, environment) {
   return site;
 }
 
-async function getRuntimeManageableSiteBySlug(store, actor, siteSlug, environment) {
-  const slug = normalizeSlug(siteSlug);
-  const slugError = validateSlug(slug, environment);
-  if (slugError) return slugError;
-  const site = await store.findSiteBySlug(environment, slug);
-  if (!site) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site slug.');
-  const visible = await store.getSiteForUser(site.id, actor.userId, actor, environment);
-  if (!visible) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site slug and token scope.');
-  if (!actorCanManageSite(actor, visible)) {
-    return jsonError(
-      'DEPLOY_FORBIDDEN',
-      'Actor cannot manage runtime config for this site.',
-      403,
-      'Use a publisher or admin role for this site.'
-    );
-  }
-  return visible;
-}
-
-function normalizeSecretNameForResponse(value) {
-  try {
-    return normalizeRuntimeSecretName(value);
-  } catch {
-    return jsonError('SECRET_NAME_INVALID', 'Secret name is invalid.', 400, 'Use a valid Worker binding name such as API_TOKEN.');
-  }
-}
-
-function formatSecret(siteSlug, secret, { deleted }) {
-  return {
-    site: siteSlug,
-    name: secret.name,
-    updated: !deleted,
-    deleted,
-  };
-}
-
-function formatVar(siteSlug, record, { deleted, appliesTo }) {
-  return {
-    site: siteSlug,
-    name: record.name,
-    ...(!deleted && record.revision ? { revision: Number(record.revision) } : {}),
-    ...(deleted ? { deleted: true } : { updated: true }),
-    appliesTo,
-  };
-}
-
-function hasExactKeys(value, expectedKeys) {
-  const keys = Object.keys(value);
-  return keys.length === expectedKeys.length && expectedKeys.every((key) => Object.hasOwn(value, key));
-}
-
-function runtimeVarInvalid() {
-  return jsonError('RUNTIME_VAR_INVALID', 'Runtime var is invalid.', 400, 'Use an uppercase non-sensitive binding name.');
-}
-
-function runtimeVarValidationError(error) {
-  if (error?.message === 'RUNTIME_BINDING_NAME_RESERVED') {
-    return jsonError(
-      'RUNTIME_BINDING_NAME_RESERVED',
-      'Runtime binding name is reserved.',
-      400,
-      'Use an application-specific name.'
-    );
-  }
-  if (error?.message === 'RUNTIME_VARS_LIMIT_EXCEEDED') {
-    return jsonError('RUNTIME_VARS_LIMIT_EXCEEDED', 'Runtime vars limit exceeded.', 413, 'Use fewer or smaller vars.');
-  }
-  return runtimeVarInvalid();
-}
-
-function runtimeVarMutationError(error) {
-  if (error?.message === 'RUNTIME_VARS_LIMIT_EXCEEDED') {
-    return jsonError('RUNTIME_VARS_LIMIT_EXCEEDED', 'Runtime vars limit exceeded.', 413, 'Use fewer or smaller vars.');
-  }
-  if (error?.message === 'RUNTIME_BINDING_NAME_CONFLICT') {
-    return jsonError(
-      'RUNTIME_BINDING_NAME_CONFLICT',
-      'Runtime binding names conflict.',
-      400,
-      'Use unique names for vars and site secrets.'
-    );
-  }
-  if (error?.message === 'RUNTIME_BINDINGS_LIMIT_EXCEEDED') {
-    return jsonError(
-      'RUNTIME_BINDINGS_LIMIT_EXCEEDED',
-      'Runtime bindings exceed platform limits.',
-      413,
-      'Reduce vars or site secrets and retry.'
-    );
-  }
-  if (error?.message === 'SITE_VAR_REVISION_CONFLICT') {
-    return jsonError(
-      'RUNTIME_CONFIG_CHANGED',
-      'Runtime config changed while it was being updated.',
-      409,
-      'Retry the runtime config change.'
-    );
-  }
-  return jsonError(
-    'RUNTIME_CONFIG_UNSUPPORTED',
-    'Runtime config store is unavailable.',
-    503,
-    'Check runtime config store configuration.'
-  );
-}
-
-function isRuntimeConfigConflict(error) {
-  return error instanceof Error && error.message === 'SITE_SECRET_REVISION_CONFLICT';
-}
-
-function byteLength(value) {
-  return new globalThis.TextEncoder().encode(String(value)).byteLength;
-}
-
-export function normalizeAclEntries(value, env) {
-  try {
-    return normalizeSiteAclEntries(value, { createId: () => nextId(env, 'acl') });
-  } catch (error) {
-    const response = siteAclErrorResponse(error);
-    if (response) return response;
-    throw error;
-  }
-}
-
 async function readAndNormalizeAclEntries(request, env) {
   let body;
   try {
@@ -992,36 +510,7 @@ async function readAndNormalizeAclEntries(request, env) {
   }
   const exposureError = rejectUserExposureMutation(body);
   if (exposureError) return exposureError;
-  return normalizeAclEntries(body.entries, env);
-}
-
-export async function restoreSiteVisibilityAfterSnapshotFailure(
-  store,
-  siteId,
-  previousSite,
-  previousRoute,
-  expectedRoute,
-  environment
-) {
-  if (typeof store.restoreSiteVisibilityIfCurrent === 'function') {
-    return store.restoreSiteVisibilityIfCurrent(siteId, previousSite, previousRoute, expectedRoute, environment);
-  }
-  return store.restoreSiteVisibility(siteId, previousSite, previousRoute, environment);
-}
-
-export async function restoreSiteAclAfterSnapshotFailure(
-  store,
-  siteId,
-  previousEntries,
-  previousRoute,
-  previousSite,
-  expectedRoute,
-  environment
-) {
-  if (typeof store.restoreSiteAclEntriesIfCurrent === 'function') {
-    return store.restoreSiteAclEntriesIfCurrent(siteId, previousEntries, previousRoute, previousSite, expectedRoute, environment);
-  }
-  return store.restoreSiteAclEntries(siteId, previousEntries, previousRoute, previousSite, environment);
+  return normalizeSiteAclInput(body.entries, env);
 }
 
 function formatAclEntry(entry) {
@@ -1034,10 +523,6 @@ function formatAclEntry(entry) {
     createdBy: entry.createdBy,
     createdAt: entry.createdAt,
   };
-}
-
-export function normalizeSlug(value) {
-  return typeof value === 'string' ? value.trim().toLowerCase() : '';
 }
 
 function normalizeRequiredString(value) {
@@ -1077,14 +562,6 @@ function matchSiteId(pathname) {
 function readNow(env) {
   if (typeof env?.now === 'function') return env.now();
   return new Date().toISOString();
-}
-
-function runtimeConfigSync(store, env, config) {
-  return createRuntimeConfigSync({
-    store,
-    environment: config.environment,
-    createProvider: () => createWfpDeploymentProvider(env, config),
-  });
 }
 
 function authErrorResponse(error) {

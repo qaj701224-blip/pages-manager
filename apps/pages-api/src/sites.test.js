@@ -4,7 +4,10 @@ import test from 'node:test';
 import { createAccessKeyPlaintext, hashAccessKey } from './crypto.js';
 import worker from './index.js';
 import { markRuntimeConfigError } from './runtime-config-diagnostics.js';
-import { syncActiveWfpPlainTextBindings, syncActiveWfpSecret } from './sites.js';
+import {
+  syncActiveWfpPlainTextBindings,
+  syncActiveWfpSecret,
+} from './transport/shared/runtime-config-application.js';
 import { createTestPagesStore } from './test-store.js';
 import { seedLifecycleWebhook, TEST_WEBHOOK_URL_ENCRYPTION_KEY } from './lifecycle-webhook-test-fixtures.js';
 

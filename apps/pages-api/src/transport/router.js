@@ -7,7 +7,7 @@ import { handleDeploymentsApi, handleVersionsApi } from '../deployments.js';
 import { jsonError, jsonOk } from '../http.js';
 import { handleInternalApi } from '../internal.js';
 import { buildReadme, buildSkill, markdownResponse } from '../public-docs.js';
-import { handleSitesApi } from '../sites.js';
+import { handleSitesApi } from './public/sites-handler.js';
 import { handleConsoleTeamsApi, handleTeamsApi } from '../teams.js';
 import { handleWhoamiApi } from '../whoami.js';
 

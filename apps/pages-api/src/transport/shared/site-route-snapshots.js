@@ -28,6 +28,42 @@ export async function refreshCurrentRouteSnapshot(env, store, site, route, envir
   }
 }
 
+export async function restoreSiteVisibilityAfterSnapshotFailure(
+  store,
+  siteId,
+  previousSite,
+  previousRoute,
+  expectedRoute,
+  environment
+) {
+  if (typeof store.restoreSiteVisibilityIfCurrent === 'function') {
+    return store.restoreSiteVisibilityIfCurrent(siteId, previousSite, previousRoute, expectedRoute, environment);
+  }
+  return store.restoreSiteVisibility(siteId, previousSite, previousRoute, environment);
+}
+
+export async function restoreSiteAclAfterSnapshotFailure(
+  store,
+  siteId,
+  previousEntries,
+  previousRoute,
+  previousSite,
+  expectedRoute,
+  environment
+) {
+  if (typeof store.restoreSiteAclEntriesIfCurrent === 'function') {
+    return store.restoreSiteAclEntriesIfCurrent(
+      siteId,
+      previousEntries,
+      previousRoute,
+      previousSite,
+      expectedRoute,
+      environment
+    );
+  }
+  return store.restoreSiteAclEntries(siteId, previousEntries, previousRoute, previousSite, environment);
+}
+
 export function routeSnapshotErrorResponse(error) {
   const code = error?.code || error?.message;
   if (code === 'ROUTE_VERSION_NOT_FOUND') {

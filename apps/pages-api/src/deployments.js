@@ -94,7 +94,8 @@ import {
 } from './route-snapshot.js';
 import { createDeploymentProvider, normalizeWorkerBundle } from './execution-provider.js';
 import { notifyDeploymentCapacityExhausted } from './slack-alerts.js';
-import { buildSiteOwnerTransferAuditEvent, rejectUserExposureMutation } from './sites.js';
+import { buildSiteOwnerTransferAuditEvent } from './application/sites/build-owner-transfer-audit-event.js';
+import { rejectUserExposureMutation } from './transport/shared/site-input.js';
 import { emitSiteDisabledWebhook } from './lifecycle-webhooks.js';
 import {
   createSiteCreationApplication,
@@ -1638,14 +1639,15 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
 
 async function applyPendingDeployOwnerTransfer(store, actor, config, env, site, transfer) {
   const updatedAt = readNow(env);
-  const auditEvent = buildSiteOwnerTransferAuditEvent(
-    env,
-    config,
+  const auditEvent = buildSiteOwnerTransferAuditEvent({
+    id: nextId(env, 'aud'),
+    environment: config.environment,
     actor,
     site,
-    { ownerType: 'team', ownerId: transfer.ownerId },
-    { source: 'deploy', createdAt: updatedAt }
-  );
+    target: { ownerType: 'team', ownerId: transfer.ownerId },
+    source: 'deploy',
+    createdAt: updatedAt,
+  });
   const updated = await store.transferSiteOwner(
     site.id,
     {
