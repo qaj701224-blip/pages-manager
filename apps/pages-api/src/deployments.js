@@ -2,6 +2,7 @@ import { validateSiteSlug } from '@xd/pages-runtime-protocol';
 
 import { isManagedWfpWorkerName } from './admin-resource-governance.js';
 import { createDeploymentRouteActivation } from './application/deployments/activate-route.js';
+import { createDeploymentRouteSnapshotCommit } from './application/deployments/commit-route-snapshot.js';
 import { createDeploymentRuntimeConfigCommit } from './application/deployments/commit-runtime-config.js';
 import { createDeploymentVersionCreation } from './application/deployments/create-version.js';
 import { createDeploymentRecord } from './application/deployments/deployment-record.js';
@@ -39,6 +40,7 @@ import { isSiteVisibility } from './domain/sites/access-policy.js';
 import { actorCanDeploySite, actorCanReadSite } from './domain/sites/authorization.js';
 import { jsonError, jsonOk } from './http.js';
 import { nextId } from './id.js';
+import { createSiteRouteSnapshots } from './infrastructure/route-snapshots/site-route-snapshots.js';
 import {
   buildRouteSnapshot,
   clearRoutePointerIfCurrent,
@@ -933,6 +935,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
       : null;
     if (typeof store.withSiteCommitLock !== 'function') throw deploymentOperationError('SITE_POLICY_LOCKED');
     const routeActivationApplication = createDeploymentRouteActivationApplication(store, env);
+    const routeSnapshotApplication = createDeploymentRouteSnapshotCommitApplication(store, env);
     route = await store.withSiteCommitLock(
       config.environment,
       siteId,
@@ -1052,7 +1055,8 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
           : null;
         try {
           assertCommitLeaseHealthy(activationLease);
-          await writeSnapshot(env, store, { site, route: activatedRoute, version });
+          const snapshotResult = await routeSnapshotApplication.commit({ site, route: activatedRoute, version });
+          if (!snapshotResult.ok) throw snapshotResult.error.cause;
           assertCommitLeaseHealthy(activationLease);
           if (routeSnapshotStage) await finishDeploymentStage(routeSnapshotStage, { status: 'succeeded' });
         } catch {
@@ -2412,11 +2416,7 @@ function formatRoute(route) {
 }
 
 async function writeSnapshot(env, store, input) {
-  const aclEntries = await store.listSiteAclEntries(input.site.id);
-  const site = await store.getSite(input.site.id);
-  const snapshot = buildRouteSnapshot({ ...input, site, aclEntries });
-  await writeRouteSnapshot(env, snapshot);
-  return snapshot;
+  return createDeploymentRouteSnapshotInfrastructure(store, env).commitDeployment(input);
 }
 
 async function restoreSiteRouteAfterSnapshotFailure(store, siteId, previousRoute, expectedRoute, environment) {
@@ -3373,6 +3373,20 @@ function createDeploymentRouteActivationApplication(store, env) {
   return createDeploymentRouteActivation({
     routes: createDeploymentRoutesPort(store),
     clock: { now: () => readNow(env) },
+  });
+}
+
+function createDeploymentRouteSnapshotCommitApplication(store, env) {
+  return createDeploymentRouteSnapshotCommit({
+    routeSnapshots: createDeploymentRouteSnapshotInfrastructure(store, env),
+  });
+}
+
+function createDeploymentRouteSnapshotInfrastructure(store, env) {
+  return createSiteRouteSnapshots({
+    store,
+    buildSnapshot: buildRouteSnapshot,
+    writeSnapshot: (snapshot) => writeRouteSnapshot(env, snapshot),
   });
 }
 

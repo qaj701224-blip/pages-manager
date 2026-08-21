@@ -4,9 +4,16 @@ export function createSiteRouteSnapshots({ store, buildSnapshot, writeSnapshot }
   if (typeof writeSnapshot !== 'function') throw new TypeError('writeSnapshot is required');
 
   return {
+    commitDeployment: (input) => commitDeployment({ store, buildSnapshot, writeSnapshot }, input),
     refreshActive: (input) => refreshActive({ store, buildSnapshot, writeSnapshot }, input),
     refreshCurrent: (input) => refreshCurrent({ store, buildSnapshot, writeSnapshot }, input),
   };
+}
+
+async function commitDeployment(context, { site, route, version }) {
+  const aclEntries = await context.store.listSiteAclEntries(site.id);
+  const latestSite = await context.store.getSite(site.id);
+  return writeSnapshot(context, { site: latestSite, route, version, aclEntries });
 }
 
 async function refreshActive(context, { site, route, environment, aclEntries }) {
@@ -29,7 +36,9 @@ async function refreshCurrent(context, { site, route, environment }) {
 
 async function writeSnapshot(context, input) {
   try {
-    await context.writeSnapshot(context.buildSnapshot(input));
+    const snapshot = context.buildSnapshot(input);
+    await context.writeSnapshot(snapshot);
+    return snapshot;
   } catch {
     throw snapshotError('ROUTE_SNAPSHOT_WRITE_FAILED');
   }
