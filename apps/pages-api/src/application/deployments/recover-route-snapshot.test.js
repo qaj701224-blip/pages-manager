@@ -14,10 +14,13 @@ const previousSite = {
   defaultVisibility: 'internal',
   updatedAt: '2026-08-21T00:00:00.000Z',
 };
+const telemetry = { record: async () => null };
+const repairs = { report: async () => null };
 
 function recoveryCommand(overrides = {}) {
   return {
     siteId: 'site_1',
+    deploymentId: 'dep_1',
     environment: 'production',
     site,
     previousRoute,
@@ -59,6 +62,8 @@ test('snapshot recovery restores route, runtime config, owner, and snapshot in o
         return true;
       },
     },
+    telemetry,
+    repairs,
   });
 
   assert.deepEqual(await application.recover(recoveryCommand()), {
@@ -108,6 +113,8 @@ test('snapshot recovery clears the failed route pointer after route restoration 
         return true;
       },
     },
+    telemetry,
+    repairs,
   });
 
   assert.deepEqual(
@@ -136,6 +143,8 @@ test('snapshot recovery clears the restored route pointer when the compensation 
         return false;
       },
     },
+    telemetry,
+    repairs,
   });
 
   assert.deepEqual(
@@ -151,9 +160,58 @@ test('snapshot recovery clears the restored route pointer when the compensation 
   assert.deepEqual(cleared, [restoredRoute]);
 });
 
-test('snapshot recovery requires its narrow route and snapshot capabilities', () => {
+test('snapshot recovery requires its narrow route, snapshot, telemetry, and repair capabilities', () => {
   assert.throws(
-    () => createDeploymentRouteSnapshotRecovery({ routes: {}, runtimeConfig: {}, routeSnapshots: {} }),
+    () => createDeploymentRouteSnapshotRecovery({ routes: {}, runtimeConfig: {}, routeSnapshots: {}, telemetry, repairs }),
     /routes\.restore is required/
   );
+  const capabilities = {
+    routes: { restore() {} },
+    runtimeConfig: { restore() {} },
+    routeSnapshots: { writeRestored() {}, clearCurrent() {} },
+  };
+  assert.throws(
+    () => createDeploymentRouteSnapshotRecovery({ ...capabilities, telemetry: {}, repairs }),
+    /telemetry\.record is required/
+  );
+  assert.throws(
+    () => createDeploymentRouteSnapshotRecovery({ ...capabilities, telemetry, repairs: {} }),
+    /repairs\.report is required/
+  );
+});
+
+test('snapshot recovery records compensation before reporting required repair', async () => {
+  const calls = [];
+  const application = createDeploymentRouteSnapshotRecovery({
+    routes: { restore: async () => null, restoreOwner: null },
+    runtimeConfig: { restore: async () => null },
+    routeSnapshots: {
+      writeRestored: async () => false,
+      clearCurrent: async () => false,
+    },
+    telemetry: {
+      async record(result) {
+        calls.push(['telemetry', result]);
+      },
+    },
+    repairs: {
+      async report(input) {
+        calls.push(['repair', input]);
+      },
+    },
+  });
+
+  const result = await application.recover(recoveryCommand());
+  assert.deepEqual(calls, [
+    ['telemetry', result],
+    [
+      'repair',
+      {
+        environment: 'production',
+        siteId: 'site_1',
+        deploymentId: 'dep_1',
+        reason: 'route_snapshot_repair_failed',
+      },
+    ],
+  ]);
 });

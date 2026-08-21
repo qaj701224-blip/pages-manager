@@ -901,8 +901,9 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
           lease: activationLease,
         });
         if (!snapshotResult.ok) {
-          const recovery = await createDeploymentRouteSnapshotRecoveryApplication({ store, env }).recover({
+          const recovery = await createDeploymentRouteSnapshotRecoveryApplication({ store, env, trace }).recover({
             siteId,
+            deploymentId: deployment.id,
             environment: config.environment,
             site,
             previousRoute,
@@ -922,36 +923,6 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
           });
           site = recovery.site;
           const { restoredRoute, restoredSnapshotWritten, routePointerCleared, repairRequired } = recovery;
-          await recordDeploymentStage(trace, {
-            stage: 'cleanup_or_compensation',
-            operation: 'restore_route_after_snapshot_failure',
-            status: repairRequired ? 'failed' : 'compensated',
-            ...(!repairRequired
-              ? {}
-              : {
-                  errorCode: 'ROUTE_SNAPSHOT_WRITE_FAILED',
-                  errorMessage: 'Route snapshot compensation failed.',
-                }),
-            diagnostics: {
-              causeClass: repairRequired ? 'route_snapshot_compensation_error' : 'route_snapshot_compensated',
-              routePointerCommitted: false,
-              trafficImpact: repairRequired
-                ? routePointerCleared
-                  ? 'site_unavailable'
-                  : 'public_route_state_unknown'
-                : 'old_version_retained',
-              cleanupStatus: repairRequired ? 'failed' : 'succeeded',
-              operatorAction: repairRequired ? 'repair_route_snapshot' : undefined,
-            },
-          });
-          if (repairRequired) {
-            logDeploymentRepairRequired(env, {
-              environment: config.environment,
-              siteId,
-              deploymentId: deployment.id,
-              reason: 'route_snapshot_repair_failed',
-            });
-          }
           if (restoredSnapshotWritten) {
             await cleanupUploadedWorkerIfInactiveAndRecord(
               trace,
@@ -2796,7 +2767,7 @@ function createDeploymentPreviousResourceCleanupApplication({ store, env, provid
   });
 }
 
-function createDeploymentRouteSnapshotRecoveryApplication({ store, env }) {
+function createDeploymentRouteSnapshotRecoveryApplication({ store, env, trace = null }) {
   return createDeploymentRouteSnapshotRecovery({
     routes: createDeploymentRecoveryPort(store),
     runtimeConfig: createDeploymentRuntimeConfigRestorationApplication(store, env),
@@ -2805,6 +2776,38 @@ function createDeploymentRouteSnapshotRecoveryApplication({ store, env }) {
       routeSnapshots: createDeploymentRouteSnapshotInfrastructure(store, env),
       routePointers: { clearIfCurrent: (pointer) => clearRoutePointerIfCurrent(env, pointer) },
     }),
+    telemetry: {
+      record: (result) =>
+        trace
+          ? recordDeploymentStage(trace, {
+              stage: 'cleanup_or_compensation',
+              operation: 'restore_route_after_snapshot_failure',
+              status: result.repairRequired ? 'failed' : 'compensated',
+              ...(result.repairRequired
+                ? {
+                    errorCode: 'ROUTE_SNAPSHOT_WRITE_FAILED',
+                    errorMessage: 'Route snapshot compensation failed.',
+                  }
+                : {}),
+              diagnostics: {
+                causeClass: result.repairRequired
+                  ? 'route_snapshot_compensation_error'
+                  : 'route_snapshot_compensated',
+                routePointerCommitted: false,
+                trafficImpact: result.repairRequired
+                  ? result.routePointerCleared
+                    ? 'site_unavailable'
+                    : 'public_route_state_unknown'
+                  : 'old_version_retained',
+                cleanupStatus: result.repairRequired ? 'failed' : 'succeeded',
+                operatorAction: result.repairRequired ? 'repair_route_snapshot' : undefined,
+              },
+            })
+          : undefined,
+    },
+    repairs: {
+      report: (input) => logDeploymentRepairRequired(env, input),
+    },
   });
 }
 

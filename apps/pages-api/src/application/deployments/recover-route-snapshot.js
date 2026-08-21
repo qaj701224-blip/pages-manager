@@ -1,4 +1,4 @@
-export function createDeploymentRouteSnapshotRecovery({ routes, runtimeConfig, routeSnapshots }) {
+export function createDeploymentRouteSnapshotRecovery({ routes, runtimeConfig, routeSnapshots, telemetry, repairs }) {
   if (typeof routes?.restore !== 'function') throw new TypeError('routes.restore is required');
   if (typeof runtimeConfig?.restore !== 'function') throw new TypeError('runtimeConfig.restore is required');
   if (typeof routeSnapshots?.writeRestored !== 'function') {
@@ -7,6 +7,8 @@ export function createDeploymentRouteSnapshotRecovery({ routes, runtimeConfig, r
   if (typeof routeSnapshots?.clearCurrent !== 'function') {
     throw new TypeError('routeSnapshots.clearCurrent is required');
   }
+  if (typeof telemetry?.record !== 'function') throw new TypeError('telemetry.record is required');
+  if (typeof repairs?.report !== 'function') throw new TypeError('repairs.report is required');
 
   return { recover };
 
@@ -42,13 +44,23 @@ export function createDeploymentRouteSnapshotRecovery({ routes, runtimeConfig, r
       ? false
       : await routeSnapshots.clearCurrent(restoredRoute || command.failedRoute);
 
-    return {
+    const result = {
       site: restoredSite,
       restoredRoute,
       restoredSnapshotWritten,
       routePointerCleared,
       repairRequired: restorationFailed || !restoredSnapshotWritten,
     };
+    await telemetry.record(result);
+    if (result.repairRequired) {
+      await repairs.report({
+        environment: command.environment,
+        siteId: command.siteId,
+        deploymentId: command.deploymentId,
+        reason: 'route_snapshot_repair_failed',
+      });
+    }
+    return result;
   }
 }
 
