@@ -7,6 +7,7 @@ import {
   createDeploymentCompletion,
   synthesizeSucceededDeployment,
 } from './application/deployments/complete-deployment.js';
+import { createDeploymentFailureCompletion } from './application/deployments/complete-failed-deployment.js';
 import { createDeploymentPreviousResourceCleanup } from './application/deployments/cleanup-previous-resources.js';
 import { createDeploymentRouteSnapshotCommit } from './application/deployments/commit-route-snapshot.js';
 import { createDeploymentRuntimeConfigCommit } from './application/deployments/commit-runtime-config.js';
@@ -27,6 +28,7 @@ import { createDeploymentRuntimeConfigSnapshotValidation } from './application/d
 import { createDeploySiteResolutionPort } from './application/ports/deploy-site-resolution.js';
 import { createDeploymentCleanupTasksPort } from './application/ports/deployment-cleanup.js';
 import { createDeploymentCompletionPort } from './application/ports/deployment-completion.js';
+import { createDeploymentFailurePort } from './application/ports/deployment-failure.js';
 import { createDeploymentProviderPort } from './application/ports/deployment-provider.js';
 import { createDeploymentRecoveryPort, createRollbackRecoveryPort } from './application/ports/deployment-recovery.js';
 import { createDeploymentRecordsPort } from './application/ports/deployment-records.js';
@@ -2716,84 +2718,15 @@ async function updateDeploymentToFailedAndNotify({
   site,
   trace,
 }) {
-  const before = await store.getDeployment(deploymentId, config.environment).catch(() => null);
-  const failedPatch = {
-    ...patch,
-    status: 'failed',
-    completedAt: patch.completedAt || readNow(env),
-  };
-  const persistStage = trace
-    ? startDeploymentStage(trace, {
-        stage: 'deployment_state_persist',
-        operation: 'persist_failed_deployment',
-      })
-    : null;
-  let initialPersistFailed = false;
-  let updated;
-  try {
-    updated = await store.updateDeployment(deploymentId, failedPatch);
-  } catch (cause) {
-    initialPersistFailed = true;
-    await recordDeploymentStatePersistFailure({
-      trace,
-      env,
-      deploymentId,
-      operation: 'persist_failed_deployment',
-      stageHandle: persistStage,
-      cause,
-    });
-    const recoveryStage = trace
-      ? startDeploymentStage(trace, {
-          stage: 'deployment_state_persist',
-          operation: 'recover_failed_deployment',
-        })
-      : null;
-    try {
-      updated = await store.updateDeployment(deploymentId, failedPatch);
-    } catch (recoveryCause) {
-      await recordDeploymentStatePersistFailure({
-        trace,
-        env,
-        deploymentId,
-        operation: 'recover_failed_deployment',
-        stageHandle: recoveryStage,
-        cause: recoveryCause,
-      });
-      const recoveryMarkerStored = await persistFailedDeploymentRecoveryMarker(env, config, {
-        deploymentId,
-        siteId: site?.id || trace?.siteId || null,
-        siteHostname: site?.route?.hostname || site?.hostname || null,
-        operation: trace?.operation || null,
-        failedPatch,
-      });
-      logDeploymentRepairRequired(env, {
-        environment: config.environment,
-        siteId: site?.id || trace?.siteId || null,
-        deploymentId,
-        reason: recoveryMarkerStored
-          ? 'deployment_failure_state_recovery_deferred'
-          : 'deployment_failure_state_recovery_failed',
-      });
-      const error = new Error('Deployment failure state could not be persisted.', { cause: recoveryCause });
-      error.code = 'DEPLOYMENT_STATE_WRITE_FAILED';
-      throw error;
-    }
-    if (recoveryStage) await finishDeploymentStage(recoveryStage, { status: 'succeeded' });
-  }
-  if (persistStage && !initialPersistFailed) await finishDeploymentStage(persistStage, { status: 'succeeded' });
-  if (!before || !updated || before.status === 'failed' || updated.status !== 'failed' || !site) {
-    if (trace) {
-      await recordDeploymentStage(trace, {
-        stage: 'webhook_delivery',
-        operation: 'site_failed',
-        status: 'skipped',
-      });
-    }
-    return updated;
-  }
-
-  await emitSiteFailedWebhook({ store, env, config, ctx, actor, site, deployment: updated, trace });
-  return updated;
+  return createDeploymentFailureCompletionApplication({ store, env, config, ctx, trace }).complete({
+    deploymentId,
+    environment: config.environment,
+    operation: trace?.operation || null,
+    siteId: trace?.siteId || null,
+    patch,
+    actor,
+    site,
+  });
 }
 
 function runtimeConfigUnavailable() {
@@ -3003,6 +2936,55 @@ function createDeploymentRecordApplication(store, env) {
 function createDeploymentCompletionApplication(store) {
   return createDeploymentCompletion({
     deployments: createDeploymentCompletionPort(store),
+  });
+}
+
+function createDeploymentFailureCompletionApplication({ store, env, config, ctx, trace }) {
+  return createDeploymentFailureCompletion({
+    deployments: createDeploymentFailurePort(store),
+    telemetry: {
+      startPersist(operation) {
+        return trace
+          ? startDeploymentStage(trace, {
+              stage: 'deployment_state_persist',
+              operation,
+            })
+          : null;
+      },
+      persistFailed({ deploymentId, stage, operation, cause }) {
+        return recordDeploymentStatePersistFailure({
+          trace,
+          env,
+          deploymentId,
+          operation,
+          stageHandle: stage,
+          cause,
+        });
+      },
+      persistSucceeded(stage) {
+        return stage ? finishDeploymentStage(stage, { status: 'succeeded' }) : undefined;
+      },
+      webhookSkipped() {
+        return trace
+          ? recordDeploymentStage(trace, {
+              stage: 'webhook_delivery',
+              operation: 'site_failed',
+              status: 'skipped',
+            })
+          : undefined;
+      },
+    },
+    recoveryMarkers: {
+      persist: (input) => persistFailedDeploymentRecoveryMarker(env, config, input),
+    },
+    repairs: {
+      report: (input) => logDeploymentRepairRequired(env, input),
+    },
+    webhooks: {
+      emitFailed: ({ actor, site, deployment }) =>
+        emitSiteFailedWebhook({ store, env, config, ctx, actor, site, deployment, trace }),
+    },
+    clock: { now: () => readNow(env) },
   });
 }
 
