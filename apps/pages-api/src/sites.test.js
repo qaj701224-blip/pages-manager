@@ -3463,6 +3463,45 @@ test('grants and revokes site ACL entries incrementally', async () => {
   assert.equal(snapshots.read('production:route_pointer:guide.pages.xd.team').policyVersion, 4);
 });
 
+test('incremental ACL grants reject a merged collection above the platform limit', async () => {
+  const store = await createSeededStore();
+  const site = await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'acl',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  await store.replaceSiteAclEntries(
+    site.id,
+    Array.from({ length: 200 }, (_, index) => ({
+      id: `acl_${index}`,
+      subjectType: 'email',
+      subjectValue: `reader-${index}@example.com`,
+      accessRole: 'viewer',
+      effect: 'allow',
+    })),
+    { createdBy: 'usr_1', updatedAt: '2026-06-15T00:00:00.000Z' },
+    'production'
+  );
+  const route = await activateSite(store, site.id, { visibility: 'acl' });
+
+  const response = await worker.fetch(
+    jsonMethodRequest('POST', 'https://api.pages.xd.team/.xd-pages/api/sites/site_1/acl/entries', {
+      entries: [{ subjectType: 'email', subjectValue: 'overflow@example.com' }],
+    }),
+    testEnv(store, { ROUTE_SNAPSHOTS: createSnapshotStore() })
+  );
+
+  assert.equal(response.status, 400, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'ACL_ENTRIES_INVALID');
+  assert.equal((await store.listSiteAclEntries(site.id)).length, 200);
+  assert.equal((await store.getRouteBySiteId(site.id)).policyVersion, route.policyVersion);
+});
+
 test('allows deploy-capable access keys to read ACL entries for manageable sites', async () => {
   const store = await createSeededStore();
   await store.createSite({

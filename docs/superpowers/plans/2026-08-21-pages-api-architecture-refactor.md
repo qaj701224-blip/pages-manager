@@ -229,8 +229,8 @@ pnpm exec eslint apps/pages-auth/src packages/pages-metadata/src apps/pages-api/
 
 **Steps**
 
-- [ ] 迁移纯规则：actor capability、ownership、visibility/ACL、runtime value constraints；不携带 HTTP 文案。
-- [ ] ports 只覆盖被 use case 使用的方法，不按旧 Store 复制大接口。
+- [x] 迁移纯规则：actor capability、ownership、visibility/ACL、runtime value constraints；不携带 HTTP 文案。
+- [x] ports 只覆盖被 use case 使用的方法，不按旧 Store 复制大接口。
 
 ### Task 4.2：逐动作收敛共享 use case
 

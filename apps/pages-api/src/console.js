@@ -5,7 +5,8 @@ import {
   requireConsoleUserSession,
 } from './console-auth.js';
 import { departmentTeamDisplayName } from './department-path.js';
-import { isSiteVisibility } from './domain/sites/access-policy.js';
+import { isSiteVisibility, teamOwnerSupportsVisibility } from './domain/sites/access-policy.js';
+import { viewerCanAdminSite, viewerCanPublishSite } from './domain/sites/authorization.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
 import { MAX_SITE_SECRET_VALUE_BYTES, normalizeRuntimeSecretName, normalizeRuntimeVars } from './runtime-config.js';
 import { logRuntimeConfigFailure, readRuntimeConfigErrorDiagnostic } from './runtime-config-diagnostics.js';
@@ -186,7 +187,7 @@ async function createConsoleSite(request, env, config, store, session) {
       '请使用 internal、org、acl、owner 或 disabled。'
     );
   }
-  if (ownerType === 'team' && visibility === 'owner') return teamOwnerVisibilityUnsupported();
+  if (!teamOwnerSupportsVisibility({ ownerType }, visibility)) return teamOwnerVisibilityUnsupported();
 
   let ownerId = session.userId;
   if (ownerType === 'team') {
@@ -238,7 +239,7 @@ async function createConsoleSite(request, env, config, store, session) {
 }
 
 export async function deleteConsoleSite(env, config, store, site, options = {}) {
-  if (!options.force && !hasPublisherRole(site)) {
+  if (!options.force && !viewerCanPublishSite(site)) {
     return jsonError(
       'SITE_DELETE_FORBIDDEN',
       'Site publisher role required.',
@@ -275,7 +276,7 @@ async function updateConsoleSiteSettings(request, env, config, store, session, s
     siteId,
   });
   if (!site) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
-  if (!hasPublisherRole(site)) {
+  if (!viewerCanPublishSite(site)) {
     return jsonError(
       'SITE_PUBLISHER_REQUIRED',
       'Site publisher role required.',
@@ -294,7 +295,7 @@ async function updateConsoleSiteSettings(request, env, config, store, session, s
   const target = await resolveConsoleSiteOwnerTarget(store, config, session, body);
   if (target instanceof Response) return target;
   const currentVisibility = site.route?.visibility || site.defaultVisibility;
-  if (target.ownerType === 'team' && currentVisibility === 'owner') return teamOwnerVisibilityUnsupported();
+  if (!teamOwnerSupportsVisibility(target, currentVisibility)) return teamOwnerVisibilityUnsupported();
 
   let updated;
   let route;
@@ -436,7 +437,7 @@ export async function updateSiteAccess(request, env, config, store, session, sit
       '请使用 internal、org、acl、owner 或 disabled。'
     );
   }
-  if (site.ownerType === 'team' && visibility === 'owner') return teamOwnerVisibilityUnsupported();
+  if (!teamOwnerSupportsVisibility(site, visibility)) return teamOwnerVisibilityUnsupported();
   const aclEntries = 'aclEntries' in body ? normalizeAclEntries(body.aclEntries, env) : previousAclEntries;
   if (aclEntries instanceof Response) return aclEntries;
 
@@ -731,10 +732,10 @@ async function requireConsoleSiteRole(store, config, session, siteId, role) {
     siteId,
   });
   if (!site) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
-  if (role === 'admin' && !hasAdminRole(site)) {
+  if (role === 'admin' && !viewerCanAdminSite(site)) {
     return jsonError('SITE_ADMIN_REQUIRED', 'Site admin role required.', 403, 'Ask a site or team admin to perform this action.');
   }
-  if (role === 'publisher' && !hasPublisherRole(site)) {
+  if (role === 'publisher' && !viewerCanPublishSite(site)) {
     return jsonError('SITE_PUBLISHER_REQUIRED', 'Site publisher role required.', 403, 'Ask a site or team publisher.');
   }
   return site;
@@ -934,16 +935,6 @@ function normalizeSecretNameForResponse(value) {
     }
     return jsonError('SECRET_NAME_INVALID', 'Secret name is invalid.', 400, 'Use a valid Worker binding name such as API_TOKEN.');
   }
-}
-
-function hasPublisherRole(site) {
-  if (site.ownerType === 'user') return site.ownerId === site.currentUserId || site.ownerUserId === site.currentUserId;
-  return site.managementRole === 'admin' || site.managementRole === 'publisher';
-}
-
-function hasAdminRole(site) {
-  if (site.ownerType === 'user') return site.ownerId === site.currentUserId || site.ownerUserId === site.currentUserId;
-  return site.managementRole === 'admin';
 }
 
 function byteLength(value) {

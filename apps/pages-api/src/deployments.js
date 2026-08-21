@@ -23,7 +23,8 @@ import {
   withDeploymentTraceHeader,
 } from './deployment-trace.js';
 import { isMultipartRequest, readMultipartDeploymentBody, validateAssetFiles } from './deployment-upload.js';
-import { isSiteVisibility } from './domain/sites/access-policy.js';
+import { isSiteVisibility, teamOwnerSupportsVisibility } from './domain/sites/access-policy.js';
+import { actorCanDeploySite, actorCanManageSite, actorCanReadSite } from './domain/sites/authorization.js';
 import { jsonError, jsonOk } from './http.js';
 import { nextId } from './id.js';
 import {
@@ -38,11 +39,7 @@ import {
 import { createDeploymentProvider, normalizeWorkerBundle } from './execution-provider.js';
 import { runtimeConfigSnapshot, validateRuntimeBindingQuotas } from './runtime-config.js';
 import { notifyDeploymentCapacityExhausted } from './slack-alerts.js';
-import {
-  actorCanManageSite,
-  buildSiteOwnerTransferAuditEvent,
-  rejectUserExposureMutation,
-} from './sites.js';
+import { buildSiteOwnerTransferAuditEvent, rejectUserExposureMutation } from './sites.js';
 import { deliverWebhookEventToSubscriptions } from './webhooks.js';
 import { emitSiteDisabledWebhook, emitSiteFailedWebhook } from './lifecycle-webhooks.js';
 import {
@@ -437,7 +434,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
     return routeSlugError;
   }
   const siteId = site.id;
-  if (!actorCanDeploy(actor, site, 'deploy:site')) {
+  if (!actorCanDeploySite(actor, site, 'deploy:site')) {
     const response = jsonError('DEPLOY_FORBIDDEN', 'Actor cannot deploy this site.', 403, 'Use a token scoped to this site.');
     await finishRequestAuthStageFromResponse(authStage, response, 'authorization_error');
     return response;
@@ -1995,7 +1992,7 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
     return requestedSiteError;
   }
   const site = await store.getSiteForUser(version.siteId, actor.userId, actor, config.environment);
-  if (!site || !actorCanDeploy(actor, site, 'rollback:site')) {
+  if (!site || !actorCanDeploySite(actor, site, 'rollback:site')) {
     const response = jsonError('ROLLBACK_FORBIDDEN', 'Actor cannot rollback this site.', 403, 'Use a token scoped to this site.');
     await finishRequestAuthStageFromResponse(authStage, response, 'authorization_error');
     return response;
@@ -2671,7 +2668,7 @@ async function transferDeploySiteToTeamIfRequested(store, actor, config, env, si
   const target = await resolveDeployTransferTeam(store, actor, teamId, config.environment);
   if (target instanceof Response) return target;
   const nextVisibility = visibility || site.route?.visibility || site.defaultVisibility;
-  if (nextVisibility === 'owner') return teamOwnerVisibilityUnsupported();
+  if (!teamOwnerSupportsVisibility({ ownerType: 'team' }, nextVisibility)) return teamOwnerVisibilityUnsupported();
   if (typeof store.transferSiteOwner !== 'function') {
     return jsonError('SITE_TRANSFER_UNSUPPORTED', 'Site transfer is unavailable.', 503, 'Retry later.');
   }
@@ -2762,7 +2759,7 @@ async function createSiteFromDeployOwner(store, actor, config, env, { siteSlug, 
 }
 
 async function createTeamSiteFromUserDeploy(store, actor, config, env, { siteSlug, teamId, visibility }) {
-  if (visibility === 'owner') return teamOwnerVisibilityUnsupported();
+  if (!teamOwnerSupportsVisibility({ ownerType: 'team' }, visibility)) return teamOwnerVisibilityUnsupported();
   const teamOwner = await resolveTeamDeployOwner(store, actor.userId, teamId, config.environment);
   if (teamOwner instanceof Response) return teamOwner;
   return pendingDeploySiteCreation(store, config, env, {
@@ -2799,7 +2796,7 @@ async function createSiteFromOwnerScopedAccessKeyDeploy(store, actor, config, en
   if (!ownerId || !ownerUserId) {
     return jsonError('DEPLOY_FORBIDDEN', 'Actor cannot deploy this site.', 403, 'Use an active owner-scoped access key.');
   }
-  if (ownerType === 'team' && visibility === 'owner') return teamOwnerVisibilityUnsupported();
+  if (!teamOwnerSupportsVisibility({ ownerType }, visibility)) return teamOwnerVisibilityUnsupported();
 
   return pendingDeploySiteCreation(store, config, env, {
     siteSlug,
@@ -3895,36 +3892,6 @@ function isWorkerSourceCompilationFailure(error) {
   if (providerCode === '10021') return true;
   const providerMessage = typeof error?.providerMessage === 'string' ? error.providerMessage : '';
   return /(?:SyntaxError|syntax error|Unexpected end of input)/i.test(providerMessage);
-}
-
-function actorCanDeploy(actor, site, requiredScope) {
-  if (!site) return false;
-  if (actor.type !== 'access_key') {
-    if (site.ownerType === 'team') return site.managementRole === 'admin' || site.managementRole === 'publisher';
-    return site.ownerUserId === actor.userId;
-  }
-  if (actor.siteId && actor.siteId !== site.id) return false;
-  if (!actor.scopes.includes(requiredScope)) return false;
-  const ownerType = actor.ownerType || 'user';
-  const ownerId = actor.ownerId || actor.userId;
-  if (ownerType === 'team') return site.ownerType === 'team' && site.ownerId === ownerId;
-  if (site.ownerType === 'team') return site.managementRole === 'admin' || site.managementRole === 'publisher';
-  return (site.ownerId || site.ownerUserId) === ownerId;
-}
-
-function actorCanReadSite(actor, site) {
-  if (actor.type !== 'access_key') return true;
-  if (!actor.scopes.includes('read:site')) return false;
-  if (!site || typeof site === 'string') return false;
-  if (actor.siteId && actor.siteId !== site.id) return false;
-  if (actor.siteId && !actor.ownerType && !actor.ownerId && !actor.userId) return actor.siteId === site.id;
-
-  const ownerType = actor.ownerType || 'user';
-  const ownerId = actor.ownerId || actor.userId;
-  if (ownerType === 'team') return site.ownerType === 'team' && site.ownerId === ownerId;
-  if ((site.ownerType || 'user') === 'user') return (site.ownerId || site.ownerUserId) === ownerId;
-  if (site.ownerType === 'team') return Boolean(site.managementRole);
-  return false;
 }
 
 function workerNameFor(site, deploymentId, environment) {

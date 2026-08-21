@@ -6,7 +6,12 @@ import {
   sitePolicyRouteCanBeCompensated,
 } from '../../domain/sites/access-policy.js';
 
-const PASSTHROUGH_ERRORS = new Set(['SITE_NOT_FOUND', 'ROUTE_VERSION_NOT_FOUND', 'ROUTE_SNAPSHOT_WRITE_FAILED']);
+const PASSTHROUGH_ERRORS = new Set([
+  'SITE_NOT_FOUND',
+  'ROUTE_VERSION_NOT_FOUND',
+  'ROUTE_SNAPSHOT_WRITE_FAILED',
+  'ACL_ENTRIES_INVALID',
+]);
 const CONFLICT_ERRORS = new Set(['SITE_POLICY_LOCKED', 'SITE_POLICY_CONFLICT', 'SITE_COMMIT_TIMEOUT']);
 
 export function createUpdateSiteAccessPolicy({ sitePolicy, routeSnapshots, clock }) {

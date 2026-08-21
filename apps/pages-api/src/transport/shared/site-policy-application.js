@@ -27,6 +27,8 @@ export async function mutateUserSiteAccessPolicy({ env, config, store, siteId, a
 
 export function sitePolicyErrorResponse(error) {
   const code = error?.code || error?.message;
+  const aclError = siteAclErrorResponse(error);
+  if (aclError) return aclError;
   if (code === 'SITE_NOT_FOUND') return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
   if (code === 'SITE_POLICY_CONFLICT') {
     return jsonError(
@@ -53,6 +55,33 @@ export function sitePolicyErrorResponse(error) {
     503,
     'Retry after refreshing the site.'
   );
+}
+
+export function siteAclErrorResponse(error) {
+  const code = error?.code || error?.message;
+  if (code === 'ACL_ENTRIES_INVALID') {
+    const action =
+      error?.reason === 'merged_limit'
+        ? 'A site can have at most 200 ACL entries.'
+        : 'Send an entries array with at most 200 items.';
+    return jsonError('ACL_ENTRIES_INVALID', 'ACL entries are invalid.', 400, action);
+  }
+  if (code === 'ACL_ENTRY_INVALID') {
+    return jsonError('ACL_ENTRY_INVALID', 'ACL entry is invalid.', 400, 'Send ACL entry objects.');
+  }
+  if (code === 'ACL_EFFECT_UNSUPPORTED') {
+    return jsonError('ACL_EFFECT_UNSUPPORTED', 'ACL deny entries are not supported.', 400, 'Use allow-only ACL entries.');
+  }
+  if (code === 'ACL_ROLE_UNSUPPORTED') {
+    return jsonError('ACL_ROLE_UNSUPPORTED', 'ACL role is not supported.', 400, 'Use viewer ACL entries.');
+  }
+  if (code === 'ACL_SUBJECT_TYPE_UNSUPPORTED') {
+    return jsonError('ACL_SUBJECT_TYPE_UNSUPPORTED', 'ACL subject type is not supported.', 400, 'Use email or department.');
+  }
+  if (code === 'ACL_SUBJECT_VALUE_INVALID') {
+    return jsonError('ACL_SUBJECT_VALUE_INVALID', 'ACL subject value is invalid.', 400, 'Use a non-empty subject value.');
+  }
+  return null;
 }
 
 function readNow(env) {

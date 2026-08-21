@@ -1,8 +1,18 @@
 import { validateSiteSlug } from '@xd/pages-runtime-protocol';
 
 import { authenticateApiRequest } from './auth.js';
-import { isSiteVisibility } from './domain/sites/access-policy.js';
-import { actorCanManageSite, actorHasPublishScope } from './domain/sites/authorization.js';
+import {
+  isSiteVisibility,
+  mergeSiteAclEntries,
+  normalizeSiteAclEntries,
+  removeSiteAclEntries,
+  teamOwnerSupportsVisibility,
+} from './domain/sites/access-policy.js';
+import {
+  actorCanManageSite,
+  actorCanReadSitesApi,
+  actorHasPublishScope,
+} from './domain/sites/authorization.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
 import { nextId } from './id.js';
 import {
@@ -18,7 +28,7 @@ import {
   createRuntimeConfigApplication,
   runtimeConfigSyncErrorResponse,
 } from './transport/shared/runtime-config-application.js';
-import { mutateUserSiteAccessPolicy } from './transport/shared/site-policy-application.js';
+import { mutateUserSiteAccessPolicy, siteAclErrorResponse } from './transport/shared/site-policy-application.js';
 import {
   createSiteOwnershipApplication,
   siteTransferErrorResponse,
@@ -34,9 +44,6 @@ import {
 
 export { actorCanManageSite };
 
-const ACL_SUBJECT_TYPES = new Set(['email', 'department']);
-const ACL_ACCESS_ROLES = new Set(['viewer']);
-const MAX_ACL_ENTRIES = 200;
 const MAX_RUNTIME_VAR_BODY_BYTES = 64 * 1024;
 const VISIBILITY_ACTION = '请使用 internal、org、acl、owner 或 disabled。';
 const RESERVED_SITE_SLUG_ACTION = '该站点名是 XD Cell 平台保留项，请换一个业务站点名。';
@@ -392,7 +399,7 @@ export async function syncActiveWfpPlainTextBindings(store, env, config, site, s
 
 
 async function listSites(store, actor, environment) {
-  if (!actorCanReadSite(actor)) {
+  if (!actorCanReadSitesApi(actor)) {
     return jsonError('SITE_READ_FORBIDDEN', 'Actor cannot read sites.', 403, 'Use a token with read:site scope.');
   }
   const sites = await store.listSitesForUser(actor.userId, actor, environment);
@@ -402,7 +409,7 @@ async function listSites(store, actor, environment) {
 }
 
 async function getSite(store, actor, siteId, environment) {
-  if (!actorCanReadSite(actor, siteId)) {
+  if (!actorCanReadSitesApi(actor, siteId)) {
     return jsonError('SITE_READ_FORBIDDEN', 'Actor cannot read this site.', 403, 'Use a token with read:site scope.');
   }
   const site = await store.getSiteForUser(siteId, actor.userId, actor, environment);
@@ -429,7 +436,7 @@ async function updateSite(request, env, config, store, actor, siteId, ctx) {
   if (!isSiteVisibility(visibility)) {
     return jsonError('SITE_VISIBILITY_INVALID', 'Site visibility is invalid.', 400, VISIBILITY_ACTION);
   }
-  if (site.ownerType === 'team' && visibility === 'owner') return teamOwnerVisibilityUnsupported();
+  if (!teamOwnerSupportsVisibility(site, visibility)) return teamOwnerVisibilityUnsupported();
 
   const mutation = await mutateUserSiteAccessPolicy({
     env,
@@ -496,7 +503,7 @@ async function transferSiteOwner(request, env, config, store, actor, siteId) {
   const target = await resolveSiteTransferTarget(store, actor, site, body, config.environment);
   if (target instanceof Response) return target;
   const currentVisibility = site.route?.visibility || site.defaultVisibility;
-  if (target.ownerType === 'team' && currentVisibility === 'owner') return teamOwnerVisibilityUnsupported();
+  if (!teamOwnerSupportsVisibility(target, currentVisibility)) return teamOwnerVisibilityUnsupported();
 
   let updated;
   let route;
@@ -745,7 +752,7 @@ async function createSite(request, env, config, store, actor) {
   if (!isSiteVisibility(visibility)) {
     return jsonError('SITE_VISIBILITY_INVALID', 'Site visibility is invalid.', 400, VISIBILITY_ACTION);
   }
-  if (ownerType === 'team' && visibility === 'owner') return teamOwnerVisibilityUnsupported();
+  if (!teamOwnerSupportsVisibility({ ownerType }, visibility)) return teamOwnerVisibilityUnsupported();
 
   let ownerId = actor.userId;
   if (ownerType === 'team') {
@@ -838,12 +845,6 @@ function formatSite(site) {
   };
 }
 
-function actorCanReadSite(actor, siteId) {
-  if (actor.type !== 'access_key') return true;
-  if (siteId && actor.siteId && actor.siteId !== siteId) return false;
-  return actor.scopes.includes('read:site') || actor.scopes.includes('deploy:site') || actor.scopes.includes('*');
-}
-
 async function getOwnerSite(store, actor, siteId, environment) {
   const site = await store.getSiteForUser(siteId, actor.userId, actor, environment);
   if (!site) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
@@ -866,7 +867,7 @@ async function getRuntimeManageableSiteBySlug(store, actor, siteSlug, environmen
   if (!site) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site slug.');
   const visible = await store.getSiteForUser(site.id, actor.userId, actor, environment);
   if (!visible) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site slug and token scope.');
-  if (!actorCanManageRuntimeConfig(actor, visible)) {
+  if (!actorCanManageSite(actor, visible)) {
     return jsonError(
       'DEPLOY_FORBIDDEN',
       'Actor cannot manage runtime config for this site.',
@@ -875,10 +876,6 @@ async function getRuntimeManageableSiteBySlug(store, actor, siteSlug, environmen
     );
   }
   return visible;
-}
-
-function actorCanManageRuntimeConfig(actor, site) {
-  return actorCanManageSite(actor, site);
 }
 
 function normalizeSecretNameForResponse(value) {
@@ -977,51 +974,13 @@ function byteLength(value) {
 }
 
 export function normalizeAclEntries(value, env) {
-  if (!Array.isArray(value) || value.length > MAX_ACL_ENTRIES) {
-    return jsonError('ACL_ENTRIES_INVALID', 'ACL entries are invalid.', 400, 'Send an entries array with at most 200 items.');
+  try {
+    return normalizeSiteAclEntries(value, { createId: () => nextId(env, 'acl') });
+  } catch (error) {
+    const response = siteAclErrorResponse(error);
+    if (response) return response;
+    throw error;
   }
-
-  const deduped = new Map();
-  for (const entry of value) {
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
-      return jsonError('ACL_ENTRY_INVALID', 'ACL entry is invalid.', 400, 'Send ACL entry objects.');
-    }
-
-    const effect = entry.effect || 'allow';
-    if (effect !== 'allow') {
-      return jsonError('ACL_EFFECT_UNSUPPORTED', 'ACL deny entries are not supported.', 400, 'Use allow-only ACL entries.');
-    }
-
-    const accessRole = entry.accessRole || 'viewer';
-    if (!ACL_ACCESS_ROLES.has(accessRole)) {
-      return jsonError('ACL_ROLE_UNSUPPORTED', 'ACL role is not supported.', 400, 'Use viewer ACL entries.');
-    }
-
-    const subjectType = String(entry.subjectType || '')
-      .trim()
-      .toLowerCase();
-    if (!ACL_SUBJECT_TYPES.has(subjectType)) {
-      return jsonError('ACL_SUBJECT_TYPE_UNSUPPORTED', 'ACL subject type is not supported.', 400, 'Use email or department.');
-    }
-
-    const subjectValue = normalizeAclSubjectValue(subjectType, entry.subjectValue);
-    if (!subjectValue) {
-      return jsonError('ACL_SUBJECT_VALUE_INVALID', 'ACL subject value is invalid.', 400, 'Use a non-empty subject value.');
-    }
-
-    const key = `${effect}:${subjectType}:${subjectValue}:${accessRole}`;
-    if (!deduped.has(key)) {
-      deduped.set(key, {
-        id: nextId(env, 'acl'),
-        subjectType,
-        subjectValue,
-        accessRole,
-        effect,
-      });
-    }
-  }
-
-  return [...deduped.values()];
 }
 
 async function readAndNormalizeAclEntries(request, env) {
@@ -1034,60 +993,6 @@ async function readAndNormalizeAclEntries(request, env) {
   const exposureError = rejectUserExposureMutation(body);
   if (exposureError) return exposureError;
   return normalizeAclEntries(body.entries, env);
-}
-
-function normalizeAclSubjectValue(subjectType, value) {
-  const normalized = String(value || '').trim();
-  if (subjectType === 'email') {
-    const email = normalized.toLowerCase();
-    return isValidEmailAclSubject(email) ? email : '';
-  }
-  if (subjectType === 'department') return normalizeDepartmentPath(normalized);
-  return '';
-}
-
-function isValidEmailAclSubject(value) {
-  return /^[^\s@]+@[^\s@]+$/.test(value);
-}
-
-function normalizeDepartmentPath(value) {
-  if (!value || hasControlCharacter(value)) return '';
-  const parts = value
-    .split('/')
-    .map((part) => part.trim())
-    .filter(Boolean);
-  if (parts.length === 0) return '';
-  const path = parts.join('/');
-  if (path.length > 256 || parts.some((part) => part.length > 80)) return '';
-  return path;
-}
-
-function hasControlCharacter(value) {
-  return [...value].some((char) => {
-    const code = char.charCodeAt(0);
-    return code <= 31 || code === 127;
-  });
-}
-
-function mergeSiteAclEntries(existing, incoming) {
-  const entries = new Map(existing.map((entry) => [aclEntryKey(entry), entry]));
-  for (const entry of incoming) {
-    const key = aclEntryKey(entry);
-    if (!entries.has(key)) entries.set(key, entry);
-  }
-  if (entries.size > MAX_ACL_ENTRIES) {
-    return jsonError('ACL_ENTRIES_INVALID', 'ACL entries are invalid.', 400, 'A site can have at most 200 ACL entries.');
-  }
-  return [...entries.values()];
-}
-
-function removeSiteAclEntries(existing, removed) {
-  const removedKeys = new Set(removed.map(aclEntryKey));
-  return existing.filter((entry) => !removedKeys.has(aclEntryKey(entry)));
-}
-
-function aclEntryKey(entry) {
-  return `${entry.effect || 'allow'}:${entry.subjectType}:${entry.subjectValue}:${entry.accessRole || 'viewer'}`;
 }
 
 export async function restoreSiteVisibilityAfterSnapshotFailure(
