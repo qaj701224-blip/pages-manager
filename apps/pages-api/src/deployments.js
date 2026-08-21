@@ -45,6 +45,7 @@ const VISIBILITIES = new Set(['internal', 'org', 'acl', 'owner', 'disabled']);
 const PROVIDER_DIAGNOSTIC_CLIENT_CODES = new Set(['WFP_API_ERROR', 'WFP_API_INVALID_JSON', 'WFP_NETWORK_ERROR']);
 const PROVIDER_DIAGNOSTIC_OPERATIONS = new Set(['assets_upload_session', 'assets_upload', 'worker_put', 'worker_get']);
 const TERMINAL_DEPLOYMENT_STATUSES = new Set(['succeeded', 'failed']);
+const DEPLOYMENT_FAILURE_RECOVERY_KEY_PART = 'deployment_failure_recovery';
 const RESERVED_SITE_SLUG_ACTION = '该站点名是 XD Cell 平台保留项，请换一个业务站点名。';
 const deploymentRequestTraceStates = new WeakMap();
 
@@ -432,6 +433,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
     await finishRequestAuthStageFromResponse(authStage, response, 'authorization_error');
     return response;
   }
+  await recoverFailedDeploymentsForSite({ store, env, config, ctx, actor, site });
   setRequestTraceStage(trace, 'runtime_config', 'build_request_hash');
   let requestHash;
   try {
@@ -519,7 +521,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
   await finishValidatedRequestTrace(trace, authStage);
   await traceSucceeded(trace, { stage: 'deployment_record', operation: 'create_deployment' });
   clearRequestTraceStage(trace);
-  const finalizeFailedDeployment = (patch, { bestEffort = false } = {}) =>
+  const finalizeFailedDeployment = (patch) =>
     updateDeploymentToFailedAndNotify({
       store,
       env,
@@ -530,7 +532,6 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
       actor,
       site,
       trace,
-      bestEffort,
     });
   if (site.pendingSiteCreation) {
     const creationResult = await applyPendingDeploySiteCreation(env, config, store, actor, site);
@@ -539,8 +540,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
         deploymentOperationFailurePatch({
           errorCode: 'SITE_CREATE_FAILED',
           errorMessage: 'Site creation failed.',
-        }),
-        { bestEffort: true }
+        })
       );
       return creationResult;
     }
@@ -569,7 +569,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
           diagnostics: { causeClass: 'runtime_config_error' },
         });
       }
-      await finalizeFailedDeployment(runtimeConfigFailurePatch(), { bestEffort: true });
+      await finalizeFailedDeployment(runtimeConfigFailurePatch());
       return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime configuration is unavailable.', 503, 'Retry later.');
     }
     try {
@@ -586,7 +586,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
           diagnostics: { causeClass: 'runtime_config_error' },
         });
       }
-      await finalizeFailedDeployment(runtimeConfigFailurePatch(), { bestEffort: true });
+      await finalizeFailedDeployment(runtimeConfigFailurePatch());
       return jsonError(
         'RUNTIME_CONFIG_UNSUPPORTED',
         'Runtime configuration is unavailable.',
@@ -616,8 +616,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
             ? 'RUNTIME_BINDING_NAME_CONFLICT'
             : 'RUNTIME_BINDINGS_LIMIT_EXCEEDED',
         errorMessage: 'Runtime bindings are invalid.',
-      }),
-      { bestEffort: true }
+      })
     );
     if (error?.message === 'RUNTIME_BINDING_NAME_CONFLICT') {
       return jsonError(
@@ -645,7 +644,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
         diagnostics: { causeClass: 'runtime_config_error' },
       });
     }
-    await finalizeFailedDeployment(runtimeConfigFailurePatch(), { bestEffort: true });
+    await finalizeFailedDeployment(runtimeConfigFailurePatch());
     return jsonError(
       'RUNTIME_CONFIG_UNSUPPORTED',
       'Runtime configuration is unavailable.',
@@ -676,8 +675,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
             ? 'RUNTIME_BINDING_NAME_CONFLICT'
             : 'RUNTIME_BINDINGS_LIMIT_EXCEEDED',
         errorMessage: 'Runtime bindings are invalid.',
-      }),
-      { bestEffort: true }
+      })
     );
     if (error?.message === 'RUNTIME_BINDING_NAME_CONFLICT') {
       return jsonError(
@@ -763,8 +761,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
           cause: deploymentStoreErrorCause(error),
         }),
         completedAt: readNow(env),
-      },
-      { bestEffort: true }
+      }
     );
     return deploymentStateWriteFailed();
   }
@@ -953,8 +950,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
           cause: deploymentStoreErrorCause(error),
         }),
         completedAt: readNow(env),
-      },
-      { bestEffort: true }
+      }
     );
     return deploymentStateWriteFailed();
   }
@@ -1035,7 +1031,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
         originalFailure: { stage: 'runtime_config_commit', code: 'RUNTIME_CONFIG_UNSUPPORTED' },
         trafficImpact: 'old_version_retained',
       });
-      await finalizeFailedDeployment(runtimeConfigFailurePatch(), { bestEffort: true });
+      await finalizeFailedDeployment(runtimeConfigFailurePatch());
       return runtimeConfigUnavailable();
     }
     const preCommitRuntimeSnapshotError = await assertRuntimeConfigSnapshotUnchanged(
@@ -1106,7 +1102,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
         originalFailure: { stage: 'runtime_config_commit', code: 'RUNTIME_CONFIG_UNSUPPORTED' },
         trafficImpact: 'old_version_retained',
       });
-      await finalizeFailedDeployment(runtimeConfigFailurePatch(), { bestEffort: true });
+      await finalizeFailedDeployment(runtimeConfigFailurePatch());
       return runtimeConfigUnavailable();
     }
     if (runtimeConfigCommitStage) {
@@ -1192,8 +1188,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
           deploymentOperationFailurePatch({
             errorCode: 'SITE_TRANSFER_FAILED',
             errorMessage: 'Site owner transfer failed.',
-          }),
-          { bestEffort: true }
+          })
         );
         return transferResult;
       }
@@ -1656,8 +1651,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
           cause: deploymentStoreErrorCause(error),
         }),
         completedAt: readNow(env),
-      },
-      { bestEffort: true }
+      }
     );
     return deploymentStateWriteFailed();
   }
@@ -1978,6 +1972,7 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
     await finishRequestAuthStageFromResponse(authStage, response, 'authorization_error');
     return response;
   }
+  await recoverFailedDeploymentsForSite({ store, env, config, ctx, actor, site });
 
   setRequestTraceStage(trace, 'payload_validation', 'rollback_validate');
   const versionAvailabilityError = await validateRollbackVersion(store, version, config.environment);
@@ -2063,7 +2058,7 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
     ['version_create', 'rollback_version_create_not_applicable'],
   ]);
 
-  const finalizeFailedRollback = (patch, { bestEffort = false } = {}) =>
+  const finalizeFailedRollback = (patch) =>
     updateDeploymentToFailedAndNotify({
       store,
       env,
@@ -2074,7 +2069,6 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
       actor,
       site,
       trace,
-      bestEffort,
     });
 
   let rollbackLease = null;
@@ -2111,8 +2105,7 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
         errorMessage: 'Site policy lock could not be acquired.',
         failureStage: 'rollback_policy_lock',
         errorClass: 'site_policy_lock_error',
-      }),
-      { bestEffort: true }
+      })
     );
     return jsonError(
       'SITE_POLICY_LOCKED',
@@ -2171,8 +2164,7 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
         errorMessage: 'Rollback route state could not be read.',
         failureStage: 'rollback_activate_route',
         errorClass: 'rollback_route_state_read_error',
-      }),
-      { bestEffort: true }
+      })
     );
     return jsonError(
       'ROLLBACK_ACTIVATION_FAILED',
@@ -2197,8 +2189,7 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
         errorMessage: 'Route changed while rollback was activating.',
         failureStage: 'rollback_activate_route',
         errorClass: 'route_activation_conflict',
-      }),
-      { bestEffort: true }
+      })
     );
     return jsonError('ROUTE_ACTIVATION_CONFLICT', 'Route changed while rollback was activating.', 409, 'Retry the rollback.');
   }
@@ -2319,8 +2310,7 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
           errorMessage: error.message,
           failureStage: 'rollback_public_office_net',
           errorClass: 'public_office_net_error',
-        }),
-        { bestEffort: true }
+        })
       );
       return jsonError(error.code, error.message, error.status || 503, error.action);
     }
@@ -2340,8 +2330,7 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
         errorMessage: message,
         failureStage: 'rollback_activate_route',
         errorClass: code === 'SITE_POLICY_CONFLICT' ? 'site_policy_conflict' : 'rollback_activation_error',
-      }),
-      { bestEffort: true }
+      })
     );
     return jsonError(code, message, status, action);
   }
@@ -3619,23 +3608,25 @@ async function updateDeploymentToFailedAndNotify({
   actor,
   site,
   trace,
-  bestEffort = false,
 }) {
   const before = await store.getDeployment(deploymentId, config.environment).catch(() => null);
+  const failedPatch = {
+    ...patch,
+    status: 'failed',
+    completedAt: patch.completedAt || readNow(env),
+  };
   const persistStage = trace
     ? startDeploymentStage(trace, {
         stage: 'deployment_state_persist',
         operation: 'persist_failed_deployment',
       })
     : null;
+  let initialPersistFailed = false;
   let updated;
   try {
-    updated = await store.updateDeployment(deploymentId, {
-      ...patch,
-      status: 'failed',
-      completedAt: patch.completedAt || readNow(env),
-    });
+    updated = await store.updateDeployment(deploymentId, failedPatch);
   } catch (cause) {
+    initialPersistFailed = true;
     await recordDeploymentStatePersistFailure({
       trace,
       env,
@@ -3644,12 +3635,44 @@ async function updateDeploymentToFailedAndNotify({
       stageHandle: persistStage,
       cause,
     });
-    if (bestEffort) return null;
-    const error = new Error('Deployment failure state could not be persisted.', { cause });
-    error.code = 'DEPLOYMENT_STATE_WRITE_FAILED';
-    throw error;
+    const recoveryStage = trace
+      ? startDeploymentStage(trace, {
+          stage: 'deployment_state_persist',
+          operation: 'recover_failed_deployment',
+        })
+      : null;
+    try {
+      updated = await store.updateDeployment(deploymentId, failedPatch);
+    } catch (recoveryCause) {
+      await recordDeploymentStatePersistFailure({
+        trace,
+        env,
+        deploymentId,
+        operation: 'recover_failed_deployment',
+        stageHandle: recoveryStage,
+        cause: recoveryCause,
+      });
+      const recoveryMarkerStored = await persistFailedDeploymentRecoveryMarker(env, config, {
+        deploymentId,
+        siteId: site?.id || trace?.siteId || null,
+        operation: trace?.operation || null,
+        failedPatch,
+      });
+      logDeploymentRepairRequired(env, {
+        environment: config.environment,
+        siteId: site?.id || trace?.siteId || null,
+        deploymentId,
+        reason: recoveryMarkerStored
+          ? 'deployment_failure_state_recovery_deferred'
+          : 'deployment_failure_state_recovery_failed',
+      });
+      const error = new Error('Deployment failure state could not be persisted.', { cause: recoveryCause });
+      error.code = 'DEPLOYMENT_STATE_WRITE_FAILED';
+      throw error;
+    }
+    if (recoveryStage) await finishDeploymentStage(recoveryStage, { status: 'succeeded' });
   }
-  if (persistStage) await finishDeploymentStage(persistStage, { status: 'succeeded' });
+  if (persistStage && !initialPersistFailed) await finishDeploymentStage(persistStage, { status: 'succeeded' });
   if (!before || !updated || before.status === 'failed' || updated.status !== 'failed' || !site) {
     if (trace) {
       await recordDeploymentStage(trace, {
@@ -4126,7 +4149,6 @@ async function recoverUnexpectedRequestFailure({ trace, store, env, config, ctx,
   try {
     const reconciled = await reconcileCommittedDeployment(store, deployment, config.environment, env, trace);
     if (TERMINAL_DEPLOYMENT_STATUSES.has(reconciled?.status)) return reconciled;
-    deployment = reconciled || deployment;
   } catch {
     logDeploymentRepairRequired(env, {
       environment: config.environment,
@@ -4145,22 +4167,250 @@ async function recoverUnexpectedRequestFailure({ trace, store, env, config, ctx,
       // Failure persistence is still useful when optional webhook context cannot be loaded.
     }
   }
-  return updateDeploymentToFailedAndNotify({
-    store,
-    env,
-    config,
-    ctx,
-    deploymentId,
-    patch: deploymentOperationFailurePatch({
-      errorCode: 'DEPLOYMENT_REQUEST_FAILED',
-      errorMessage: 'Deployment request could not be processed.',
-      operatorAction: trace.operation === 'rollback' ? 'retry_rollback' : 'retry_deploy',
-    }),
-    actor,
-    site,
-    trace,
-    bestEffort: true,
+  try {
+    return await updateDeploymentToFailedAndNotify({
+      store,
+      env,
+      config,
+      ctx,
+      deploymentId,
+      patch: deploymentOperationFailurePatch({
+        errorCode: 'DEPLOYMENT_REQUEST_FAILED',
+        errorMessage: 'Deployment request could not be processed.',
+        operatorAction: trace.operation === 'rollback' ? 'retry_rollback' : 'retry_deploy',
+      }),
+      actor,
+      site,
+      trace,
+    });
+  } catch (error) {
+    if (error?.code !== 'DEPLOYMENT_STATE_WRITE_FAILED') throw error;
+    return deployment;
+  }
+}
+
+async function persistFailedDeploymentRecoveryMarker(env, config, input) {
+  const markers = env?.ROUTE_SNAPSHOTS;
+  if (!markers || typeof markers.put !== 'function' || !input.siteId || !input.deploymentId) return false;
+  const marker = {
+    schemaVersion: 1,
+    environment: config.environment,
+    siteId: input.siteId,
+    deploymentId: input.deploymentId,
+    operation: input.operation === 'rollback' ? 'rollback' : 'deploy',
+    failedPatch: recoveryMarkerFailedPatch(input.failedPatch, env),
+    createdAt: readNow(env),
+  };
+  try {
+    await markers.put(deploymentFailureRecoveryKey(config.environment, input.siteId, input.deploymentId), JSON.stringify(marker));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function recoverFailedDeploymentsForSite({ store, env, config, ctx, actor, site }) {
+  const markers = env?.ROUTE_SNAPSHOTS;
+  if (!markers || typeof markers.list !== 'function' || typeof markers.get !== 'function') return;
+
+  let markerKeys;
+  try {
+    markerKeys = await listDeploymentFailureRecoveryKeys(markers, config.environment, site.id);
+  } catch (cause) {
+    const error = new Error('Deployment recovery markers could not be listed.', { cause });
+    error.code = 'DEPLOYMENT_STATE_WRITE_FAILED';
+    throw error;
+  }
+  for (const markerKey of markerKeys) {
+    let rawMarker;
+    try {
+      rawMarker = await markers.get(markerKey);
+    } catch (cause) {
+      const error = new Error('Deployment recovery marker could not be read.', { cause });
+      error.code = 'DEPLOYMENT_STATE_WRITE_FAILED';
+      throw error;
+    }
+    let marker;
+    try {
+      marker = parseDeploymentFailureRecoveryMarker(rawMarker, config.environment, site.id);
+    } catch {
+      marker = null;
+    }
+    if (!marker) {
+      await deleteDeploymentFailureRecoveryMarker(markers, markerKey);
+      continue;
+    }
+
+    let deployment;
+    try {
+      deployment = await store.getDeployment(marker.deploymentId, config.environment);
+    } catch (cause) {
+      const error = new Error('Deployment state could not be read for recovery.', { cause });
+      error.code = 'DEPLOYMENT_STATE_WRITE_FAILED';
+      throw error;
+    }
+    if (!deployment || deployment.siteId !== site.id || TERMINAL_DEPLOYMENT_STATUSES.has(deployment.status)) {
+      await deleteDeploymentFailureRecoveryMarker(markers, markerKey);
+      continue;
+    }
+
+    let reconciled;
+    try {
+      reconciled = await reconcileCommittedDeployment(store, deployment, config.environment, env);
+    } catch (cause) {
+      const error = new Error('Deployment commit state could not be read for recovery.', { cause });
+      error.code = 'DEPLOYMENT_STATE_WRITE_FAILED';
+      throw error;
+    }
+    if (TERMINAL_DEPLOYMENT_STATUSES.has(reconciled?.status)) {
+      let persisted;
+      try {
+        persisted = await store.getDeployment(marker.deploymentId, config.environment);
+      } catch (cause) {
+        const error = new Error('Reconciled deployment state could not be read.', { cause });
+        error.code = 'DEPLOYMENT_STATE_WRITE_FAILED';
+        throw error;
+      }
+      if (TERMINAL_DEPLOYMENT_STATUSES.has(persisted?.status)) {
+        await deleteDeploymentFailureRecoveryMarker(markers, markerKey);
+        continue;
+      }
+      const error = new Error('Reconciled deployment state could not be persisted.');
+      error.code = 'DEPLOYMENT_STATE_WRITE_FAILED';
+      throw error;
+    }
+
+    const recoveryTrace = await traceForStoredDeployment(store, deployment, config.environment, env).catch(() => null);
+    try {
+      const recovered = await updateDeploymentToFailedAndNotify({
+        store,
+        env,
+        config,
+        ctx,
+        deploymentId: marker.deploymentId,
+        patch: marker.failedPatch,
+        actor,
+        site,
+        trace: recoveryTrace,
+      });
+      if (!TERMINAL_DEPLOYMENT_STATUSES.has(recovered?.status)) continue;
+      if (recoveryTrace) {
+        await recordDeploymentStage(recoveryTrace, {
+          stage: 'deployment_state_persist',
+          operation: 'recover_failed_deployment_marker',
+          status: 'compensated',
+          diagnostics: {
+            causeClass: 'deployment_store_recovery',
+            operatorAction: marker.operation === 'rollback' ? 'retry_rollback' : 'retry_deploy',
+          },
+        });
+      }
+      await deleteDeploymentFailureRecoveryMarker(markers, markerKey);
+    } catch (error) {
+      if (error?.code === 'DEPLOYMENT_STATE_WRITE_FAILED') throw error;
+      logDeploymentRepairRequired(env, {
+        environment: config.environment,
+        siteId: site.id,
+        deploymentId: marker.deploymentId,
+        reason: 'deployment_failure_state_recovery_failed',
+      });
+    }
+  }
+}
+
+async function listDeploymentFailureRecoveryKeys(markers, environment, siteId) {
+  const prefix = deploymentFailureRecoveryPrefix(environment, siteId);
+  const keys = [];
+  let cursor;
+  let hasNextPage = true;
+  while (hasNextPage) {
+    const page = await markers.list(omitUndefined({ prefix, cursor }));
+    for (const item of page?.keys || []) {
+      if (typeof item?.name === 'string' && item.name.startsWith(prefix)) keys.push(item.name);
+    }
+    hasNextPage = page?.list_complete === false && Boolean(page.cursor);
+    cursor = hasNextPage ? page.cursor : undefined;
+  }
+  return keys;
+}
+
+function deploymentFailureRecoveryPrefix(environment, siteId) {
+  return `${environment}:${DEPLOYMENT_FAILURE_RECOVERY_KEY_PART}:${siteId}:`;
+}
+
+function deploymentFailureRecoveryKey(environment, siteId, deploymentId) {
+  return `${deploymentFailureRecoveryPrefix(environment, siteId)}${deploymentId}`;
+}
+
+function recoveryMarkerFailedPatch(patch, env) {
+  return omitUndefined({
+    versionId: safeRecoveryMarkerId(patch?.versionId),
+    previousVersionId: safeRecoveryMarkerId(patch?.previousVersionId),
+    errorCode: safeRecoveryMarkerErrorCode(patch?.errorCode) || 'DEPLOYMENT_STATE_WRITE_FAILED',
+    errorMessage: safeRecoveryMarkerMessage(patch?.errorMessage) || 'Deployment failure state required recovery.',
+    failureStage: safeRecoveryMarkerIdentifier(patch?.failureStage) || 'persist_deployment_state',
+    failureDiagnostics: safeRecoveryMarkerDiagnostics(patch?.failureDiagnostics),
+    completedAt: safeRecoveryMarkerTimestamp(patch?.completedAt) || readNow(env),
   });
+}
+
+function parseDeploymentFailureRecoveryMarker(raw, environment, siteId) {
+  if (typeof raw !== 'string' || raw.length > 32 * 1024) return null;
+  const marker = JSON.parse(raw);
+  if (
+    !marker ||
+    marker.schemaVersion !== 1 ||
+    marker.environment !== environment ||
+    marker.siteId !== siteId ||
+    !safeRecoveryMarkerId(marker.deploymentId)
+  ) {
+    return null;
+  }
+  return {
+    deploymentId: marker.deploymentId,
+    operation: marker.operation === 'rollback' ? 'rollback' : 'deploy',
+    failedPatch: recoveryMarkerFailedPatch(marker.failedPatch),
+  };
+}
+
+function safeRecoveryMarkerId(value) {
+  return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value) ? value : undefined;
+}
+
+function safeRecoveryMarkerErrorCode(value) {
+  return typeof value === 'string' && /^[A-Z][A-Z0-9_]{0,95}$/.test(value) ? value : undefined;
+}
+
+function safeRecoveryMarkerIdentifier(value) {
+  return typeof value === 'string' && /^[a-z][a-z0-9_]{0,95}$/.test(value) ? value : undefined;
+}
+
+function safeRecoveryMarkerMessage(value) {
+  if (typeof value !== 'string' || !value || value.length > 512) return undefined;
+  return /(?:authorization|bearer|cookie|password|secret|token|https?:\/\/)/i.test(value) ? undefined : value;
+}
+
+function safeRecoveryMarkerDiagnostics(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || value.schemaVersion !== 1) return undefined;
+  try {
+    const serialized = JSON.stringify(value);
+    return serialized.length <= 24 * 1024 ? JSON.parse(serialized) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function safeRecoveryMarkerTimestamp(value) {
+  return typeof value === 'string' && Number.isFinite(Date.parse(value)) ? value : undefined;
+}
+
+async function deleteDeploymentFailureRecoveryMarker(markers, key) {
+  if (typeof markers?.delete !== 'function') return;
+  try {
+    await markers.delete(key);
+  } catch {
+    // A retained marker is safe: the next request observes the terminal deployment and retries deletion.
+  }
 }
 
 async function bindExistingDeploymentTrace(trace, store, deployment, environment) {
