@@ -96,6 +96,30 @@ test('deployment route activation reports a typed CAS conflict without hiding ro
   );
 });
 
+test('deployment route activation preserves the rollback artifact availability fence', async () => {
+  const calls = [];
+  const application = createDeploymentRouteActivation({
+    routes: {
+      async activate(command) {
+        calls.push(command);
+        return { id: 'route_1' };
+      },
+    },
+    clock: { now: () => '2026-08-21T00:00:00.000Z' },
+  });
+
+  await application.activate({
+    siteId: 'site_1',
+    environment: 'production',
+    version,
+    lease: null,
+    activation,
+    requiredArtifactAvailability: 'active',
+  });
+
+  assert.equal(calls[0].route.requiredArtifactAvailability, 'active');
+});
+
 test('deployment route activation exposes the pure activation decision', () => {
   const application = createDeploymentRouteActivation({
     routes: { activate: async () => null },

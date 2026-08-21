@@ -19,6 +19,9 @@ export function createDeploymentRouteActivation({ routes, clock }) {
         dispatchBindingName: command.version.dispatchBindingName,
         slotId: command.version.slotId,
         visibility: command.activation.visibility,
+        ...(command.requiredArtifactAvailability
+          ? { requiredArtifactAvailability: command.requiredArtifactAvailability }
+          : {}),
         lease: command.lease,
         updatedAt: clock.now(),
       },

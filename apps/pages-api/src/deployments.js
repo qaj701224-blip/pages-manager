@@ -1816,24 +1816,22 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
           operation: 'rollback_route_activate',
         })
       : null;
-    route = await store.activateSiteVersion(
-      site.id,
-      {
-        activeVersionId: version.id,
-        workerName: version.workerName,
-        runtime: version.runtime,
-        executionProvider: version.executionProvider,
-        dispatchType: version.dispatchType,
-        dispatchBindingName: version.dispatchBindingName,
-        slotId: version.slotId,
+    const rollbackRouteActivation = createDeploymentRouteActivationApplication(store, env);
+    const activationResult = await rollbackRouteActivation.activate({
+      siteId: site.id,
+      environment: config.environment,
+      version,
+      lease: rollbackLease,
+      activation: {
         visibility: currentRoute.visibility,
-        requiredArtifactAvailability: 'active',
-        lease: rollbackLease,
-        updatedAt: readNow(env),
+        expectedRoute: {
+          ...rollbackLatestRoute,
+          exposure: normalizeExposureForDeployment(rollbackLatestRoute.exposure),
+        },
       },
-      config.environment,
-      { ...rollbackLatestRoute, exposure: normalizeExposureForDeployment(rollbackLatestRoute.exposure) }
-    );
+      requiredArtifactAvailability: 'active',
+    });
+    route = activationResult.ok ? activationResult.route : null;
     if (rollbackRouteActivateStage) {
       await finishDeploymentStage(rollbackRouteActivateStage, {
         status: route ? 'succeeded' : 'failed',
