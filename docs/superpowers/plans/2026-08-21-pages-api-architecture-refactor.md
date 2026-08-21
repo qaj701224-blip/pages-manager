@@ -328,9 +328,9 @@ node --test apps/pages-api/src/store-contract.test.js apps/pages-api/src/route-s
 
 **Steps**
 
-- [ ] scheduled handler 与 Admin run-due 调用同一个 cleanup application service。
-- [ ] 保留 environment、reserved resource、active reference、destructive precondition 和审计顺序。
-- [ ] `ctx.waitUntil` 通过窄 taskScheduler port 注入。
+- [x] scheduled handler 与 Admin run-due 调用同一个 cleanup application service。
+- [x] 保留 environment、reserved resource、active reference、destructive precondition 和审计顺序。
+- [x] `ctx.waitUntil` 通过窄 taskScheduler port 注入。
 
 **Phase verify**
 
