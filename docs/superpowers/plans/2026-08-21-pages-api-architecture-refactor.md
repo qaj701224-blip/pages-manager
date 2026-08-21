@@ -320,7 +320,7 @@ node --test apps/pages-api/src/store-contract.test.js apps/pages-api/src/route-s
 - [x] dashboard/deployment trace/audit projections；
 - [x] public exposure mutation；
 - [x] WFP orphan inventory/backfill；
-- [ ] ordinary Worker inventory/retirement；
+- [x] ordinary Worker inventory/retirement；
 - [ ] v1 inventory/retirement；
 - [ ] admin site/team/user mutations。
 
