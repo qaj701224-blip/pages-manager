@@ -10,6 +10,7 @@ import { createDeploymentRouteSnapshotCommit } from './application/deployments/c
 import { createDeploymentRuntimeConfigCommit } from './application/deployments/commit-runtime-config.js';
 import { createDeploymentVersionCreation } from './application/deployments/create-version.js';
 import { createDeploymentRecord } from './application/deployments/deployment-record.js';
+import { createPublicWorkerOfficeNetGuard } from './application/deployments/ensure-public-office-net.js';
 import { createDeploymentProviderOperations } from './application/deployments/provider-operations.js';
 import { createDeploySiteResolution } from './application/deployments/resolve-deploy-site.js';
 import { createRollbackSiteResolution } from './application/deployments/resolve-rollback-site.js';
@@ -46,6 +47,7 @@ import { actorCanDeploySite, actorCanReadSite } from './domain/sites/authorizati
 import { jsonError, jsonOk } from './http.js';
 import { nextId } from './id.js';
 import { createSiteRouteSnapshots } from './infrastructure/route-snapshots/site-route-snapshots.js';
+import { createPublicOfficeNetSettings } from './infrastructure/providers/public-office-net-settings.js';
 import {
   buildRouteSnapshot,
   clearRoutePointerIfCurrent,
@@ -3149,69 +3151,29 @@ async function assertRouteSnapshotConverged(env, store, route, environment) {
 
 export async function ensurePublicWorkerOfficeNetAbsent(
   provider,
-  { store, environment, siteId, workerName, executionProvider, deploymentShape, exposure, signal }
+  command
 ) {
-  if (exposure !== 'public') return { status: 'not_applicable', reason: 'exposure-not-public' };
-  if (deploymentShape === 'assets-only') return { status: 'not_applicable', reason: 'assets-only' };
-  if (deploymentShape !== 'worker-only' && deploymentShape !== 'worker-with-assets') {
-    throw deploymentOperationError('SITE_PUBLIC_OFFICE_NET_REMOVE_FAILED', {
+  const result = await createPublicWorkerOfficeNetGuardApplication(command.store).ensure({
+    ...command,
+    provider,
+  });
+  if (result.ok) return result.result;
+
+  if (result.error.reason === 'deployment_shape_unknown') {
+    throw deploymentOperationError(result.error.code, {
       message: 'The public Worker deployment shape is not recognized.',
       action: 'Deploy a known Worker shape and retry the public activation.',
     });
   }
-  if (executionProvider === 'normal-worker-slot') return { status: 'not_applicable', reason: 'normal-worker-slot' };
-  if (executionProvider !== 'wfp') {
-    throw deploymentOperationError('SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED', {
+  if (result.error.reason === 'execution_provider_unsupported') {
+    throw deploymentOperationError(result.error.code, {
       message: 'The public Worker execution provider cannot verify OfficeNet bindings.',
       action: 'Use a supported execution provider and retry the public activation.',
     });
   }
-  const removeAndVerify = async ({ signal: settingsSignal } = {}) => {
-    const providerSignal = combineAbortSignals(signal, settingsSignal);
-    if (typeof provider.removeOfficeNetBinding !== 'function') {
-      throw deploymentOperationError('SITE_PUBLIC_OFFICE_NET_REMOVE_FAILED');
-    }
-    try {
-      await provider.removeOfficeNetBinding({ workerName, signal: providerSignal });
-    } catch (error) {
-      throw deploymentOperationError('SITE_PUBLIC_OFFICE_NET_REMOVE_FAILED', { cause: error });
-    }
-    if (typeof provider.verifyOfficeNetAbsent !== 'function') {
-      throw deploymentOperationError('SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED');
-    }
-    try {
-      const absent = await provider.verifyOfficeNetAbsent({ workerName, signal: providerSignal });
-      if (!absent) throw new Error('OFFICE_NET_PRESENT');
-    } catch (error) {
-      throw deploymentOperationError('SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED', { cause: error });
-    }
-    return { status: 'verified' };
-  };
-  if (typeof store?.withRuntimeConfigLock === 'function') {
-    try {
-      return await store.withRuntimeConfigLock(environment, siteId, removeAndVerify);
-    } catch (error) {
-      if (isPublicOfficeNetFailure(error)) throw error;
-      throw deploymentOperationError('SITE_PUBLIC_OFFICE_NET_REMOVE_FAILED', { cause: error });
-    }
-  }
-  return await removeAndVerify({ signal });
-}
-
-function combineAbortSignals(...signals) {
-  const activeSignals = signals.filter(Boolean);
-  if (activeSignals.length === 0) return undefined;
-  if (activeSignals.length === 1) return activeSignals[0];
-  if (typeof globalThis.AbortSignal?.any === 'function') return globalThis.AbortSignal.any(activeSignals);
-  const controller = new globalThis.AbortController();
-  for (const activeSignal of activeSignals) {
-    if (activeSignal.aborted) {
-      controller.abort(activeSignal.reason);
-      break;
-    }
-    activeSignal.addEventListener('abort', () => controller.abort(activeSignal.reason), { once: true });
-  }
-  return controller.signal;
+  throw deploymentOperationError(result.error.code, {
+    cause: result.error.cause?.cause || result.error.cause,
+  });
 }
 
 function isPublicOfficeNetFailure(error) {
@@ -3376,6 +3338,15 @@ function recordCompletedDeploymentPersistFailure({ trace, env, deployment, stage
 function createDeploymentProviderApplication({ env, config, store }) {
   return createDeploymentProviderOperations({
     providers: createDeploymentProviderPort((site) => createDeploymentProvider(env, config, store, site)),
+  });
+}
+
+function createPublicWorkerOfficeNetGuardApplication(store) {
+  return createPublicWorkerOfficeNetGuard({
+    settings: createPublicOfficeNetSettings({
+      withRuntimeConfigLock:
+        typeof store?.withRuntimeConfigLock === 'function' ? store.withRuntimeConfigLock.bind(store) : undefined,
+    }),
   });
 }
 
