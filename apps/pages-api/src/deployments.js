@@ -19,6 +19,7 @@ import { createPublicWorkerOfficeNetGuard } from './application/deployments/ensu
 import { createRollbackOfficeNetVerification } from './application/deployments/ensure-rollback-office-net.js';
 import { createDeploymentProviderOperations } from './application/deployments/provider-operations.js';
 import { createRollbackRouteStateRead } from './application/deployments/read-rollback-route-state.js';
+import { createFailedDeploymentsRecovery } from './application/deployments/recover-failed-deployments.js';
 import { createDeploymentRouteSnapshotRecovery } from './application/deployments/recover-route-snapshot.js';
 import { createRollbackRouteSnapshotRecovery } from './application/deployments/recover-rollback-route-snapshot.js';
 import { createDeploySiteResolution } from './application/deployments/resolve-deploy-site.js';
@@ -30,6 +31,7 @@ import { createDeploySiteResolutionPort } from './application/ports/deploy-site-
 import { createDeploymentCleanupTasksPort } from './application/ports/deployment-cleanup.js';
 import { createDeploymentCompletionPort } from './application/ports/deployment-completion.js';
 import { createDeploymentFailurePort } from './application/ports/deployment-failure.js';
+import { createDeploymentFailureRecoveryPort } from './application/ports/deployment-failure-recovery.js';
 import { createDeploymentProviderPort } from './application/ports/deployment-provider.js';
 import { createDeploymentRecoveryPort, createRollbackRecoveryPort } from './application/ports/deployment-recovery.js';
 import { createDeploymentRecordsPort } from './application/ports/deployment-records.js';
@@ -3031,6 +3033,49 @@ function createDeploymentFailureCompletionApplication({ store, env, config, ctx,
   });
 }
 
+function createFailedDeploymentsRecoveryApplication({ store, env, config, ctx }) {
+  return createFailedDeploymentsRecovery({
+    markers: createDeploymentFailureRecoveryMarkersInfrastructure(env, config),
+    deployments: createDeploymentFailureRecoveryPort(store),
+    commits: {
+      reconcile: (deployment, environment) =>
+        reconcileCommittedDeployment(store, deployment, environment, env),
+    },
+    traces: {
+      forDeployment: (deployment, environment) => traceForStoredDeployment(store, deployment, environment, env),
+    },
+    failures: {
+      complete: ({ deploymentId, patch, actor, site, trace }) =>
+        updateDeploymentToFailedAndNotify({
+          store,
+          env,
+          config,
+          ctx,
+          deploymentId,
+          patch,
+          actor,
+          site,
+          trace,
+        }),
+    },
+    telemetry: {
+      recovered: (trace, { operatorAction }) =>
+        recordDeploymentStage(trace, {
+          stage: 'deployment_state_persist',
+          operation: 'recover_failed_deployment_marker',
+          status: 'compensated',
+          diagnostics: {
+            causeClass: 'deployment_store_recovery',
+            operatorAction,
+          },
+        }),
+    },
+    repairs: {
+      report: (input) => logDeploymentRepairRequired(env, input),
+    },
+  });
+}
+
 function createDeploymentPreviousResourceCleanupApplication({ store, env, provider }) {
   return createDeploymentPreviousResourceCleanup({
     provider,
@@ -3579,92 +3624,11 @@ async function recoverUnexpectedRequestFailure({ trace, store, env, config, ctx,
 }
 
 async function recoverFailedDeploymentsForSite({ store, env, config, ctx, actor, site }) {
-  if (site.pendingSiteCreation) return;
-  const { records: recoveryMarkers, readError } =
-    await createDeploymentFailureRecoveryMarkersInfrastructure(env, config).list(site);
-  for (const recoveryMarker of recoveryMarkers) {
-    const { marker } = recoveryMarker;
-    if (!marker) {
-      await recoveryMarker.delete();
-      continue;
-    }
-
-    let deployment;
-    try {
-      deployment = await store.getDeployment(marker.deploymentId, config.environment);
-    } catch (cause) {
-      const error = new Error('Deployment state could not be read for recovery.', { cause });
-      error.code = 'DEPLOYMENT_STATE_WRITE_FAILED';
-      throw error;
-    }
-    if (!deployment || deployment.siteId !== site.id || TERMINAL_DEPLOYMENT_STATUSES.has(deployment.status)) {
-      await recoveryMarker.delete();
-      continue;
-    }
-
-    let reconciled;
-    try {
-      reconciled = await reconcileCommittedDeployment(store, deployment, config.environment, env);
-    } catch (cause) {
-      const error = new Error('Deployment commit state could not be read for recovery.', { cause });
-      error.code = 'DEPLOYMENT_STATE_WRITE_FAILED';
-      throw error;
-    }
-    if (TERMINAL_DEPLOYMENT_STATUSES.has(reconciled?.status)) {
-      let persisted;
-      try {
-        persisted = await store.getDeployment(marker.deploymentId, config.environment);
-      } catch (cause) {
-        const error = new Error('Reconciled deployment state could not be read.', { cause });
-        error.code = 'DEPLOYMENT_STATE_WRITE_FAILED';
-        throw error;
-      }
-      if (TERMINAL_DEPLOYMENT_STATUSES.has(persisted?.status)) {
-        await recoveryMarker.delete();
-        continue;
-      }
-      const error = new Error('Reconciled deployment state could not be persisted.');
-      error.code = 'DEPLOYMENT_STATE_WRITE_FAILED';
-      throw error;
-    }
-
-    const recoveryTrace = await traceForStoredDeployment(store, deployment, config.environment, env).catch(() => null);
-    try {
-      const recovered = await updateDeploymentToFailedAndNotify({
-        store,
-        env,
-        config,
-        ctx,
-        deploymentId: marker.deploymentId,
-        patch: marker.failedPatch,
-        actor,
-        site,
-        trace: recoveryTrace,
-      });
-      if (!TERMINAL_DEPLOYMENT_STATUSES.has(recovered?.status)) continue;
-      if (recoveryTrace) {
-        await recordDeploymentStage(recoveryTrace, {
-          stage: 'deployment_state_persist',
-          operation: 'recover_failed_deployment_marker',
-          status: 'compensated',
-          diagnostics: {
-            causeClass: 'deployment_store_recovery',
-            operatorAction: marker.operation === 'rollback' ? 'retry_rollback' : 'retry_deploy',
-          },
-        });
-      }
-      await recoveryMarker.delete();
-    } catch (error) {
-      if (error?.code === 'DEPLOYMENT_STATE_WRITE_FAILED') throw error;
-      logDeploymentRepairRequired(env, {
-        environment: config.environment,
-        siteId: site.id,
-        deploymentId: marker.deploymentId,
-        reason: 'deployment_failure_state_recovery_failed',
-      });
-    }
-  }
-  if (readError) throw readError;
+  return createFailedDeploymentsRecoveryApplication({ store, env, config, ctx }).recover({
+    site,
+    actor,
+    environment: config.environment,
+  });
 }
 
 async function bindExistingDeploymentTrace(trace, store, deployment, environment) {
