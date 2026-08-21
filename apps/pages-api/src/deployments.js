@@ -25,7 +25,15 @@ import {
 import { isMultipartRequest, readMultipartDeploymentBody, validateAssetFiles } from './deployment-upload.js';
 import { jsonError, jsonOk } from './http.js';
 import { newHexId, nextId } from './id.js';
-import { buildRouteSnapshot, clearRoutePointerIfCurrent, routeSnapshotKey, writeRouteSnapshot } from './route-snapshot.js';
+import {
+  buildRouteSnapshot,
+  clearRoutePointerIfCurrent,
+  deleteDeploymentFailureRecoveryRecord,
+  listDeploymentFailureRecoveryRecords,
+  routeSnapshotKey,
+  writeDeploymentFailureRecoveryRecord,
+  writeRouteSnapshot,
+} from './route-snapshot.js';
 import { createDeploymentProvider, normalizeWorkerBundle } from './execution-provider.js';
 import { runtimeConfigSnapshot, validateRuntimeBindingQuotas } from './runtime-config.js';
 import { notifyDeploymentCapacityExhausted } from './slack-alerts.js';
@@ -837,6 +845,8 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
   } catch (error) {
     const code = publicProviderErrorCode(error, 'upload');
     const executionProvider = provider.executionProvider || 'wfp';
+    const providerDiagnostics = buildProviderFailureDiagnostics(error, executionProvider);
+    const disposition = providerFailureDisposition(error, 'upload', providerDiagnostics);
     if (providerUploadStage) {
       await finishDeploymentStage(providerUploadStage, {
         status: 'failed',
@@ -859,20 +869,22 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
         uploadCompleted: false,
         verifyCompleted: false,
         routePointerCommitted: false,
+        retryable: disposition.retryable,
+        operatorAction: disposition.operatorAction,
         cause: { code, class: 'provider_upload_error' },
-        provider: buildProviderFailureDiagnostics(error, executionProvider),
+        provider: providerDiagnostics,
       }),
       completedAt: readNow(env),
     });
-    const status = code === 'DEPLOYMENT_CAPACITY_EXHAUSTED' ? 503 : 502;
+    const status = code === 'DEPLOYMENT_CAPACITY_EXHAUSTED' ? 503 : disposition.responseStatus;
     const action =
       code === 'DEPLOYMENT_CAPACITY_EXHAUSTED'
         ? 'Ask a Pages maintainer to expand platform deployment capacity.'
-        : 'Retry the deployment with a new Idempotency-Key.';
+        : disposition.responseAction;
     if (code === 'DEPLOYMENT_CAPACITY_EXHAUSTED') {
       await notifyDeploymentCapacityExhausted(env, config, { store });
     }
-    return jsonError(code, 'Deployment upload failed.', status, action);
+    return jsonError(code, disposition.responseMessage, status, action);
   }
 
   const workerName = uploaded.workerName || plannedWorkerName;
@@ -972,6 +984,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
   } catch (error) {
     const code = publicProviderErrorCode(null, 'verify');
     const executionProvider = uploaded.executionProvider || provider.executionProvider || 'wfp';
+    const disposition = providerFailureDisposition(error, 'verify');
     if (providerVerifyStage) {
       await finishDeploymentStage(providerVerifyStage, {
         status: 'failed',
@@ -999,12 +1012,14 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
         verifyCompleted: false,
         routePointerCommitted: false,
         uploadedWorkerCleanup: 'attempted',
+        retryable: disposition.retryable,
+        operatorAction: disposition.operatorAction,
         cause: { code, class: 'provider_verify_error' },
         provider: buildProviderFailureDiagnostics(error, executionProvider),
       }),
       completedAt: readNow(env),
     });
-    return jsonError(code, 'Deployment verification failed.', 502, 'Retry the deployment with a new Idempotency-Key.');
+    return jsonError(code, disposition.responseMessage, disposition.responseStatus, disposition.responseAction);
   }
 
   let runtimeConfigCommitStage = trace
@@ -1277,6 +1292,12 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
         const latestRoute = await store.getRouteBySiteId(siteId, config.environment);
         if (!latestRoute) throw deploymentOperationError('ROUTE_ACTIVATION_CONFLICT');
         previousRoute = latestRoute;
+        await persistIntermediateDeploymentState(
+          store,
+          deployment.id,
+          { previousVersionId: latestRoute.activeVersionId || null },
+          'persist_previous_version_deployment'
+        );
         await assertRouteSnapshotConverged(env, store, latestRoute, config.environment);
         const activationExposure = normalizeExposureForDeployment(latestRoute.exposure);
         if (activationExposure !== uploadExposure) {
@@ -1775,6 +1796,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
     completed = await store.updateDeployment(deployment.id, {
       status: 'succeeded',
       versionId: version.id,
+      previousVersionId: previousRoute?.activeVersionId || null,
       completedAt,
     });
     if (deploymentStateStage) await finishDeploymentStage(deploymentStateStage, { status: 'succeeded' });
@@ -1787,7 +1809,11 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
       stageHandle: deploymentStateStage,
       cause,
     });
-    completed = synthesizeSucceededDeployment(deployment, { versionId: version.id, completedAt });
+    completed = synthesizeSucceededDeployment(deployment, {
+      versionId: version.id,
+      previousVersionId: previousRoute?.activeVersionId || null,
+      completedAt,
+    });
   }
 
   await recordCleanupOutcome(trace, await cleanupPreviousNormalWorkerSlot(provider, previousRoute, route, env), {
@@ -2836,6 +2862,7 @@ async function applyPendingDeploySiteCreation(env, config, store, actor, site) {
     return {
       site: {
         ...created,
+        hostname: site.pendingSiteCreation.hostname,
         managementRole: site.managementRole || null,
       },
     };
@@ -3655,6 +3682,7 @@ async function updateDeploymentToFailedAndNotify({
       const recoveryMarkerStored = await persistFailedDeploymentRecoveryMarker(env, config, {
         deploymentId,
         siteId: site?.id || trace?.siteId || null,
+        siteHostname: site?.route?.hostname || site?.hostname || null,
         operation: trace?.operation || null,
         failedPatch,
       });
@@ -3838,6 +3866,37 @@ function deploymentOperationError(code, { message, action, cause } = {}) {
 function publicProviderErrorCode(error, step) {
   if (error?.code === 'SLOT_CAPACITY_EXHAUSTED') return 'DEPLOYMENT_CAPACITY_EXHAUSTED';
   return step === 'upload' ? 'DEPLOYMENT_UPLOAD_FAILED' : 'DEPLOYMENT_VERIFY_FAILED';
+}
+
+function providerFailureDisposition(error, step, providerDiagnostics) {
+  if (step === 'upload' && isWorkerSourceCompilationFailure(error)) {
+    const providerMessage = providerDiagnostics?.providerMessage;
+    return {
+      retryable: false,
+      operatorAction: 'fix_worker_source',
+      responseStatus: 400,
+      responseMessage: 'Worker source compilation failed.',
+      responseAction: providerMessage
+        ? `Fix the Worker source and deploy again: ${providerMessage}`
+        : 'Fix the Worker source compilation error, then deploy again.',
+    };
+  }
+
+  return {
+    retryable: true,
+    operatorAction: 'retry_deploy',
+    responseStatus: 502,
+    responseMessage: step === 'verify' ? 'Deployment verification failed.' : 'Deployment upload failed.',
+    responseAction: 'Retry the deployment with a new Idempotency-Key.',
+  };
+}
+
+function isWorkerSourceCompilationFailure(error) {
+  if (error?.operation !== 'worker_put' || Number(error?.status) !== 400) return false;
+  const providerCode = error?.providerCode === undefined || error?.providerCode === null ? '' : String(error.providerCode);
+  if (providerCode === '10021') return true;
+  const providerMessage = typeof error?.providerMessage === 'string' ? error.providerMessage : '';
+  return /(?:SyntaxError|syntax error|Unexpected end of input)/i.test(providerMessage);
 }
 
 function actorCanDeploy(actor, site, requiredScope) {
@@ -4163,6 +4222,10 @@ async function recoverUnexpectedRequestFailure({ trace, store, env, config, ctx,
   if (trace.siteId && typeof store.getSite === 'function') {
     try {
       site = await store.getSite(trace.siteId, config.environment);
+      if (site && typeof store.getRouteBySiteId === 'function') {
+        const route = await store.getRouteBySiteId(trace.siteId, config.environment);
+        if (route) site = { ...site, route };
+      }
     } catch {
       // Failure persistence is still useful when optional webhook context cannot be loaded.
     }
@@ -4191,7 +4254,7 @@ async function recoverUnexpectedRequestFailure({ trace, store, env, config, ctx,
 
 async function persistFailedDeploymentRecoveryMarker(env, config, input) {
   const markers = env?.ROUTE_SNAPSHOTS;
-  if (!markers || typeof markers.put !== 'function' || !input.siteId || !input.deploymentId) return false;
+  if (!input.siteId || !input.deploymentId) return false;
   const marker = {
     schemaVersion: 1,
     environment: config.environment,
@@ -4201,35 +4264,32 @@ async function persistFailedDeploymentRecoveryMarker(env, config, input) {
     failedPatch: recoveryMarkerFailedPatch(input.failedPatch, env),
     createdAt: readNow(env),
   };
+  const markerValue = JSON.stringify(marker);
+  if (typeof markers?.put === 'function') {
+    try {
+      await markers.put(deploymentFailureRecoveryKey(config.environment, input.siteId, input.deploymentId), markerValue);
+      return true;
+    } catch {
+      // RoutePointer durable state is the independent fallback when D1 and KV are unavailable together.
+    }
+  }
   try {
-    await markers.put(deploymentFailureRecoveryKey(config.environment, input.siteId, input.deploymentId), JSON.stringify(marker));
-    return true;
+    return await writeDeploymentFailureRecoveryRecord(env, {
+      environment: config.environment,
+      hostname: input.siteHostname,
+      deploymentId: input.deploymentId,
+      value: markerValue,
+    });
   } catch {
     return false;
   }
 }
 
 async function recoverFailedDeploymentsForSite({ store, env, config, ctx, actor, site }) {
-  const markers = env?.ROUTE_SNAPSHOTS;
-  if (!markers || typeof markers.list !== 'function' || typeof markers.get !== 'function') return;
-
-  let markerKeys;
-  try {
-    markerKeys = await listDeploymentFailureRecoveryKeys(markers, config.environment, site.id);
-  } catch (cause) {
-    const error = new Error('Deployment recovery markers could not be listed.', { cause });
-    error.code = 'DEPLOYMENT_STATE_WRITE_FAILED';
-    throw error;
-  }
-  for (const markerKey of markerKeys) {
-    let rawMarker;
-    try {
-      rawMarker = await markers.get(markerKey);
-    } catch (cause) {
-      const error = new Error('Deployment recovery marker could not be read.', { cause });
-      error.code = 'DEPLOYMENT_STATE_WRITE_FAILED';
-      throw error;
-    }
+  if (site.pendingSiteCreation) return;
+  const { records: recoveryMarkers, readError } = await loadDeploymentFailureRecoveryMarkers(env, config, site);
+  for (const recoveryMarker of recoveryMarkers) {
+    const rawMarker = recoveryMarker.value;
     let marker;
     try {
       marker = parseDeploymentFailureRecoveryMarker(rawMarker, config.environment, site.id);
@@ -4237,7 +4297,7 @@ async function recoverFailedDeploymentsForSite({ store, env, config, ctx, actor,
       marker = null;
     }
     if (!marker) {
-      await deleteDeploymentFailureRecoveryMarker(markers, markerKey);
+      await recoveryMarker.delete();
       continue;
     }
 
@@ -4250,7 +4310,7 @@ async function recoverFailedDeploymentsForSite({ store, env, config, ctx, actor,
       throw error;
     }
     if (!deployment || deployment.siteId !== site.id || TERMINAL_DEPLOYMENT_STATUSES.has(deployment.status)) {
-      await deleteDeploymentFailureRecoveryMarker(markers, markerKey);
+      await recoveryMarker.delete();
       continue;
     }
 
@@ -4272,7 +4332,7 @@ async function recoverFailedDeploymentsForSite({ store, env, config, ctx, actor,
         throw error;
       }
       if (TERMINAL_DEPLOYMENT_STATUSES.has(persisted?.status)) {
-        await deleteDeploymentFailureRecoveryMarker(markers, markerKey);
+        await recoveryMarker.delete();
         continue;
       }
       const error = new Error('Reconciled deployment state could not be persisted.');
@@ -4305,7 +4365,7 @@ async function recoverFailedDeploymentsForSite({ store, env, config, ctx, actor,
           },
         });
       }
-      await deleteDeploymentFailureRecoveryMarker(markers, markerKey);
+      await recoveryMarker.delete();
     } catch (error) {
       if (error?.code === 'DEPLOYMENT_STATE_WRITE_FAILED') throw error;
       logDeploymentRepairRequired(env, {
@@ -4316,6 +4376,64 @@ async function recoverFailedDeploymentsForSite({ store, env, config, ctx, actor,
       });
     }
   }
+  if (readError) throw readError;
+}
+
+async function loadDeploymentFailureRecoveryMarkers(env, config, site) {
+  const records = [];
+  let readError = null;
+  const markers = env?.ROUTE_SNAPSHOTS;
+  if (typeof markers?.list === 'function' && typeof markers?.get === 'function') {
+    let markerKeys;
+    try {
+      markerKeys = await listDeploymentFailureRecoveryKeys(markers, config.environment, site.id);
+    } catch (cause) {
+      readError = deploymentRecoveryReadError('Deployment recovery markers could not be listed.', cause);
+      markerKeys = [];
+    }
+    for (const markerKey of markerKeys) {
+      let value;
+      try {
+        value = await markers.get(markerKey);
+      } catch (cause) {
+        readError ||= deploymentRecoveryReadError('Deployment recovery marker could not be read.', cause);
+        continue;
+      }
+      records.push({
+        value,
+        delete: () => deleteDeploymentFailureRecoveryMarker(markers, markerKey),
+      });
+    }
+  }
+
+  let durableRecords;
+  try {
+    durableRecords = await listDeploymentFailureRecoveryRecords(env, {
+      environment: config.environment,
+      hostname: site.route?.hostname || site.hostname,
+    });
+  } catch (cause) {
+    readError ||= deploymentRecoveryReadError('Durable deployment recovery markers could not be listed.', cause);
+    durableRecords = [];
+  }
+  for (const record of durableRecords) {
+    records.push({
+      value: record?.value,
+      delete: () =>
+        deleteDeploymentFailureRecoveryRecordBestEffort(env, {
+          environment: config.environment,
+          hostname: site.route?.hostname || site.hostname,
+          deploymentId: record?.deploymentId,
+        }),
+    });
+  }
+  return { records, readError };
+}
+
+function deploymentRecoveryReadError(message, cause) {
+  const error = new Error(message, { cause });
+  error.code = 'DEPLOYMENT_STATE_WRITE_FAILED';
+  return error;
 }
 
 async function listDeploymentFailureRecoveryKeys(markers, environment, siteId) {
@@ -4410,6 +4528,14 @@ async function deleteDeploymentFailureRecoveryMarker(markers, key) {
     await markers.delete(key);
   } catch {
     // A retained marker is safe: the next request observes the terminal deployment and retries deletion.
+  }
+}
+
+async function deleteDeploymentFailureRecoveryRecordBestEffort(env, input) {
+  try {
+    await deleteDeploymentFailureRecoveryRecord(env, input);
+  } catch {
+    // A retained durable marker is safe: the next request observes the terminal deployment and retries deletion.
   }
 }
 
