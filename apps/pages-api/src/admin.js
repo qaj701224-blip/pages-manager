@@ -39,6 +39,7 @@ import { createWorkerOrphanScan } from './application/governance/scan-worker-orp
 import { createWorkerOrphanBackfill } from './application/governance/backfill-worker-orphans.js';
 import { createNormalWorkersQuery } from './application/governance/list-normal-workers.js';
 import { createNormalWorkerRetirement } from './application/governance/retire-normal-workers.js';
+import { createV1SitesQuery } from './application/governance/list-v1-sites.js';
 import { createNormalWorkerAdminClient } from './infrastructure/providers/normal-worker-admin-client.js';
 import { buildRouteSnapshot, clearRoutePointerIfCurrent, readRouteSnapshotState } from './route-snapshot.js';
 import { createDeploymentProvider } from './execution-provider.js';
@@ -413,27 +414,21 @@ async function listAdminV1Sites(env, config, store) {
     return jsonError('V1_SITES_UNSUPPORTED', 'Legacy v1 site inventory is unavailable.', 503, 'Configure v1 inventory access.');
   }
   try {
-    const [siteKeys, workers, activeV2Sites] = await Promise.all([
-      client.listSites(),
-      client.listWorkers(),
-      store.listActiveSiteSlugs({ environment: config.environment }),
-    ]);
-    const reservedWorkerNames = readV1ReservedWorkerNames(env);
-    return jsonOk({
-      sites: formatV1SitesInventory({
-        siteKeys,
-        workers,
-        activeV2Sites,
-        environment: config.environment,
-        reservedWorkerNames,
-      }),
-      unregisteredWorkers: formatV1UnregisteredWorkers({
-        siteKeys,
-        workers,
-        environment: config.environment,
-        reservedWorkerNames,
-      }),
+    const result = await createV1SitesQuery({
+      inventory: {
+        listSites: () => client.listSites(),
+        listWorkers: () => client.listWorkers(),
+      },
+      sites: { listActiveSlugs: (query) => store.listActiveSiteSlugs(query) },
+      projection: {
+        formatSites: formatV1SitesInventory,
+        formatUnregisteredWorkers: formatV1UnregisteredWorkers,
+      },
+    }).list({
+      environment: config.environment,
+      reservedWorkerNames: readV1ReservedWorkerNames(env),
     });
+    return jsonOk(result);
   } catch (error) {
     return jsonError(
       'V1_SITES_READ_FAILED',
