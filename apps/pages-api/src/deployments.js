@@ -13,6 +13,7 @@ import { createDeploymentVersionCreation } from './application/deployments/creat
 import { createDeploymentSucceededWebhook } from './application/deployments/deliver-succeeded-webhook.js';
 import { createDeploymentRecord } from './application/deployments/deployment-record.js';
 import { createPublicWorkerOfficeNetGuard } from './application/deployments/ensure-public-office-net.js';
+import { createRollbackOfficeNetVerification } from './application/deployments/ensure-rollback-office-net.js';
 import { createDeploymentProviderOperations } from './application/deployments/provider-operations.js';
 import { createDeploymentRouteSnapshotRecovery } from './application/deployments/recover-route-snapshot.js';
 import { createRollbackRouteSnapshotRecovery } from './application/deployments/recover-rollback-route-snapshot.js';
@@ -30,6 +31,7 @@ import { createDeploymentRecordsPort } from './application/ports/deployment-reco
 import { createDeploymentRoutesPort } from './application/ports/deployment-routes.js';
 import { createDeploymentVersionsPort } from './application/ports/deployment-versions.js';
 import { createDeploymentWebhookTeamsPort } from './application/ports/deployment-webhooks.js';
+import { createRollbackOfficeNetVersionsPort } from './application/ports/rollback-office-net-versions.js';
 import { createRollbackSiteResolutionPort } from './application/ports/rollback-site-resolution.js';
 import {
   createDeploymentRuntimeConfigMutationPort,
@@ -1775,32 +1777,20 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
           operation: 'rollback_verify_public_office_net_absent',
         })
       : null;
-    await ensurePublicWorkerOfficeNetAbsent(rollbackProvider, {
+    const rollbackOfficeNetResult = await createRollbackOfficeNetVerificationApplication({
       store,
+      provider: rollbackProvider,
+    }).verify({
       environment: config.environment,
       siteId: site.id,
-      workerName: version.workerName,
-      executionProvider: version.executionProvider,
-      deploymentShape: version.deploymentShape,
+      version,
+      currentVersionId: currentRoute.activeVersionId,
       exposure: rollbackExposure,
       signal: rollbackLease.signal,
     });
-    if (rollbackExposure === 'public' && currentRoute.activeVersionId && currentRoute.activeVersionId !== version.id) {
-      const currentVersion = await store.getSiteVersion(currentRoute.activeVersionId, config.environment);
-      if (!currentVersion) {
-        throw deploymentOperationError('SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED', {
-          message: 'The current public Worker version could not be verified before rollback.',
-        });
-      }
-      await ensurePublicWorkerOfficeNetAbsent(rollbackProvider, {
-        store,
-        environment: config.environment,
-        siteId: site.id,
-        workerName: currentVersion.workerName,
-        executionProvider: currentVersion.executionProvider,
-        deploymentShape: currentVersion.deploymentShape,
-        exposure: rollbackExposure,
-        signal: rollbackLease.signal,
+    if (!rollbackOfficeNetResult.ok) {
+      throw deploymentOperationError(rollbackOfficeNetResult.error.code, {
+        message: 'The current public Worker version could not be verified before rollback.',
       });
     }
     if (rollbackOfficeNetStage) {
@@ -3145,6 +3135,15 @@ function createPublicWorkerOfficeNetGuardApplication(store) {
       withRuntimeConfigLock:
         typeof store?.withRuntimeConfigLock === 'function' ? store.withRuntimeConfigLock.bind(store) : undefined,
     }),
+  });
+}
+
+function createRollbackOfficeNetVerificationApplication({ store, provider }) {
+  return createRollbackOfficeNetVerification({
+    versions: createRollbackOfficeNetVersionsPort(store),
+    officeNet: {
+      ensure: (command) => ensurePublicWorkerOfficeNetAbsent(provider, { store, ...command }),
+    },
   });
 }
 

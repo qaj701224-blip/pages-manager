@@ -5308,6 +5308,70 @@ test('WFP public rollback fails before cutover when the current Worker OfficeNet
   assert.equal(failed.failureStage, 'rollback_public_office_net');
 });
 
+test('WFP public rollback preserves the current-version verification failure before cutover', async () => {
+  const store = await createSeededStore();
+  const snapshots = createSnapshotStore();
+  const env = testEnv(store, snapshots);
+  await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'public_rollback_missing_current_deploy_1',
+    }),
+    env
+  );
+  await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ moduleContent: 'export default { fetch() { return new Response("v2"); } };' }),
+      { 'Idempotency-Key': 'public_rollback_missing_current_deploy_2' }
+    ),
+    env
+  );
+  const lease = await store.acquireSiteCommitLock('production', 'site_1', {
+    lockId: 'public_rollback_missing_current_policy',
+  });
+  const currentRoute = await store.getRouteBySiteId('site_1', 'production');
+  await store.updateSiteAccessPolicy({
+    environment: 'production',
+    siteId: 'site_1',
+    exposure: 'public',
+    expected: {
+      policyVersion: currentRoute.policyVersion,
+      routeGeneration: currentRoute.routeGeneration,
+      activeVersionId: currentRoute.activeVersionId,
+      runtimeConfigGeneration: currentRoute.runtimeConfigGeneration,
+    },
+    lease,
+  });
+  await store.releaseSiteCommitLock('production', 'site_1', lease.lockId);
+  await writeCurrentRouteSnapshot(store, snapshots);
+
+  const getSiteVersion = store.getSiteVersion.bind(store);
+  let currentVersionReads = 0;
+  store.getSiteVersion = async (versionId, environment) => {
+    if (versionId === 'ver_2' && ++currentVersionReads === 2) return null;
+    return getSiteVersion(versionId, environment);
+  };
+  env.WFP_PROVIDER = {
+    removeOfficeNetBinding: async () => ({ removed: true }),
+    verifyOfficeNetAbsent: async () => true,
+  };
+  const rollback = await worker.fetch(
+    jsonRequest(
+      'https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback',
+      {},
+      { 'Idempotency-Key': 'public_rollback_missing_current' }
+    ),
+    env
+  );
+
+  assert.equal(rollback.status, 503, await rollback.clone().text());
+  const body = await rollback.json();
+  assert.equal(body.error.code, 'SITE_PUBLIC_OFFICE_NET_VERIFY_FAILED');
+  assert.equal(body.error.message, 'The current public Worker version could not be verified before rollback.');
+  assert.equal((await store.getRouteBySiteId('site_1', 'production')).activeVersionId, 'ver_2');
+  assert.equal((await store.getDeployment('dep_3', 'production')).failureStage, 'rollback_public_office_net');
+});
+
 test('rollback records a terminal failure and releases its lease when the route disappears after locking', async () => {
   const store = await createSeededStore();
   const env = testEnv(store, createSnapshotStore());
