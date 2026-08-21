@@ -21,6 +21,7 @@ import { createDeploymentProviderOperations } from './application/deployments/pr
 import { createRollbackRouteStateRead } from './application/deployments/read-rollback-route-state.js';
 import { createCommittedDeploymentReconciliation } from './application/deployments/reconcile-committed-deployment.js';
 import { createFailedDeploymentsRecovery } from './application/deployments/recover-failed-deployments.js';
+import { createUnexpectedRequestFailureRecovery } from './application/deployments/recover-unexpected-request-failure.js';
 import { createDeploymentRouteSnapshotRecovery } from './application/deployments/recover-route-snapshot.js';
 import { createRollbackRouteSnapshotRecovery } from './application/deployments/recover-rollback-route-snapshot.js';
 import { createDeploySiteResolution } from './application/deployments/resolve-deploy-site.js';
@@ -49,6 +50,7 @@ import {
   createDeploymentRuntimeConfigResolutionPort,
   createDeploymentRuntimeConfigSnapshotPort,
 } from './application/ports/runtime-config.js';
+import { createUnexpectedDeploymentRecoveryPort } from './application/ports/unexpected-deployment-recovery.js';
 import { canonicalRequestHash } from './crypto.js';
 import { runtimeConfigHashInput, runtimeSecretSnapshotRecords } from './deployment-runtime-config.js';
 import { canonicalDeploymentContentHash, decisionRequiresAssets, decisionRequiresWorker } from './deployment-plan.js';
@@ -103,7 +105,6 @@ import {
 
 const PROVIDER_DIAGNOSTIC_CLIENT_CODES = new Set(['WFP_API_ERROR', 'WFP_API_INVALID_JSON', 'WFP_NETWORK_ERROR']);
 const PROVIDER_DIAGNOSTIC_OPERATIONS = new Set(['assets_upload_session', 'assets_upload', 'worker_put', 'worker_get']);
-const TERMINAL_DEPLOYMENT_STATUSES = new Set(['succeeded', 'failed']);
 const deploymentRequestTraceStates = new WeakMap();
 
 const deploymentHttpHandlers = createDeploymentsHttpHandlers({
@@ -3064,6 +3065,47 @@ function createFailedDeploymentsRecoveryApplication({ store, env, config, ctx })
   });
 }
 
+function createUnexpectedRequestFailureRecoveryApplication({ store, env, config, ctx }) {
+  const recoveryState = createUnexpectedDeploymentRecoveryPort(store);
+  return createUnexpectedRequestFailureRecovery({
+    requestTrace: {
+      failUnexpected: (trace, input) => traceUnexpectedRequestFailure(trace, input),
+    },
+    deployments: { get: recoveryState.getDeployment },
+    commits: {
+      reconcile: (deployment, environment, trace) =>
+        reconcileCommittedDeployment(store, deployment, environment, env, trace),
+    },
+    sites: { load: recoveryState.loadSite },
+    failures: {
+      patch: (operation) =>
+        deploymentOperationFailurePatch({
+          errorCode: 'DEPLOYMENT_REQUEST_FAILED',
+          errorMessage: 'Deployment request could not be processed.',
+          operatorAction: operation === 'rollback' ? 'retry_rollback' : 'retry_deploy',
+        }),
+      complete: ({ deploymentId, patch, actor, site, trace }) =>
+        updateDeploymentToFailedAndNotify({
+          store,
+          env,
+          config,
+          ctx,
+          deploymentId,
+          patch,
+          actor,
+          site,
+          trace,
+        }),
+    },
+    logs: {
+      stateWriteFailed: (input) => logDeploymentStateWriteFailed(env, input),
+    },
+    repairs: {
+      report: (input) => logDeploymentRepairRequired(env, input),
+    },
+  });
+}
+
 function createDeploymentPreviousResourceCleanupApplication({ store, env, provider }) {
   return createDeploymentPreviousResourceCleanup({
     provider,
@@ -3540,75 +3582,12 @@ async function traceUnexpectedRequestFailure(trace, { fallbackStage, fallbackOpe
 }
 
 async function recoverUnexpectedRequestFailure({ trace, store, env, config, ctx, actor, fallbackOperation }) {
-  const deploymentId = trace?.deploymentId || null;
-  try {
-    await traceUnexpectedRequestFailure(trace, {
-      fallbackStage: deploymentId ? 'deployment_operation' : 'intake',
-      fallbackOperation,
-    });
-  } catch {
-    // Trace persistence must not prevent best-effort terminal state recovery.
-  }
-  if (!deploymentId) return null;
-
-  let deployment;
-  try {
-    deployment = await store.getDeployment(deploymentId, config.environment);
-  } catch {
-    logDeploymentStateWriteFailed(env, {
-      traceId: trace.traceId,
-      deploymentId,
-      operation: 'persist_unexpected_deployment_failure',
-    });
-    return null;
-  }
-  if (!deployment || TERMINAL_DEPLOYMENT_STATUSES.has(deployment.status)) return deployment || null;
-
-  try {
-    const reconciled = await reconcileCommittedDeployment(store, deployment, config.environment, env, trace);
-    if (TERMINAL_DEPLOYMENT_STATUSES.has(reconciled?.status)) return reconciled;
-  } catch {
-    logDeploymentRepairRequired(env, {
-      environment: config.environment,
-      siteId: trace.siteId,
-      deploymentId,
-      reason: 'deployment_commit_reconciliation_failed',
-    });
-    return deployment;
-  }
-
-  let site = null;
-  if (trace.siteId && typeof store.getSite === 'function') {
-    try {
-      site = await store.getSite(trace.siteId, config.environment);
-      if (site && typeof store.getRouteBySiteId === 'function') {
-        const route = await store.getRouteBySiteId(trace.siteId, config.environment);
-        if (route) site = { ...site, route };
-      }
-    } catch {
-      // Failure persistence is still useful when optional webhook context cannot be loaded.
-    }
-  }
-  try {
-    return await updateDeploymentToFailedAndNotify({
-      store,
-      env,
-      config,
-      ctx,
-      deploymentId,
-      patch: deploymentOperationFailurePatch({
-        errorCode: 'DEPLOYMENT_REQUEST_FAILED',
-        errorMessage: 'Deployment request could not be processed.',
-        operatorAction: trace.operation === 'rollback' ? 'retry_rollback' : 'retry_deploy',
-      }),
-      actor,
-      site,
-      trace,
-    });
-  } catch (error) {
-    if (error?.code !== 'DEPLOYMENT_STATE_WRITE_FAILED') throw error;
-    return deployment;
-  }
+  return createUnexpectedRequestFailureRecoveryApplication({ store, env, config, ctx }).recover({
+    trace,
+    actor,
+    environment: config.environment,
+    fallbackOperation,
+  });
 }
 
 async function recoverFailedDeploymentsForSite({ store, env, config, ctx, actor, site }) {
