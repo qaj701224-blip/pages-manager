@@ -51,6 +51,10 @@ import { createTeamMemberManagement } from './application/teams/manage-team-memb
 import { createTeamManagement } from './application/teams/manage-team.js';
 import { createDepartmentTeamMerge } from './application/teams/merge-department-teams.js';
 import { createPlatformAdminManagement } from './application/governance/manage-platform-admins.js';
+import {
+  canRunDeploymentCleanupTask,
+  createDeploymentCleanupRunner,
+} from './application/governance/run-deployment-cleanups.js';
 import { createNormalWorkerAdminClient } from './infrastructure/providers/normal-worker-admin-client.js';
 import {
   createV1SitesAdminClient as createInfrastructureV1SitesAdminClient,
@@ -978,10 +982,11 @@ async function runDeploymentCleanupTask(env, config, store, session, taskId) {
     return jsonError('CLEANUP_TASKS_UNSUPPORTED', 'Deployment cleanup tasks are unavailable.', 503, 'Retry later.');
   }
 
-  let task;
-  try {
-    task = await store.getDeploymentResourceCleanupTask(taskId, config.environment);
-  } catch {
+  const run = await createDeploymentCleanupRunnerApplication({ env, config, store }).runOne({
+    id: taskId,
+    environment: config.environment,
+  });
+  if (!run.ok && run.reason === 'task_read_failed') {
     await recordResourceGovernanceAuditSafe(store, env, config, session, {
       eventType: 'admin.cleanup_run',
       stage: 'run',
@@ -996,7 +1001,7 @@ async function runDeploymentCleanupTask(env, config, store, session, taskId) {
       'Review the cleanup task diagnostics and retry.'
     );
   }
-  if (!task) {
+  if (!run.ok && run.reason === 'task_not_found') {
     await recordResourceGovernanceAuditSafe(store, env, config, session, {
       eventType: 'admin.cleanup_run',
       stage: 'run',
@@ -1006,12 +1011,9 @@ async function runDeploymentCleanupTask(env, config, store, session, taskId) {
     });
     return jsonError('CLEANUP_TASK_NOT_FOUND', 'Cleanup task not found.', 404, 'Check the cleanup task id.');
   }
-  let result;
-  try {
-    result = await executeDeploymentCleanupTask(env, config, store, task);
-  } catch {
-    result = unexpectedCleanupTaskError();
-  }
+  if (!run.ok) throw new Error('CLEANUP_RUN_RESULT_INVALID');
+  const task = run.task;
+  const result = run.execution.unexpected ? unexpectedCleanupTaskError() : run.execution.value;
   await recordResourceGovernanceAuditSafe(store, env, config, session, {
     eventType: 'admin.cleanup_run',
     stage: 'run',
@@ -1040,40 +1042,30 @@ export async function runDueDeploymentCleanups(env, config, store, { limit = 10 
     return { processed: 0, succeeded: 0, failed: 0, skipped: 0 };
   }
 
-  const normalizedLimit = Math.max(1, Math.min(Number(limit) || 10, 50));
-  const runnableTasks = await listRunnableDeploymentCleanupTasks(store, config.environment, normalizedLimit);
-  const summary = { processed: 0, succeeded: 0, failed: 0, skipped: 0 };
-  for (const task of runnableTasks.filter((item) => cleanupTaskCanRun(item, env)).slice(0, normalizedLimit)) {
-    let result;
-    try {
-      const latest = await store.getDeploymentResourceCleanupTask(task.id, config.environment);
-      result = await executeDeploymentCleanupTask(env, config, store, latest);
-    } catch {
-      result = unexpectedCleanupTaskError();
-    }
-    summary.processed += 1;
-    if (result.ok) summary.succeeded += 1;
-    else if (result.httpStatus >= 500) summary.failed += 1;
-    else summary.skipped += 1;
-  }
-  return summary;
+  return createDeploymentCleanupRunnerApplication({ env, config, store }).runDue({
+    environment: config.environment,
+    limit,
+  });
 }
 
-async function listRunnableDeploymentCleanupTasks(store, environment, limit) {
-  const taskGroups = await Promise.all(
-    ['pending', 'failed', 'running'].map((status) =>
-      store.listDeploymentResourceCleanupTasks({
-        environment,
-        status,
-        limit,
-      })
-    )
-  );
-  const tasksById = new Map();
-  for (const task of taskGroups.flat()) tasksById.set(task.id, task);
-  return [...tasksById.values()].sort(
-    (left, right) => left.cleanupAfter.localeCompare(right.cleanupAfter) || left.createdAt.localeCompare(right.createdAt)
-  );
+function createDeploymentCleanupRunnerApplication({ env, config, store }) {
+  return createDeploymentCleanupRunner({
+    tasks: {
+      list: (query) => store.listDeploymentResourceCleanupTasks(query),
+      get: (id, environment) => store.getDeploymentResourceCleanupTask(id, environment),
+    },
+    executor: {
+      execute: async (task) => {
+        const result = await executeDeploymentCleanupTask(env, config, store, task);
+        return {
+          ok: result.ok,
+          outcome: result.ok ? 'succeeded' : result.httpStatus >= 500 ? 'failed' : 'skipped',
+          value: result,
+        };
+      },
+    },
+    clock: { now: () => readNow(env) },
+  });
 }
 
 async function executeDeploymentCleanupTask(env, config, store, task) {
@@ -1484,11 +1476,7 @@ function unexpectedCleanupTaskError() {
 }
 
 function cleanupTaskCanRun(task, env) {
-  if (!task) return false;
-  const now = Date.parse(readNow(env));
-  if (Date.parse(task.cleanupAfter) > now) return false;
-  if (['pending', 'failed'].includes(task.status)) return true;
-  return task.status === 'running' && Boolean(task.lockedUntil) && Date.parse(task.lockedUntil) <= now;
+  return canRunDeploymentCleanupTask(task, readNow(env));
 }
 
 function formatDeploymentCleanupTask(task, env) {

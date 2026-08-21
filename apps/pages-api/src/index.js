@@ -12,11 +12,14 @@ const handleScheduled = createScheduledHandler({
   readConfig: readApiConfig,
   createStore: createPagesStore,
   runDueCleanups: runDueDeploymentCleanups,
+  taskScheduler: {
+    schedule: (executionContext, task) => executionContext.waitUntil(task),
+  },
 });
 
 export default {
-  scheduled(controller, env) {
-    return handleScheduled(controller, env);
+  scheduled(controller, env, executionContext) {
+    return handleScheduled(controller, env, executionContext);
   },
 
   async fetch(request, env, executionContext) {
