@@ -3,6 +3,7 @@ import { LogIn, ShieldAlert, ShieldCheck } from 'lucide-react';
 import { Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 
 import { buildAdminLoginPath, getAdminRouteAccess } from './admin-route-model.js';
+import { BRAND_NAME } from './brand.js';
 import { TopNav } from './components/TopNav.jsx';
 import { AdminShell } from './pages/Admin.jsx';
 import { WorkspaceAccessKeys } from './pages/AccessKeys.jsx';
@@ -135,21 +136,14 @@ function AdminRouteGuard({ children, currentPath, sessionState }) {
   }, [access, loginPath, navigate]);
 
   if (sessionState.status === 'loading') {
-    return (
-      <AdminAccessPanel
-        icon={<ShieldCheck size={22} />}
-        eyebrow="XD Cell"
-        title="正在校验管理员权限"
-        text="请稍候。"
-      />
-    );
+    return <AdminAccessPanel icon={<ShieldCheck size={22} />} eyebrow={BRAND_NAME} title="正在校验管理员权限" text="请稍候。" />;
   }
 
   if (access === 'login') {
     return (
       <AdminAccessPanel
         icon={<LogIn size={22} />}
-        eyebrow="XD Cell"
+        eyebrow={BRAND_NAME}
         title="需要登录"
         text="正在跳转到登录页。"
         action={{ to: loginPath, label: '登录' }}
@@ -164,7 +158,7 @@ function AdminRouteGuard({ children, currentPath, sessionState }) {
         eyebrow="管理员后台"
         title="无权访问"
         text="当前账号不是平台管理员。"
-        action={{ to: '/', label: '返回 Sites' }}
+        action={{ to: '/', label: `返回 ${BRAND_NAME}` }}
       />
     );
   }

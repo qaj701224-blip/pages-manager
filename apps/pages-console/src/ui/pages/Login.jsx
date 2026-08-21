@@ -1,5 +1,7 @@
 import { LogIn, ShieldCheck } from 'lucide-react';
 
+import { BRAND_NAME } from '../brand.js';
+
 export function LoginPage() {
   const returnTo = normalizeReturnTo(new URLSearchParams(window.location.search).get('returnTo'));
   const loginUrl = `/api/console/auth/login?returnTo=${encodeURIComponent(returnTo)}`;
@@ -10,7 +12,7 @@ export function LoginPage() {
         <div className="auth-panel__mark">
           <ShieldCheck size={22} />
         </div>
-        <p className="auth-panel__eyebrow">XD Cell</p>
+        <p className="auth-panel__eyebrow">{BRAND_NAME}</p>
         <h1 id="login-title">登录工作台</h1>
         <p className="auth-panel__text">使用公司 SSO 进入个人站点、团队协作和平台控制台。</p>
         <a className="primary-button" href={loginUrl}>
