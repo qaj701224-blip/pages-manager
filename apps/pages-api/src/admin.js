@@ -29,6 +29,7 @@ import {
   siteTransferErrorResponse,
 } from './transport/shared/site-ownership-application.js';
 import { createAdminDashboardQuery } from './application/governance/get-admin-dashboard.js';
+import { createDeploymentTraceQuery } from './application/governance/get-deployment-trace.js';
 import { buildRouteSnapshot, clearRoutePointerIfCurrent, readRouteSnapshotState } from './route-snapshot.js';
 import { createDeploymentProvider } from './execution-provider.js';
 import { sanitizeDeploymentTraceDiagnostics } from './deployment-trace.js';
@@ -3103,75 +3104,39 @@ function formatAdminDeployment(deployment) {
 }
 
 async function getAdminDeploymentTrace(config, store, deploymentId) {
-  const deployment = await store.getDeployment(deploymentId, config.environment);
-  if (!deployment) {
+  const result = await createDeploymentTraceQueryApplication(store).byDeployment({
+    environment: config.environment,
+    deploymentId,
+  });
+  if (!result.ok) {
     return jsonError('DEPLOYMENT_NOT_FOUND', 'Deployment not found.', 404, 'Check the deployment id.');
   }
-  const events =
-    typeof store.listDeploymentEvents === 'function'
-      ? await store.listDeploymentEvents({ environment: config.environment, deploymentId })
-      : [];
-  return jsonOk(formatAdminDeploymentTraceResponse(deployment, events, deployment.traceId));
+  return jsonOk(result.value);
 }
 
 async function getAdminDeploymentTraceByTraceId(config, store, traceId) {
-  if (!/^dtr_[A-Za-z0-9_-]{1,128}$/.test(traceId) || typeof store.listDeploymentEvents !== 'function') {
-    return deploymentTraceNotFound();
-  }
-  const events = await store.listDeploymentEvents({ environment: config.environment, traceId });
-  if (events.length === 0) return deploymentTraceNotFound();
-  const deploymentId = events.find((event) => event.deploymentId)?.deploymentId || null;
-  const deployment = deploymentId ? await store.getDeployment(deploymentId, config.environment) : null;
-  return jsonOk(formatAdminDeploymentTraceResponse(deployment, events, traceId));
-}
-
-function formatAdminDeploymentTraceResponse(deployment, events, traceId) {
-  const inboundRayId = events.find((event) => event.inboundRayId)?.inboundRayId || null;
-  const deploymentId = deployment?.id || events.find((event) => event.deploymentId)?.deploymentId || null;
-  const resolvedTraceId = traceId || deployment?.traceId || events.find((event) => event.traceId)?.traceId || null;
-  return {
-    trace: {
-      traceId: resolvedTraceId,
-      inboundRayId,
-      deploymentId,
-    },
-    deployment: deployment
-      ? {
-          id: deployment.id,
-          traceId: resolvedTraceId,
-          inboundRayId,
-          status: deployment.status,
-          failureStage: deployment.failureStage || null,
-          errorCode: deployment.errorCode || null,
-          errorMessage: deployment.errorMessage || null,
-        }
-      : null,
-    events: events.map(formatAdminDeploymentTraceEvent),
-  };
+  const result = await createDeploymentTraceQueryApplication(store).byTraceId({
+    environment: config.environment,
+    traceId,
+  });
+  return result.ok ? jsonOk(result.value) : deploymentTraceNotFound();
 }
 
 function deploymentTraceNotFound() {
   return jsonError('DEPLOYMENT_TRACE_NOT_FOUND', 'Deployment trace not found.', 404, 'Check the deployment trace id.');
 }
 
-function formatAdminDeploymentTraceEvent(event) {
-  return {
-    id: event.id,
-    traceId: event.traceId,
-    inboundRayId: event.inboundRayId || null,
-    deploymentId: event.deploymentId || null,
-    siteId: event.siteId || null,
-    attempt: event.attempt,
-    stage: event.stage,
-    operation: event.operation || null,
-    status: event.status,
-    startedAt: event.startedAt,
-    completedAt: event.completedAt || null,
-    durationMs: Number.isInteger(event.durationMs) ? event.durationMs : null,
-    errorCode: event.errorCode || null,
-    errorMessage: event.errorMessage || null,
-    diagnostics: sanitizeDeploymentTraceDiagnostics(event.diagnostics),
-  };
+function createDeploymentTraceQueryApplication(store) {
+  const listDeploymentEvents = (query, fallback) =>
+    typeof store.listDeploymentEvents === 'function' ? store.listDeploymentEvents(query) : fallback;
+  return createDeploymentTraceQuery({
+    deployments: { get: (id, environment) => store.getDeployment(id, environment) },
+    events: {
+      listByDeployment: (query) => listDeploymentEvents(query, []),
+      listByTrace: (query) => listDeploymentEvents(query, null),
+    },
+    diagnostics: { sanitize: sanitizeDeploymentTraceDiagnostics },
+  });
 }
 
 function formatAdminUser(user) {
