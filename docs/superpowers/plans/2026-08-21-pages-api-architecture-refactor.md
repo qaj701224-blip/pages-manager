@@ -141,9 +141,9 @@ node --test apps/pages-api/src/config.test.js apps/pages-api/src/infrastructure/
 
 **Steps**
 
-- [ ] 先搬无副作用 mapper/normalizer；每次只迁移一个领域。
-- [ ] `createPagesStore` 与 `D1PagesStore` export 暂时稳定，旧调用方无需同步切换。
-- [ ] 禁止在 mapper 内读取 env 或执行 SQL。
+- [x] 先搬无副作用 mapper/normalizer；每次只迁移一个领域。
+- [x] `createPagesStore` 与 `D1PagesStore` export 暂时稳定，旧调用方无需同步切换。
+- [x] 禁止在 mapper 内读取 env 或执行 SQL。
 
 ### Task 2.2：按领域拆 repository
 
@@ -154,9 +154,9 @@ node --test apps/pages-api/src/config.test.js apps/pages-api/src/infrastructure/
 
 **Steps**
 
-- [ ] 每个 repository 只保留单领域查询/更新；参数显式包含 environment。
-- [ ] 先由旧 facade 委托新 repository，再迁移 production 调用方。
-- [ ] SQL 文本机械移动时不改变 predicates、ordering、null/default 或 row shape。
+- [x] 每个 repository 只保留单领域查询/更新；参数显式包含 environment。
+- [x] 先由旧 facade 委托新 repository，再迁移 production 调用方。
+- [x] SQL 文本机械移动时不改变 predicates、ordering、null/default 或 row shape。
 
 ### Task 2.3：抽命名 transaction coordinator
 
@@ -167,9 +167,9 @@ node --test apps/pages-api/src/config.test.js apps/pages-api/src/infrastructure/
 
 **Steps**
 
-- [ ] 跨表原子行为继续在一个 `batch()` / CAS / lease coordinator 内执行。
-- [ ] 每个 coordinator 覆盖 late-statement failure rollback、CAS loss、environment mismatch 和 lease contention。
-- [ ] application 不得用多个 repository call 重拼原事务。
+- [x] 跨表原子行为继续在一个 `batch()` / CAS / lease coordinator 内执行。
+- [x] 每个 coordinator 覆盖 late-statement failure rollback、CAS loss、environment mismatch 和 lease contention。
+- [x] application 不得用多个 repository call 重拼原事务。
 
 **Phase verify**
 
