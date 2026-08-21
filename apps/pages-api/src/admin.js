@@ -31,6 +31,7 @@ import {
 import { createAdminDashboardQuery } from './application/governance/get-admin-dashboard.js';
 import { createDeploymentTraceQuery } from './application/governance/get-deployment-trace.js';
 import { createAuditEventsQuery } from './application/governance/list-audit-events.js';
+import { createExposureUpdatePreparation } from './application/governance/prepare-exposure-update.js';
 import { buildRouteSnapshot, clearRoutePointerIfCurrent, readRouteSnapshotState } from './route-snapshot.js';
 import { createDeploymentProvider } from './execution-provider.js';
 import { sanitizeDeploymentTraceDiagnostics } from './deployment-trace.js';
@@ -2264,33 +2265,14 @@ async function updateAdminSiteExposure(request, env, config, store, session, sit
     return jsonError('SITE_EXPOSURE_REASON_INVALID', 'Exposure reason is too long.', 400, 'Use at most 500 characters.');
   }
 
-  const operationId = newId('op');
-  const now = readNow(env);
-  const initialExposure = site.route?.exposure || site.defaultExposure || 'internal';
-  const auditMetadata = {
-    operationId,
-    siteSlug: site.slug,
-    previousExposure: initialExposure,
-    requestedExposure: exposure,
-    reason: reason || null,
-    source: 'console-admin',
-  };
-  try {
-    await store.recordAuditEvent({
-      id: `${operationId}:attempted`,
-      environment: config.environment,
-      traceId: operationId,
-      eventType: 'admin.site.exposure',
-      actorUserId: session.userId,
-      actorType: 'platform_admin',
-      siteId: site.id,
-      routeId: site.route?.id || null,
-      decision: 'allow',
-      statusCode: 202,
-      metadata: { ...auditMetadata, stage: 'attempted' },
-      createdAt: now,
-    });
-  } catch {
+  const preparation = await createExposureUpdatePreparationApplication({ store, env }).prepare({
+    environment: config.environment,
+    actorUserId: session.userId,
+    site,
+    exposure,
+    reason,
+  });
+  if (!preparation.ok) {
     return jsonError(
       'SITE_EXPOSURE_AUDIT_REQUIRED',
       'Exposure operation was not started because its required audit record could not be written.',
@@ -2298,6 +2280,7 @@ async function updateAdminSiteExposure(request, env, config, store, session, sit
       'Retry after checking the audit store.'
     );
   }
+  const { operationId, now, auditMetadata } = preparation.context;
 
   try {
     const result = await store.withSiteCommitLock(config.environment, site.id, async (lease) => {
@@ -2554,6 +2537,14 @@ async function updateAdminSiteExposure(request, env, config, store, session, sit
     }
     return adminExposureErrorResponse(error);
   }
+}
+
+function createExposureUpdatePreparationApplication({ store, env }) {
+  return createExposureUpdatePreparation({
+    audits: { record: (event) => store.recordAuditEvent(event) },
+    ids: { next: newId },
+    clock: { now: () => readNow(env) },
+  });
 }
 
 async function writeAdminExposureSnapshot(env, store, site, route, environment) {
