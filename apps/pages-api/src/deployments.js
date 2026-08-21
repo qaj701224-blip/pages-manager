@@ -972,7 +972,12 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
       : null;
     if (typeof store.withSiteCommitLock !== 'function') throw deploymentOperationError('SITE_POLICY_LOCKED');
     const routeActivationApplication = createDeploymentRouteActivationApplication(store, env, trace);
-    const routeSnapshotApplication = createDeploymentRouteSnapshotCommitApplication(store, env);
+    const routeSnapshotApplication = createDeploymentRouteSnapshotCommitApplication(
+      store,
+      env,
+      trace,
+      'write_route_snapshot'
+    );
     route = await store.withSiteCommitLock(
       config.environment,
       siteId,
@@ -1052,27 +1057,13 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
         });
         const activatedRoute = activationResult.ok ? activationResult.route : null;
         if (!activatedRoute) return null;
-        const routeSnapshotStage = trace
-          ? startDeploymentStage(trace, {
-              stage: 'route_snapshot',
-              operation: 'write_route_snapshot',
-            })
-          : null;
-        try {
-          assertCommitLeaseHealthy(activationLease);
-          const snapshotResult = await routeSnapshotApplication.commit({ site, route: activatedRoute, version });
-          if (!snapshotResult.ok) throw snapshotResult.error.cause;
-          assertCommitLeaseHealthy(activationLease);
-          if (routeSnapshotStage) await finishDeploymentStage(routeSnapshotStage, { status: 'succeeded' });
-        } catch {
-          if (routeSnapshotStage) {
-            await finishDeploymentStage(routeSnapshotStage, {
-              status: 'failed',
-              errorCode: 'ROUTE_SNAPSHOT_WRITE_FAILED',
-              errorMessage: 'Route snapshot write failed.',
-              diagnostics: { causeClass: 'route_snapshot_store_error' },
-            });
-          }
+        const snapshotResult = await routeSnapshotApplication.commit({
+          site,
+          route: activatedRoute,
+          version,
+          lease: activationLease,
+        });
+        if (!snapshotResult.ok) {
           const recovery = await createDeploymentRouteSnapshotRecoveryApplication({ store, env }).recover({
             siteId,
             environment: config.environment,
@@ -1908,30 +1899,19 @@ async function rollbackVersion(request, env, config, store, actor, versionId, ct
       'Check the latest site status and retry the rollback with a new Idempotency-Key.'
     );
   }
-  const rollbackRouteSnapshotStage = trace
-    ? startDeploymentStage(trace, {
-        stage: 'route_snapshot',
-        operation: 'rollback_route_snapshot',
-      })
-    : null;
-  const rollbackRouteSnapshotApplication = createDeploymentRouteSnapshotCommitApplication(store, env);
-  try {
-    assertCommitLeaseHealthy(rollbackLease);
-    const snapshotResult = await rollbackRouteSnapshotApplication.commit({ site, route, version });
-    if (!snapshotResult.ok) throw snapshotResult.error.cause;
-    assertCommitLeaseHealthy(rollbackLease);
-    if (rollbackRouteSnapshotStage) {
-      await finishDeploymentStage(rollbackRouteSnapshotStage, { status: 'succeeded' });
-    }
-  } catch {
-    if (rollbackRouteSnapshotStage) {
-      await finishDeploymentStage(rollbackRouteSnapshotStage, {
-        status: 'failed',
-        errorCode: 'ROUTE_SNAPSHOT_WRITE_FAILED',
-        errorMessage: 'Route snapshot write failed.',
-        diagnostics: { causeClass: 'route_snapshot_store_error' },
-      });
-    }
+  const rollbackRouteSnapshotApplication = createDeploymentRouteSnapshotCommitApplication(
+    store,
+    env,
+    trace,
+    'rollback_route_snapshot'
+  );
+  const rollbackSnapshotResult = await rollbackRouteSnapshotApplication.commit({
+    site,
+    route,
+    version,
+    lease: rollbackLease,
+  });
+  if (!rollbackSnapshotResult.ok) {
     const recovery = await createRollbackRouteSnapshotRecoveryApplication({
       store,
       env,
@@ -3254,9 +3234,32 @@ function createDeploymentRouteActivationApplication(store, env, trace = null, pr
   });
 }
 
-function createDeploymentRouteSnapshotCommitApplication(store, env) {
+function createDeploymentRouteSnapshotCommitApplication(store, env, trace, operation) {
   return createDeploymentRouteSnapshotCommit({
     routeSnapshots: createDeploymentRouteSnapshotInfrastructure(store, env),
+    leases: { assertHealthy: assertCommitLeaseHealthy },
+    telemetry: {
+      start: () =>
+        trace
+          ? startDeploymentStage(trace, {
+              stage: 'route_snapshot',
+              operation,
+            })
+          : null,
+      finish: (stage, outcome) =>
+        stage
+          ? finishDeploymentStage(stage, {
+              status: outcome.status,
+              ...(outcome.reason === 'snapshot_error'
+                ? {
+                    errorCode: 'ROUTE_SNAPSHOT_WRITE_FAILED',
+                    errorMessage: 'Route snapshot write failed.',
+                    diagnostics: { causeClass: 'route_snapshot_store_error' },
+                  }
+                : {}),
+            })
+          : undefined,
+    },
   });
 }
 
