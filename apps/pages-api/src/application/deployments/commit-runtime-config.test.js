@@ -12,11 +12,13 @@ const command = {
   expectedVars: [{ name: 'OLD_FLAG', value: 'old', revision: 2 }],
   expectedSecrets: [{ name: 'API_TOKEN', value: 'secret', revision: 3 }],
 };
+const telemetry = { start: () => null, finish: async () => null };
 
-function createApplication({ runtimeConfig = {}, validate = async () => ({ ok: true }) } = {}) {
+function createApplication({ runtimeConfig = {}, validate = async () => ({ ok: true }), trace = telemetry } = {}) {
   return createDeploymentRuntimeConfigCommit({
     runtimeConfig,
     snapshotValidation: { validate },
+    telemetry: trace,
     clock: { now: () => '2026-08-21T00:00:00.000Z' },
     ids: { next: (prefix) => `${prefix}_1` },
   });
@@ -122,7 +124,7 @@ test('deployment runtime config commit maps mutation failures without exposing t
 
 test('deployment runtime config commit requires composition capabilities', () => {
   assert.throws(
-    () => createDeploymentRuntimeConfigCommit({ runtimeConfig: {}, snapshotValidation: {}, clock: {}, ids: {} }),
+    () => createDeploymentRuntimeConfigCommit({ runtimeConfig: {}, snapshotValidation: {}, telemetry, clock: {}, ids: {} }),
     /snapshotValidation\.validate is required/
   );
   assert.throws(
@@ -130,9 +132,97 @@ test('deployment runtime config commit requires composition capabilities', () =>
       createDeploymentRuntimeConfigCommit({
         runtimeConfig: {},
         snapshotValidation: { validate() {} },
+        telemetry,
         clock: {},
         ids: { next() {} },
       }),
     /clock\.now is required/
   );
+  assert.throws(
+    () =>
+      createDeploymentRuntimeConfigCommit({
+        runtimeConfig: {},
+        snapshotValidation: { validate() {} },
+        telemetry: {},
+        clock: { now() {} },
+        ids: { next() {} },
+      }),
+    /telemetry\.start is required/
+  );
+});
+
+test('deployment runtime config commit traces success and typed failures around the mutation', async () => {
+  const calls = [];
+  const stage = { operation: 'commit_runtime_config' };
+  const trace = {
+    start() {
+      calls.push(['start']);
+      return stage;
+    },
+    async finish(receivedStage, outcome) {
+      calls.push(['finish', receivedStage, outcome]);
+    },
+  };
+  const success = createApplication({
+    runtimeConfig: {
+      async replaceVars() {
+        calls.push(['replace']);
+        return [];
+      },
+    },
+    validate: async () => (calls.push(['validate']), { ok: true }),
+    trace,
+  });
+
+  assert.equal((await success.commit(command)).ok, true);
+  assert.deepEqual(calls.splice(0), [
+    ['start'],
+    ['validate'],
+    ['replace'],
+    ['finish', stage, { status: 'succeeded' }],
+  ]);
+
+  const failure = createApplication({
+    runtimeConfig: { replaceVars: async () => assert.fail('stale snapshots must not replace vars') },
+    validate: async () => ({ ok: false, error: { code: 'RUNTIME_CONFIG_CHANGED' } }),
+    trace,
+  });
+  const result = await failure.commit(command);
+  assert.deepEqual(calls, [['start'], ['finish', stage, { status: 'failed', error: result.error }]]);
+});
+
+test('deployment runtime config commit finishes skipped telemetry before its no-op result', async () => {
+  const calls = [];
+  const application = createApplication({
+    runtimeConfig: { replaceVars: async () => assert.fail('skipped commits must not replace vars') },
+    validate: async () => assert.fail('skipped commits must not validate snapshots'),
+    trace: {
+      start() {
+        calls.push(['start']);
+        return null;
+      },
+      async finish(_stage, outcome) {
+        calls.push(['finish', outcome]);
+      },
+    },
+  });
+
+  assert.deepEqual(await application.commit({ ...command, enabled: false }), { ok: true, kind: 'skipped' });
+  assert.deepEqual(calls, [['start'], ['finish', { status: 'skipped' }]]);
+});
+
+test('deployment runtime config commit starts telemetry synchronously', () => {
+  const startError = new Error('invalid trace');
+  const application = createApplication({
+    runtimeConfig: { replaceVars: async () => assert.fail('replace must not run') },
+    validate: async () => assert.fail('validate must not run'),
+    trace: {
+      start() {
+        throw startError;
+      },
+      finish: async () => assert.fail('finish must not run'),
+    },
+  });
+
+  assert.throws(() => application.commit(command), (error) => error === startError);
 });

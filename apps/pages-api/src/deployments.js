@@ -682,17 +682,7 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
     return jsonError(code, disposition.responseMessage, disposition.responseStatus, disposition.responseAction);
   }
 
-  let runtimeConfigCommitStage = trace
-    ? startDeploymentStage(trace, {
-        stage: 'runtime_config_commit',
-        operation: 'commit_runtime_config',
-      })
-    : null;
-  if (!workerRuntimeVarsProvided && runtimeConfigCommitStage) {
-    await finishDeploymentStage(runtimeConfigCommitStage, { status: 'skipped' });
-    runtimeConfigCommitStage = null;
-  }
-  const runtimeConfigCommitResult = await createDeploymentRuntimeConfigCommitApplication(store, env).commit({
+  const runtimeConfigCommitResult = await createDeploymentRuntimeConfigCommitApplication(store, env, trace).commit({
     environment: config.environment,
     siteId,
     actorId: actor.userId,
@@ -703,14 +693,6 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
   });
   if (!runtimeConfigCommitResult.ok && runtimeConfigCommitResult.error.reason === 'snapshot_validation_failed') {
     const preCommitRuntimeSnapshotError = runtimeConfigSnapshotFailure(runtimeConfigCommitResult.error);
-    if (runtimeConfigCommitStage) {
-      await finishDeploymentStage(runtimeConfigCommitStage, {
-        status: 'failed',
-        errorCode: preCommitRuntimeSnapshotError.code,
-        errorMessage: preCommitRuntimeSnapshotError.message,
-        diagnostics: { causeClass: 'runtime_config_changed' },
-      });
-    }
     await cleanupUploadedWorkerAndRecord(trace, provider, uploaded, {
       originalFailure: { stage: 'runtime_config_commit', code: preCommitRuntimeSnapshotError.code },
       trafficImpact: 'old_version_retained',
@@ -741,14 +723,6 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
     );
   }
   if (!runtimeConfigCommitResult.ok) {
-    if (runtimeConfigCommitStage) {
-      await finishDeploymentStage(runtimeConfigCommitStage, {
-        status: 'failed',
-        errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
-        errorMessage: 'Runtime configuration is unavailable.',
-        diagnostics: { causeClass: 'runtime_config_error' },
-      });
-    }
     await cleanupUploadedWorkerAndRecord(trace, provider, uploaded, {
       originalFailure: { stage: 'runtime_config_commit', code: 'RUNTIME_CONFIG_UNSUPPORTED' },
       trafficImpact: 'old_version_retained',
@@ -759,10 +733,6 @@ async function createDeployment(request, env, config, store, actor, ctx, trace, 
   if (runtimeConfigCommitResult.kind === 'committed') {
     runtimeVarRecords = runtimeConfigCommitResult.runtimeVarRecords;
     runtimeVars = runtimeConfigCommitResult.runtimeVars;
-    if (runtimeConfigCommitStage) {
-      await finishDeploymentStage(runtimeConfigCommitStage, { status: 'succeeded' });
-      runtimeConfigCommitStage = null;
-    }
   }
   const committedRuntimeVarRecords = runtimeVarRecords;
 
@@ -2478,6 +2448,22 @@ function runtimeConfigSnapshotFailure(error) {
   };
 }
 
+function runtimeConfigCommitTraceFailure(error) {
+  if (error?.reason === 'snapshot_validation_failed') {
+    const failure = runtimeConfigSnapshotFailure(error);
+    return {
+      errorCode: failure.code,
+      errorMessage: failure.message,
+      diagnostics: { causeClass: 'runtime_config_changed' },
+    };
+  }
+  return {
+    errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+    errorMessage: 'Runtime configuration is unavailable.',
+    diagnostics: { causeClass: 'runtime_config_error' },
+  };
+}
+
 function normalizeExposureForDeployment(value) {
   return value === 'public' ? 'public' : 'internal';
 }
@@ -3343,11 +3329,27 @@ function createDeploymentRuntimeConfigResolutionApplication(store, env, trace = 
   });
 }
 
-function createDeploymentRuntimeConfigCommitApplication(store, env) {
+function createDeploymentRuntimeConfigCommitApplication(store, env, trace = null) {
   const runtimeConfig = createDeploymentRuntimeConfigMutationPort(store);
   return createDeploymentRuntimeConfigCommit({
     runtimeConfig,
     snapshotValidation: createDeploymentRuntimeConfigSnapshotValidation({ runtimeConfig }),
+    telemetry: {
+      start: () =>
+        trace
+          ? startDeploymentStage(trace, {
+              stage: 'runtime_config_commit',
+              operation: 'commit_runtime_config',
+            })
+          : null,
+      finish: (stage, outcome) =>
+        stage
+          ? finishDeploymentStage(stage, {
+              status: outcome.status,
+              ...(outcome.status === 'failed' ? runtimeConfigCommitTraceFailure(outcome.error) : {}),
+            })
+          : undefined,
+    },
     clock: { now: () => readNow(env) },
     ids: { next: (prefix) => nextId(env, prefix) },
   });
