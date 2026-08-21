@@ -291,9 +291,9 @@ node --test apps/pages-api/src/route-snapshot.test.js apps/pages-api/src/runtime
 - [x] version create / route commit；
   - [x] immutable version record 构造、runtime snapshot hash 与 repository 写入；
   - [x] route lease / CAS、OfficeNet 与 activation；
-- [ ] route snapshot / terminal persistence；
-- [ ] cleanup/webhook；
-- [ ] compensation/recovery；
+- [x] route snapshot / terminal persistence；
+- [x] cleanup/webhook；
+- [x] compensation/recovery；
 - [ ] rollback 对应阶段。
 
 每次只移动一个阶段；共享 context 不得包含 Request、Response 或完整 env；operation order 与错误 precedence 不得重排。
