@@ -23,7 +23,7 @@ import { createDeploymentProvider } from '../../execution-provider.js';
 import { jsonError, jsonOk, readJsonBody } from '../../http.js';
 import { newId, nextId } from '../../id.js';
 import { buildRouteSnapshot, clearRoutePointerIfCurrent, readRouteSnapshotState } from '../../route-snapshot.js';
-import { formatAclEntry } from '../../console.js';
+import { formatAclEntry } from './site-projections.js';
 import {
   createSiteOwnershipApplication,
   siteTransferErrorResponse,

@@ -8,12 +8,12 @@ import {
   deleteConsoleSite,
   deleteSiteSecret,
   deleteSiteVar,
-  formatAclEntry,
   putSiteSecret,
   putSiteVar,
   readSiteConfig,
   updateSiteAccess,
-} from '../../console.js';
+} from './site-mutations.js';
+import { formatAclEntry } from './site-projections.js';
 import { isConsoleBffRequest, requireConsoleUserSession } from '../../console-auth.js';
 import { jsonError, jsonOk } from '../../http.js';
 import { handleConsoleAdminWebhooksApi } from '../../webhooks.js';

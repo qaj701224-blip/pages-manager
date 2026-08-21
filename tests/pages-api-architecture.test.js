@@ -8,6 +8,7 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const APPS_ROOT = path.join(REPO_ROOT, 'apps');
 const PAGES_API_SRC = path.join(APPS_ROOT, 'pages-api', 'src');
 const KNOWN_CROSS_APP_IMPORTS = new Set();
+const ROOT_HANDLER_FILES = new Set(['admin.js', 'console.js', 'deployments.js', 'sites.js']);
 
 test('pages-api production imports follow the declared layer direction', () => {
   const violations = [];
@@ -50,6 +51,10 @@ test('layer classifier rejects reverse and cross-transport dependencies', () => 
   );
   assert.match(pagesApiLayerViolation(file('infrastructure/store/sites.js'), file('transport/shared/http.js')), /infrastructure/);
   assert.match(pagesApiLayerViolation(file('transport/public/sites.js'), file('transport/console/sites.js')), /transport lane/);
+  assert.match(
+    pagesApiLayerViolation(file('transport/console/admin-handler.js'), file('console.js')),
+    /root handler/
+  );
   assert.equal(pagesApiLayerViolation(file('transport/public/sites.js'), file('application/sites/create-site.js')), null);
   assert.equal(pagesApiLayerViolation(file('application/sites/create-site.js'), file('domain/sites/site.js')), null);
   assert.equal(pagesApiLayerViolation(file('infrastructure/store/sites.js'), file('domain/sites/site.js')), null);
@@ -60,6 +65,10 @@ test('layer classifier rejects reverse and cross-transport dependencies', () => 
 function pagesApiLayerViolation(source, target) {
   const sourceLayer = layer(source);
   const targetLayer = layer(target);
+  const sourceLane = transportLane(source);
+  if (sourceLane && ROOT_HANDLER_FILES.has(relativeToPagesApi(target))) {
+    return `transport lane ${sourceLane} must not import root handler`;
+  }
   if (!sourceLayer || !targetLayer) return null;
 
   if (sourceLayer === 'domain' && ['application', 'transport', 'infrastructure'].includes(targetLayer)) {
@@ -72,7 +81,6 @@ function pagesApiLayerViolation(source, target) {
     return 'infrastructure must not import transport';
   }
   if (sourceLayer === 'transport' && targetLayer === 'transport') {
-    const sourceLane = transportLane(source);
     const targetLane = transportLane(target);
     if (sourceLane && targetLane && sourceLane !== targetLane && targetLane !== 'shared') {
       return `transport lane ${sourceLane} must not import ${targetLane}`;
