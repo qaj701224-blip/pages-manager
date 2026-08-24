@@ -1,3 +1,7 @@
+export function canViewRuntimeConfig(site, scope = 'workspace') {
+  return scope === 'admin' || Boolean(site?.permissions?.canManage);
+}
+
 export function getSiteCapabilities(site) {
   const permissions = site?.permissions || {};
   const canEditAccess = Boolean(permissions.canManageAccess);

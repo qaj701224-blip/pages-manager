@@ -2816,7 +2816,7 @@ test('runtime vars use the next deployment for assets-only active versions', asy
   assert.deepEqual(providerCalls, []);
 });
 
-test('runtime vars reject malformed bodies and do not expose stored values through GET', async () => {
+test('runtime vars reject malformed bodies and return stored values to a site manager through GET', async () => {
   const store = await createSeededStore();
   await store.createSite({
     id: 'site_1',
@@ -2865,8 +2865,113 @@ test('runtime vars reject malformed bodies and do not expose stored values throu
   assert.equal((await missingValue.json()).error.code, 'RUNTIME_VAR_INVALID');
   assert.equal(missingName.status, 400);
   assert.equal((await missingName.json()).error.code, 'RUNTIME_VAR_INVALID');
-  assert.equal(get.status, 405);
-  assert.doesNotMatch(getText, /stored-private-value|API_BASE/);
+  assert.equal(get.status, 200, getText);
+  assert.deepEqual(JSON.parse(getText), {
+    vars: [
+      {
+        name: 'API_BASE',
+        value: 'stored-private-value',
+        revision: 1,
+        updatedAt: '2026-06-15T00:00:00.000Z',
+      },
+    ],
+  });
+});
+
+test('runtime secrets GET returns sorted metadata without reading or exposing secret values', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  await store.putSiteSecret({
+    id: 'sec_z',
+    environment: 'production',
+    siteId: 'site_1',
+    name: 'Z_TOKEN',
+    value: 'secret-value-z',
+    actorId: 'usr_1',
+    updatedAt: '2026-06-15T00:01:00.000Z',
+  });
+  await store.putSiteSecret({
+    id: 'sec_a',
+    environment: 'production',
+    siteId: 'site_1',
+    name: 'API_TOKEN',
+    value: 'secret-value-a',
+    actorId: 'usr_1',
+    updatedAt: '2026-06-15T00:02:00.000Z',
+  });
+  store.listEnabledSiteSecrets = async () => {
+    throw new Error('secret values must not be read');
+  };
+
+  const response = await worker.fetch(
+    authRequest('https://api.pages.xd.team/.xd-pages/api/sites/guide/secrets'),
+    testEnv(store)
+  );
+  const text = await response.text();
+
+  assert.equal(response.status, 200, text);
+  assert.deepEqual(JSON.parse(text), {
+    secrets: [
+      {
+        name: 'API_TOKEN',
+        revision: 1,
+        updatedAt: '2026-06-15T00:02:00.000Z',
+      },
+      {
+        name: 'Z_TOKEN',
+        revision: 1,
+        updatedAt: '2026-06-15T00:01:00.000Z',
+      },
+    ],
+  });
+  assert.doesNotMatch(text, /secret-value|encrypted|value/);
+});
+
+test('runtime config GET fails closed with safe errors when read capabilities are unavailable', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  store.listEnabledSiteVars = undefined;
+  store.listEnabledSiteSecretMetadata = async () => {
+    throw new Error('SENSITIVE_SECRET_STORE_FAILURE');
+  };
+  const lines = [];
+  const environment = testEnv(store, { logRuntimeConfigFailure: (line) => lines.push(line) });
+
+  const vars = await worker.fetch(authRequest('https://api.pages.xd.team/.xd-pages/api/sites/guide/vars'), environment);
+  const secrets = await worker.fetch(
+    authRequest('https://api.pages.xd.team/.xd-pages/api/sites/guide/secrets'),
+    environment
+  );
+  const varsText = await vars.text();
+  const secretsText = await secrets.text();
+
+  assert.equal(vars.status, 503);
+  assert.equal(JSON.parse(varsText).error.code, 'RUNTIME_CONFIG_UNSUPPORTED');
+  assert.equal(secrets.status, 503);
+  assert.equal(JSON.parse(secretsText).error.code, 'RUNTIME_CONFIG_UNSUPPORTED');
+  assert.doesNotMatch(`${varsText}\n${secretsText}\n${lines.join('\n')}`, /SENSITIVE_SECRET_STORE_FAILURE/);
+  assert.deepEqual(
+    lines.map((line) => JSON.parse(line).operation),
+    ['var_list', 'secret_list']
+  );
 });
 
 test('runtime vars report active Worker provider failures after preserving the committed value', async () => {
@@ -3037,6 +3142,158 @@ test('team publishers and admins can manage runtime vars while viewers are forbi
   assert.equal((await viewer.json()).error.code, 'DEPLOY_FORBIDDEN');
   assert.equal(admin.status, 200, await admin.clone().text());
   assert.deepEqual(await store.listEnabledSiteVars('production', 'site_team'), []);
+});
+
+test('runtime config GET allows team publishers and admins but denies viewers before reading configuration', async () => {
+  const store = await createSeededStore();
+  await store.createUser({ userId: 'usr_publisher', email: 'publisher@example.com', employeeStatus: 'active' });
+  await store.createUser({ userId: 'usr_viewer', email: 'viewer@example.com', employeeStatus: 'active' });
+  await seedCliLoginKey(store, 'usr_publisher', BEARER_USR_PUBLISHER);
+  await seedCliLoginKey(store, 'usr_viewer', BEARER_USR_VIEWER);
+  const team = await store.createTeam({
+    id: 'team_1',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team One',
+    createdByUserId: 'usr_1',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_publisher',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_viewer',
+    role: 'viewer',
+    membershipSource: 'manual',
+  });
+  await store.createSite({
+    id: 'site_team',
+    slug: 'team-guide',
+    ownerUserId: 'usr_1',
+    ownerType: 'team',
+    ownerId: team.id,
+    siteUuid: 'uuid_team',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_team',
+    hostname: 'team-guide.pages.xd.team',
+  });
+  await store.mutateSiteVar({
+    environment: 'production',
+    siteId: 'site_team',
+    operation: 'put',
+    name: 'FEATURE_FLAG',
+    value: 'on',
+    actorId: 'usr_1',
+  });
+  await store.putSiteSecret({
+    id: 'sec_1',
+    environment: 'production',
+    siteId: 'site_team',
+    name: 'API_TOKEN',
+    value: 'team-secret-value',
+    actorId: 'usr_1',
+  });
+  const listVars = store.listEnabledSiteVars.bind(store);
+  const listSecretMetadata = store.listEnabledSiteSecretMetadata.bind(store);
+  let reads = 0;
+  store.listEnabledSiteVars = async (...args) => {
+    reads += 1;
+    return listVars(...args);
+  };
+  store.listEnabledSiteSecretMetadata = async (...args) => {
+    reads += 1;
+    return listSecretMetadata(...args);
+  };
+  const environment = testEnv(store);
+
+  const viewerVars = await worker.fetch(
+    authRequest(
+      'https://api.pages.xd.team/.xd-pages/api/sites/team-guide/vars',
+      {},
+      {},
+      BEARER_USR_VIEWER
+    ),
+    environment
+  );
+  const viewerSecrets = await worker.fetch(
+    authRequest(
+      'https://api.pages.xd.team/.xd-pages/api/sites/team-guide/secrets',
+      {},
+      {},
+      BEARER_USR_VIEWER
+    ),
+    environment
+  );
+
+  assert.equal(viewerVars.status, 403);
+  assert.equal((await viewerVars.json()).error.code, 'DEPLOY_FORBIDDEN');
+  assert.equal(viewerSecrets.status, 403);
+  assert.equal((await viewerSecrets.json()).error.code, 'DEPLOY_FORBIDDEN');
+  assert.equal(reads, 0);
+
+  const publisherVars = await worker.fetch(
+    authRequest(
+      'https://api.pages.xd.team/.xd-pages/api/sites/team-guide/vars',
+      {},
+      {},
+      BEARER_USR_PUBLISHER
+    ),
+    environment
+  );
+  const adminSecrets = await worker.fetch(
+    authRequest('https://api.pages.xd.team/.xd-pages/api/sites/team-guide/secrets'),
+    environment
+  );
+
+  assert.equal(publisherVars.status, 200, await publisherVars.clone().text());
+  assert.equal(adminSecrets.status, 200, await adminSecrets.clone().text());
+  assert.equal(reads, 2);
+});
+
+test('runtime config GET enforces Access Key deploy scope and site binding', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  await store.createSite({
+    id: 'site_2',
+    slug: 'other-guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_2',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_2',
+    hostname: 'other-guide.pages.xd.team',
+  });
+  const deployKey = await seedAccessKey(store, 'ak_deploy_config_read', ['deploy:site']);
+  const readKey = await seedAccessKey(store, 'ak_read_config_read', ['read:site']);
+  const wrongSiteKey = await seedAccessKey(store, 'ak_wrong_site_config_read', ['deploy:site'], 'site_2');
+
+  const requestWithKey = (key) =>
+    authRequest(
+      'https://api.pages.xd.team/.xd-pages/api/sites/guide/vars',
+      { Authorization: `Bearer ${key}` }
+    );
+  const deploy = await worker.fetch(requestWithKey(deployKey), testEnv(store));
+  const readOnly = await worker.fetch(requestWithKey(readKey), testEnv(store));
+  const wrongSite = await worker.fetch(requestWithKey(wrongSiteKey), testEnv(store));
+
+  assert.equal(deploy.status, 200, await deploy.clone().text());
+  assert.equal(readOnly.status, 403);
+  assert.equal((await readOnly.json()).error.code, 'DEPLOY_FORBIDDEN');
+  assert.equal(wrongSite.status, 404);
+  assert.equal((await wrongSite.json()).error.code, 'SITE_NOT_FOUND');
 });
 
 test('runtime vars enforce deploy scope and access key owner and site boundaries', async () => {

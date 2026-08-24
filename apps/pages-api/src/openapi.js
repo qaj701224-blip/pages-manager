@@ -329,6 +329,27 @@ export function buildOpenApi(config) {
             },
           },
         },
+        SiteSecretMetadata: {
+          type: 'object',
+          required: ['name', 'revision', 'updatedAt'],
+          additionalProperties: false,
+          properties: {
+            name: { type: 'string', description: 'Worker secret binding name. The secret value is never returned.' },
+            revision: { type: 'integer', minimum: 1 },
+            updatedAt: { type: 'string', format: 'date-time' },
+          },
+        },
+        SiteSecretsResponse: {
+          type: 'object',
+          required: ['secrets'],
+          additionalProperties: false,
+          properties: {
+            secrets: {
+              type: 'array',
+              items: { $ref: '#/components/schemas/SiteSecretMetadata' },
+            },
+          },
+        },
         SiteVarPutRequest: {
           type: 'object',
           required: ['name', 'value'],
@@ -340,7 +361,8 @@ export function buildOpenApi(config) {
             },
             value: {
               type: 'string',
-              description: 'Non-sensitive plain-text value. Never returned by this API.',
+              description:
+                'Non-sensitive plain-text value. Returned by the authorized GET operation but omitted from mutation responses.',
             },
           },
         },
@@ -352,6 +374,28 @@ export function buildOpenApi(config) {
             name: {
               type: 'string',
               description: 'Non-sensitive Worker plain-text binding name to delete.',
+            },
+          },
+        },
+        SiteRuntimeVar: {
+          type: 'object',
+          required: ['name', 'value', 'revision', 'updatedAt'],
+          additionalProperties: false,
+          properties: {
+            name: { type: 'string', description: 'Non-sensitive Worker plain-text binding name.' },
+            value: { type: 'string', description: 'Non-sensitive Worker plain-text binding value.' },
+            revision: { type: 'integer', minimum: 1 },
+            updatedAt: { type: 'string', format: 'date-time' },
+          },
+        },
+        SiteVarsResponse: {
+          type: 'object',
+          required: ['vars'],
+          additionalProperties: false,
+          properties: {
+            vars: {
+              type: 'array',
+              items: { $ref: '#/components/schemas/SiteRuntimeVar' },
             },
           },
         },
@@ -665,6 +709,30 @@ export function buildOpenApi(config) {
         },
       },
       '/.xd-pages/api/sites/{site}/secrets': {
+        get: {
+          summary: 'List site-level runtime secret metadata without secret values',
+          parameters: [{ name: 'site', in: 'path', required: true, schema: { type: 'string' } }],
+          'x-error-codes': [
+            'SITE_SLUG_INVALID',
+            'SITE_SLUG_RESERVED',
+            'SITE_NOT_FOUND',
+            'DEPLOY_FORBIDDEN',
+            'RUNTIME_CONFIG_UNSUPPORTED',
+          ],
+          responses: {
+            200: {
+              description: 'Enabled secret names, revisions, and update times returned without values',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/SiteSecretsResponse' },
+                },
+              },
+            },
+            403: { description: 'Actor cannot manage runtime secrets for this site' },
+            404: { description: 'Site not found' },
+            503: { description: 'Runtime secret metadata store unavailable' },
+          },
+        },
         put: {
           summary: 'Set a site-level runtime secret and sync the active Worker when present',
           parameters: [{ name: 'site', in: 'path', required: true, schema: { type: 'string' } }],
@@ -736,6 +804,30 @@ export function buildOpenApi(config) {
         },
       },
       '/.xd-pages/api/sites/{site}/vars': {
+        get: {
+          summary: 'List non-sensitive site-level runtime vars',
+          parameters: [{ name: 'site', in: 'path', required: true, schema: { type: 'string' } }],
+          'x-error-codes': [
+            'SITE_SLUG_INVALID',
+            'SITE_SLUG_RESERVED',
+            'SITE_NOT_FOUND',
+            'DEPLOY_FORBIDDEN',
+            'RUNTIME_CONFIG_UNSUPPORTED',
+          ],
+          responses: {
+            200: {
+              description: 'Enabled runtime vars returned with values and metadata',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/SiteVarsResponse' },
+                },
+              },
+            },
+            403: { description: 'Actor cannot manage runtime config for this site' },
+            404: { description: 'Site not found' },
+            503: { description: 'Runtime config store unavailable' },
+          },
+        },
         put: {
           summary: 'Set one non-sensitive site-level runtime var and sync the active Worker when present',
           parameters: [{ name: 'site', in: 'path', required: true, schema: { type: 'string' } }],
