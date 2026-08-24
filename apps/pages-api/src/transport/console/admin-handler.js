@@ -237,7 +237,7 @@ export async function handleConsoleAdminApi(request, env, config, store, ctx) {
     const site = await getAdminSite(config, store, decodeURIComponent(adminSiteConfigMatch[1]));
     if (site instanceof Response) return site;
     if (request.method !== 'GET') return methodNotAllowed();
-    return jsonOk({ config: await readSiteConfig(store, config.environment, site.id) });
+    return readSiteConfig(env, config, store, site);
   }
 
   const adminSiteSettingsMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/admin\/sites\/([^/]+)\/settings$/);

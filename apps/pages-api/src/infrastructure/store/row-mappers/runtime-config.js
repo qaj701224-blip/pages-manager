@@ -29,6 +29,14 @@ export function mapSiteSecretMetadata(row) {
   };
 }
 
+export function mapSiteSecretReadMetadata(row) {
+  return {
+    name: row.name,
+    revision: Number(row.revision || 0),
+    updatedAt: row.updated_at,
+  };
+}
+
 export function mapSiteVar(row) {
   return {
     id: row.id,
