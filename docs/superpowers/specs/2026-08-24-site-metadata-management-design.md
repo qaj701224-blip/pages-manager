@@ -52,8 +52,11 @@ UI 中统一称“名称”和“站点 URL”。API 不新增 `name` 字段，�
 - `title TEXT NULL`：经过规范化的展示名称；`NULL` 表示使用 slug 展示。
 - `data_namespace TEXT`：slug 格式的不可变 runtime data namespace。
 - `slug_revision INTEGER NOT NULL DEFAULT 1`：只在 canonical slug 变化时递增，用于 alias 快照收敛。
+- `slug_routing_synced_revision INTEGER NOT NULL DEFAULT 1`：canonical 与全部 alias pointer 最后一次共同确认的 slug revision。
 
-迁移先增加字段，再把所有存量有效及已删除站点的 `data_namespace` 回填为迁移时的 `slug`。兼容期 reader 对异常空值回退到 `site.slug`，但新建和所有新写入必须显式写入非空 `data_namespace`。改 slug 的事务永远不得更新该字段。
+迁移先增加字段，再把所有存量有效及已删除站点的 `data_namespace` 回填为迁移时的 `slug`，并把两个 revision 初始化为 `1`。兼容期 reader 对异常空值回退到 `site.slug`，新 writer 创建站点时必须显式写入非空 `data_namespace`。
+
+迁移与新 writer 切换之间，旧 pages-api 仍可能创建 `data_namespace IS NULL` 的站点。为消除这个窗口，slug rename 在持有 site commit lease 后先读取旧 canonical slug；若 namespace 为空，必须在同一个 rename D1 transaction 中把它固化为“修改前的 slug”，再更新 canonical slug。非空 namespace 永远不得修改。这样即使站点由旧 writer 创建并已产生 KV 数据，第一次 rename 仍使用原数据前缀。
 
 ### `site_slug_aliases`
 
@@ -142,18 +145,19 @@ D1 batch 一次完成：
 
 1. 获取或建立目标 hostname claim。
 2. 新增旧 canonical alias，或在回退历史地址时交换 active alias。
-3. 更新 `sites.slug` 并递增 `sites.slug_revision`；`data_namespace` 不变。
+3. 更新 `sites.slug` 并递增 `sites.slug_revision`；已初始化的 `data_namespace` 不变。若它因迁移窗口仍为空，先以修改前的 slug 完成一次性固化。
 4. 更新同一 `site_routes` 行的 hostname，递增一次 `route_generation`；保留 route id、active version、runtime、worker、dispatch、visibility、exposure、policy version 与 runtime config generation。
-5. 将所有 active alias 的 `synced_slug_revision` 保持为旧值，表示待发布。
+5. 将 `sites.slug_routing_synced_revision` 和所有 active alias 的 `synced_slug_revision` 保持为旧值，表示 canonical 与 aliases 待发布。
 6. 写入 `site_metadata_updated` 审计事件。
 
 D1 是 metadata authority，KV pointer 是 Router-effective 状态。D1 commit 后同步执行：
 
 1. 为新 canonical hostname 写入并读回确认 schema v4 serve snapshot。
 2. 为每个 active alias 写入 schema v4 redirect snapshot，目标始终是最新 canonical hostname，而不是上一个 alias。
-3. 每个 pointer 确认后更新对应 alias 的 `synced_slug_revision` / `last_synced_at`。
+3. 每个 alias pointer 确认后更新对应 alias 的 `synced_slug_revision` / `last_synced_at`。
+4. canonical 与当前 revision 的全部 active alias 都确认后，以 slug revision CAS 把 `sites.slug_routing_synced_revision` 更新为当前 `slug_revision`；旧 reconcile 不得把更新后的 rename 错标为 ready。
 
-只有 canonical 与全部 alias pointer 都确认后返回 `200`。如果 D1 已提交但 KV 写入未完全成功，返回 `202`，响应中的 `routingStatus` 为 `pending`，并使用 `ctx.waitUntil` 重试；现有每 15 分钟 scheduled handler 增加有界 alias reconciliation，处理 `synced_slug_revision < sites.slug_revision` 的记录。客户端以同一目标 slug 重试时也必须执行 repair，而不能因字段同值直接 no-op。
+`routingStatus` 由 `slug_routing_synced_revision === slug_revision` 推导为 `ready`，否则为 `pending`。只有 canonical 与全部 alias pointer 都确认后，含 slug 的 mutation 才返回 `200`。如果 D1 已提交但 KV 写入未完全成功，返回 `202`，并使用 `ctx.waitUntil` 重试；现有每 15 分钟 scheduled handler 增加有界 alias reconciliation，处理全局或 alias revision 未收敛的站点。客户端以同一目标 slug 重试时也必须执行 repair，而不能因字段同值直接 no-op。title-only 请求不被既有 pending rename 阻塞：title 提交成功时返回 `200`，但返回的 site 仍如实携带 `routingStatus: "pending"`。
 
 这种顺序允许短暂出现“旧地址仍服务原内容”或“新地址尚未可用”，但不会把请求发到其它站点。API 不得在 pointer 未确认时返回已完全生效。reconcile 只写当前 D1 authority 指向的 hostname，并保持幂等。
 
@@ -188,13 +192,13 @@ Location 只能由已验证的 snapshot hostname 生成；保留原始 path 与 
 当前 KV capability 把 `route.slug` 写入名为 `siteId` 的 claim，Gateway 再用它生成 `s/<slug>--<siteUuid>/...`。直接改 slug 会切换前缀，因此必须先拆分：
 
 - route v4 snapshot 携带不可变 `siteId`、不可变 `dataNamespace` 和当前 `slug`。
-- Router 新签发的 capability 中，`siteId` 为实际 site id，`dataNamespace` 为存量回填值，并提升 capability claim version。
+- Router 新签发的 capability 中，`siteId` 为实际 site id，`dataNamespace` 为存量回填值，并增加独立的 `namespaceVersion: 2`。既有 Data API 的 `apiVersion` 语义保持不变，legacy runtime endpoint 也使用同一 namespace version 字段。
 - KV Gateway 的新 reader 同时接受两种短期 token：
   - 新 token：校验 `siteId` 格式和 `dataNamespace` 的 slug 格式，使用 `dataNamespace` 构造 key。
   - 旧 token：缺少 `dataNamespace` 时继续把旧 `siteId` 当作 namespace。
 - 站点级与用户级 key、list prefix、cursor context 和内部 metadata 全部改为显式使用 `dataNamespace`；新 metadata 可另记真实 site id。
 - 旧 token TTL 目前最多 60 秒，兼容 reader 至少保留一个完整发布窗口，不通过一次原子切换假定所有 token 已失效。
-- 旧 list cursor 可在兼容期用其旧 `siteId === dataNamespace` 规则校验；新 cursor 写入独立 `siteId` 与 `dataNamespace`。改名不得改变有效 cursor 的 namespace。
+- 旧 list cursor 使用其旧 `siteId === dataNamespace` 规则校验；新 cursor 提升 cursor version，并写入独立 `siteId` 与 `dataNamespace`。现有 cursor 没有时间有效期，因此旧 cursor reader 在对应加密 key 仍被接受期间永久保留，不能仅按发布日期删除；未来若要移除，必须先单独引入 cursor expiry/版本退役契约。改名不得改变有效 cursor 的 namespace。
 
 因此 slug 改名前后的读写继续命中同一 `s/<dataNamespace>--<siteUuid>/...` 前缀，不复制或迁移用户 KV 数据。
 
@@ -236,7 +240,18 @@ Content-Type: application/json
 { "title": null }
 ```
 
-body 只允许 `title`、`slug`，至少出现一个字段。缺失字段保持不变。成功返回 `200 { site, routingStatus: "ready" }`；D1 已提交而 redirect 尚在修复时返回 `202 { site, routingStatus: "pending" }`。
+body 只允许 `title`、`slug`，至少出现一个字段。缺失字段保持不变。成功返回 `200 { site }`，其中 `site.routingStatus` 为 `ready`。D1 已提交而 route 尚在修复时只使用以下一种 202 成功响应形态，不返回标准 error envelope：
+
+```json
+{
+  "site": { "id": "site_x", "slug": "product-docs", "routingStatus": "pending" },
+  "warning": {
+    "code": "SITE_METADATA_ROUTING_PENDING",
+    "message": "Site metadata was saved and routing is still being synchronized.",
+    "action": "Retry this request or wait for routing reconciliation."
+  }
+}
+```
 
 ```http
 PUT    /.xd-pages/api/sites/{siteId}/thumbnail
@@ -253,6 +268,7 @@ PUT body 为图片二进制，成功返回 `200 { thumbnail }`；DELETE 返回 `
   "title": "产品文档",
   "displayName": "产品文档",
   "slug": "product-docs",
+  "routingStatus": "ready",
   "thumbnail": {
     "url": "/.xd-pages/api/sites/site_x/thumbnail?v=thumb_revision",
     "revision": "thumb_revision",
@@ -262,7 +278,7 @@ PUT body 为图片二进制，成功返回 `200 { thumbnail }`；DELETE 返回 `
 }
 ```
 
-未设置时 `title` 与 `thumbnail` 为 `null`，`displayName` 为当前 slug。响应不得包含 `dataNamespace`、R2 key/bucket、hostname claim 或 provider metadata。
+所有站点 list/detail/mutation projection 都返回 `routingStatus: "ready" | "pending"`。未设置时 `title` 与 `thumbnail` 为 `null`，`displayName` 为当前 slug。响应不得包含 `dataNamespace`、R2 key/bucket、hostname claim 或 provider metadata。
 
 读取沿用 `read:site` / 现有兼容读 scope；修改沿用站点管理权限和 `deploy:site` / `*` scope。site-scoped access key 只能修改绑定 site。个人站点仅 Owner 可改；团队站点的 publisher/admin 可改。
 
@@ -287,7 +303,7 @@ Workspace mutation 要求 Owner 或团队 publisher/admin；Admin mutation 要�
 
 directory thumbnail GET 使用与 directory 列表相同的可见性判定：未登录访问只可读取本来可出现在匿名 directory 中的 internal 站点；登录用户还可读取其 org/ACL/owned/team-visible 站点。pages-console 的公司网络门禁始终先执行。不能仅凭 site id 绕过目录可见性。
 
-Console projection 生成自身 `/api/console/...` URL；pages-console 流式代理 binary response，不返回 R2 地址。带 revision query 用于浏览器 cache busting，服务端忽略该 query 的资源选择，始终读取 D1 当前 pointer。
+Console projection 生成自身 `/api/console/...` URL；pages-console 流式代理 binary response，不返回 R2 地址。带 revision query 用于浏览器 cache busting，服务端忽略该 query 的资源选择，始终读取 D1 当前 pointer。现有 BFF 的统一 `Cache-Control: no-store` 逻辑需要只对 JSON/敏感响应保留；thumbnail binary response 应保留 pages-api 设置的 private cache 与 ETag header。
 
 ### 错误语义
 
@@ -298,13 +314,14 @@ Console projection 生成自身 `/api/console/...` URL；pages-console 流式代
 | `SITE_SLUG_INVALID` / `SITE_SLUG_RESERVED` | 400 | 沿用现有 slug 校验 |
 | `SITE_SLUG_CONFLICT` | 409 | 当前 slug、alias、v1 claim 或 hold 冲突 |
 | `SITE_METADATA_CONFLICT` | 409 | 并发 mutation / lease fencing 冲突 |
-| `SITE_METADATA_ROUTING_PENDING` | 202 | D1 已提交，Router pointer 正在修复 |
+| `SITE_METADATA_ROUTING_PENDING` | 202 | 仅出现在上述 warning 成功体；D1 已提交，Router pointer 正在修复 |
 | `SITE_THUMBNAIL_INVALID` | 400 | 空文件或 magic bytes 不合法/不匹配 |
 | `SITE_THUMBNAIL_TOO_LARGE` | 413 | 超过 2 MiB |
 | `SITE_THUMBNAIL_CONTENT_TYPE_INVALID` | 415 | 不支持的 media type |
 | `SITE_THUMBNAIL_NOT_FOUND` | 404 | 未设置缩略图 |
 | `SITE_THUMBNAIL_UNAVAILABLE` | 503 | pointer 存在但对象读取失败 |
 | `SITE_THUMBNAIL_STORE_UNAVAILABLE` | 503 | R2 写入或 pointer 交换失败 |
+| `SITE_METADATA_MUTATIONS_DISABLED` | 503 | rollout/止损开关尚未开启 |
 
 不存在或无权访问的站点继续统一返回 `SITE_NOT_FOUND`，避免枚举。错误、日志和响应不得包含 token、session、R2 object key/bucket、Cloudflare resource id 或图片 body。
 
@@ -316,7 +333,7 @@ Console projection 生成自身 `/api/console/...` URL；pages-console 流式代
 - 名称可清空，清空后立即回退显示 slug。
 - URL 保存前展示新 hostname，并明确“旧地址会永久跳转；本地 `xd-cell.config.json.name` 需同步更新”。
 - 缩略图选择后先本地预览；只接受 PNG/JPEG/WebP，前端预检 2 MiB，服务端仍重复校验；提供独立“移除缩略图”。
-- mutation 成功后只刷新对应 metadata；`202 routingStatus=pending` 时显示“设置已保存，地址正在生效”，并轮询 detail，不把它显示为完全失败。
+- mutation 成功后只刷新对应 metadata；`202` 时显示“设置已保存，地址正在生效”，并轮询 detail 中持久化的 `site.routingStatus`，直到 `ready`，不把它显示为完全失败。
 - 各控件在自身请求中禁用，不能因缩略图上传失败回滚已保存的 title 或 slug。
 
 ## CLI 旧 slug 兼容
@@ -343,6 +360,7 @@ Console projection 生成自身 `/api/console/...` URL；pages-console 流式代
 
 - `apps/pages-api/wrangler.production.template.toml` 与 staging template 增加 `SITE_THUMBNAILS` R2 binding。
 - `scripts/render-pages-v2-wrangler.mjs` 为 pages-api 要求 `SITE_THUMBNAILS_R2_BUCKET`，部署 workflow 从非敏感 GitHub var `PAGES_V2_SITE_THUMBNAILS_R2_BUCKET` 注入。
+- pages-api 增加 `SITE_METADATA_MUTATIONS_ENABLED` feature flag；只有精确值 `true` 才注册 metadata/thumbnail mutation，关闭时返回 `503 SITE_METADATA_MUTATIONS_DISABLED`。读取与兼容 writer 不受该开关影响。
 - production/staging 必须配置不同 bucket name；render/config inventory/workflow tests 断言不能缺失或串用。
 - pages-router 与 kv-gateway 不获得缩略图 bucket 权限。
 - R2 bucket 必须关闭 public access，生命周期规则只作为 orphan 成本控制，不能删除仍有 D1 pointer 的对象。
@@ -354,12 +372,13 @@ Console projection 生成自身 `/api/console/...` URL；pages-console 流式代
 1. 应用 additive D1 migration，回填 `data_namespace`；旧应用可继续运行。
 2. 先发布 KV Gateway dual-reader，使其接受旧 claim 与新 `siteId + dataNamespace` claim。
 3. 发布能读取 v2/v3/v4、识别 redirect 且 fail closed 的 Router；此时 pages-api 仍只写旧 serve snapshot。
-4. 创建并绑定 staging/production 独立私有 R2 bucket，部署 pages-api 的新 writer、reconciler 与 API。
-5. 最后部署 pages-console 与 CLI 兼容输出，先在 staging 完成端到端验证，再手动触发 production workflow。
+4. 创建并绑定 staging/production 独立私有 R2 bucket，部署 pages-api 兼容基线：新建站点写 `data_namespace`，所有 snapshot 写入都携带 namespace，删除逻辑认识 aliases，但 metadata mutation feature flag 仍关闭。
+5. 部署 pages-console 与 CLI 兼容输出，先在 staging 完成端到端验证，再手动触发 production workflow。
+6. 确认没有旧 pages-api 实例、抽查空 namespace 为零且 Router/Gateway compatibility 已生效后，再打开 metadata mutation feature flag。
 
 若现有 workflow 的部署顺序不能保证 consumer-before-producer，则拆为两个 production release；不能在旧 Router/Gateway 仍在线时开始写 v4 snapshot 或新 capability。production 仍只允许手动部署。
 
-回滚规则：新 Gateway 的兼容 reader与新 Router reader在迁移窗口内不得回滚；pages-api/Console 可回滚到忽略新增字段的版本。已有 alias 与新 snapshot 保持可读。启用首次 slug rename 后只允许 roll-forward 修复，不能回滚到把当前 slug 当 data namespace 的 Router。
+回滚规则：新 Gateway dual-reader、新 Router v4 reader 和 pages-api 兼容 writer 共同构成不可降低的兼容基线。feature flag 开启前可以禁用新 UI/API，但不能回滚到会省略 `dataNamespace` snapshot、按新 slug 生成 KV namespace 或只清理 canonical hostname 的旧 pages-api。启用首次 slug rename 后，Gateway、Router 与 pages-api 均只允许 roll-forward 修复；Console 可独立回滚。紧急止损优先关闭 mutation flag，不能恢复旧 writer。
 
 ## 测试与验收
 
@@ -372,6 +391,7 @@ Console projection 生成自身 `/api/console/...` URL；pages-console 流式代
 - A→B→C 的 A/B 都直接指向 C；C→A 可提升本 site 历史 alias；其它 site 不能占用 A/B。
 - 并发 rename/create/deploy/delete 由 claim、lease 和 fencing 阻止丢失更新。
 - snapshot 部分失败返回 202，同值重试与 scheduled reconciliation 可收敛。
+- canonical 未同步、部分 alias 未同步和 stale reconcile CAS 均能正确维持 `routingStatus=pending`；全部 pointer 确认后 list/detail 变为 ready。
 - 删除站点退役全部 alias、hold 全部 claim、清理全部 pointer 与缩略图 pointer。
 
 ### Router 与 Gateway 测试
@@ -404,4 +424,3 @@ Console projection 生成自身 `/api/console/...` URL；pages-console 流式代
 - 改名前后的内容、权限、版本、runtime config 和 runtime data 连续，且无跨站、跨环境或 fail-open 路径。
 - 缩略图仅经授权的 API/BFF 读取，R2 私有且不泄露 provider identifier。
 - OpenAPI、CLI/skill 帮助、Console 文案、部署配置和测试与真实行为同步。
-
