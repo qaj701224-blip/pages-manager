@@ -240,7 +240,7 @@ Content-Type: application/json
 { "title": null }
 ```
 
-body 只允许 `title`、`slug`，至少出现一个字段。缺失字段保持不变。成功返回 `200 { site }`，其中 `site.routingStatus` 为 `ready`。D1 已提交而 route 尚在修复时只使用以下一种 202 成功响应形态，不返回标准 error envelope：
+body 只允许 `title`、`slug`，至少出现一个字段。缺失字段保持不变。含 slug 的请求在路由已收敛时返回 `200 { site }`，其中 `site.routingStatus` 为 `ready`；title-only 请求保存成功即返回 `200 { site }`，并如实保留当时的 `ready` 或 `pending` 状态。D1 已提交而本次 slug route 尚在修复时只使用以下一种 202 成功响应形态，不返回标准 error envelope：
 
 ```json
 {
