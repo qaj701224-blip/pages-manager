@@ -182,7 +182,7 @@ test('runtime config uses add dialogs instead of inline creation forms', () => {
   assert.doesNotMatch(siteDetailSource, /<RuntimeSecretForm siteId=\{site\.id\}/);
 });
 
-test('workspace runtime config navigation and requests are gated by management capability', () => {
+test('workspace runtime config navigation and requests are gated by effective role', () => {
   assert.match(siteDetailSource, /state\.status === 'ready'[\s\S]*?canViewRuntimeConfig\(state\.site, scope\);/);
   assert.match(siteDetailSource, /activeTab === 'config' && !canViewConfig/);
   assert.match(siteDetailSource, /\{canViewConfig \? \([\s\S]*?label="运行配置"[\s\S]*?\) : null\}/);
