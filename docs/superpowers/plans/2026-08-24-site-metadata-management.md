@@ -4,7 +4,7 @@
 
 ## Goal
 
-为 XD Cell v2 增加可独立修改的站点展示名称和 canonical slug；认证 Public API、Workspace Console 与 Admin Console 行为一致。slug 修改不产生部署或版本，历史 hostname 308 到当前 hostname，并保持身份、权限、版本、runtime config 与 runtime data 连续。缩略图延期，不引入 R2。
+为 XD Cell v2 增加可独立修改的站点展示名称和 canonical slug；认证 Public API、Workspace Console 与 Admin Console 行为一致。slug 修改不产生部署或版本，旧 hostname 停止路由并在安全清理后释放，同时保持身份、权限、版本、runtime config 与 runtime data 连续。缩略图延期，不引入 R2。
 
 ## 全程不变量
 
@@ -29,12 +29,12 @@
 
 **Steps**
 
-- [ ] 先写 migration/schema 测试，覆盖 `title`、`data_namespace`、两个 slug revision、alias 表与 indexes。
+- [ ] 先写 migration/schema 测试，覆盖 `title`、`data_namespace` 与两个 slug revision。
 - [ ] 增加 migration 并回填存量 `data_namespace=slug`；fresh schema 对齐目标结构。
 - [ ] 扩展 site mapper/projection，内部保留 namespace/revision，公开层不泄露 namespace。
-- [ ] 实现 alias-aware lookup、active alias list 和 pending reconciliation list。
+- [ ] 实现仅按 canonical slug 的 lookup、pending-cleanup hostname claim 查询和 routing reconciliation list。
 - [ ] 实现带 site commit lease/fencing 的 metadata D1 transaction；空 namespace 在首次 rename 时以旧 slug 固化。
-- [ ] 覆盖 title-only、rename、历史 alias 回切、冲突、并发 CAS、删除全部 aliases/claims 和无 deployment/version 副作用。
+- [ ] 覆盖 title-only、rename、旧 claim 清理/释放、同站点 hold 内回切、冲突、并发 CAS 和无 deployment/version 副作用。
 
 **Verify**
 
@@ -66,7 +66,7 @@ node --test apps/pages-api/src/schema.test.js apps/pages-api/src/store.test.js a
 node --test apps/kv-gateway/src/auth.test.js apps/kv-gateway/src/index.test.js packages/pages-runtime-protocol/src/*.test.js
 ```
 
-## Task 3：Router v4 serve/redirect reader
+## Task 3：Router v4 serve reader
 
 **Files**
 
@@ -76,12 +76,9 @@ node --test apps/kv-gateway/src/auth.test.js apps/kv-gateway/src/index.test.js p
 
 **Steps**
 
-- [ ] 先写 v2/v3 兼容、v4 serve、v4 redirect 的失败测试。
-- [ ] 解析 redirect chain 到最终 serve snapshot，限制 16 跳并检测循环、跨环境、跨 site、target missing/reused。
-- [ ] 根据最终 serve exposure 执行 IP allowlist，再返回单次 308；target 站点继续执行 SSO/ACL/owner/disabled。
-- [ ] Location 仅由已验证 hostname + 原 path/query 组成，`Cache-Control: no-store`。
+- [ ] 先写 v2/v3 兼容和 v4 serve snapshot 测试；不增加 redirect/308 分支。
 - [ ] v4 serve capability 发出真实 `siteId`、不可变 `dataNamespace` 与 `namespaceVersion: 2`；v2/v3 snapshot 使用 slug fallback。
-- [ ] 覆盖旧 hostname 不执行 user Worker、不生成 capability、runtime path 与删除后 fail-closed。
+- [ ] 覆盖 pointer 缺失的旧 hostname 不执行 user Worker、不生成 capability，以及 runtime path 的 fail-closed 行为。
 
 **Verify**
 
@@ -103,12 +100,12 @@ node --test apps/pages-router/src/*.test.js apps/kv-gateway/src/*.test.js
 
 **Steps**
 
-- [ ] 先锁定 v4 serve 与 redirect snapshot shape，同时保留现有 pointer monotonic/CAS 测试。
+- [ ] 先锁定 v4 serve snapshot shape，同时保留现有 pointer monotonic/CAS 测试。
 - [ ] 实现 title NFC/trim/control/长度规则和 metadata patch shape 校验。
-- [ ] use case 在 site commit lease 内调用 Task 1 transaction，commit 后先确认 canonical，再逐个确认 direct alias pointer。
-- [ ] 每个 alias 确认后更新 sync revision；全部确认后以 slug-revision CAS 标记 site ready。
+- [ ] use case 在 site commit lease 内调用 Task 1 transaction，commit 后确认 canonical，再清理每个 pending-cleanup 旧 pointer。
+- [ ] pointer 清理后将旧 claim 转入 5 分钟 reuse hold；全部确认后以 slug-revision CAS 标记 site ready。
 - [ ] 部分失败返回 pending 结果；同 slug retry 与 scheduled bounded reconciliation 可恢复，stale repair 不能误标 ready。
-- [ ] 所有既有 snapshot writer 带 `dataNamespace`；delete 清理 canonical 与 aliases，且遗留 pointer 无法跨 site。
+- [ ] 所有既有 snapshot writer 带 `dataNamespace`；delete 清理 canonical 与待清理旧 pointer，且遗留 pointer 无法跨 site。
 
 **Verify**
 
@@ -164,6 +161,7 @@ node --test apps/pages-api/src/sites.test.js apps/pages-api/src/openapi.test.js 
 - [ ] API client 增加 metadata patch；处理 202 success 而不是抛错。
 - [ ] Directory/Workspace/Admin/detail 显示 title 主标题和 slug 次信息。
 - [ ] Settings 提供名称、URL 两个独立保存状态；URL 确认提示 config 更新，pending 时轮询 detail。
+- [ ] 运行配置 mutation 后保留现有列表并后台刷新，Dialog 打开/关闭不改变页面横向布局。
 - [ ] 覆盖 Owner、team publisher/admin/viewer、platform admin、匿名 directory、CSRF 和独立错误状态。
 
 **Verify**
@@ -173,7 +171,7 @@ node --test apps/pages-api/src/console.test.js apps/pages-api/src/admin.test.js 
 pnpm --filter @xd-cell/pages-console build
 ```
 
-## Task 7：CLI stale slug 兼容
+## Task 7：CLI canonical slug 边界
 
 **Files**
 
@@ -186,11 +184,9 @@ pnpm --filter @xd-cell/pages-console build
 
 **Steps**
 
-- [ ] deployment resolution 用 alias-aware lookup，历史 slug 必须解析到原 site id，不能进入 pending creation。
-- [ ] deployment response 增加最小 canonical site projection。
-- [ ] CLI human 输出 canonical warning，JSON 保留既有字段并增加 canonical site/warning；URL 使用 route hostname。
-- [ ] 其它精确 list lookup 命令的 not-found action 提示可能已改名并建议列出当前站点。
-- [ ] 覆盖 stale config 发布、access-key scope、别人的 alias、无重复 site/data namespace。
+- [ ] deployment resolution 只按 canonical slug，历史 slug 不再解析到原 site id。
+- [ ] Console URL 修改确认文案明确要求同步本地 `xd-cell.config.json.name`。
+- [ ] 覆盖 reuse hold 内旧 slug 冲突，以及 hold 到期后 slug 可正常重新获取。
 
 **Verify**
 
@@ -224,6 +220,6 @@ node --test scripts/workflows.test.js scripts/pages-v2-docs.test.js apps/pages-a
 - [ ] 跑所有本功能 focused tests，修复 flaky/竞态，不扩大无关改动。
 - [ ] 运行 `pnpm lint`。
 - [ ] 运行 `pnpm test`。
-- [ ] 构造需求—证据矩阵，逐项确认独立 mutation、API/Console 权限、308、无部署、数据连续与环境隔离。
+- [ ] 构造需求—证据矩阵，逐项确认独立 mutation、API/Console 权限、旧 URL 停止路由、slug 释放、无部署、数据连续与环境隔离。
 - [ ] 检查 `git diff --check`、敏感信息、未跟踪文件和最终 commit 范围。
 - [ ] staging 手工验收项保留给部署者；本地无法证明的外部 Cloudflare 状态不得宣称已验证。
