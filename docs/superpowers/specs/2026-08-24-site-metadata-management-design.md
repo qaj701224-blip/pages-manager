@@ -1,31 +1,30 @@
-# 站点名称、slug 与缩略图管理设计
+# 站点名称与 slug 管理设计
 
 ## 背景
 
-XD Cell v2 当前把 `sites.slug` 同时用作站点展示名称、访问地址的一部分和部分 runtime data key 的组成部分。Console 的目录卡片与详情页直接展示 slug，站点也没有平台托管缩略图。公开管理 API 的站点 `PATCH` 只修改访问策略，Console 的 settings 接口只处理 Owner 转移。
+XD Cell v2 当前把 `sites.slug` 同时用作站点展示名称、访问地址的一部分和部分 runtime data key 的组成部分。Console 的目录卡片与详情页直接展示 slug。公开管理 API 的站点 `PATCH` 只修改访问策略，Console 的 settings 接口只处理 Owner 转移。
 
-产品需要对齐 Codex Sites 的基础站点管理体验：站点具有独立的展示名称与缩略图，访问 URL 可以改名；名称、slug、缩略图可以分别修改。修改 slug 不应重新部署内容，旧 URL 应跳转到最新 URL，同时站点身份、权限、版本、runtime config 和 runtime data 必须连续。
+产品需要对齐 Codex Sites 的基础站点管理体验：站点具有独立的展示名称，访问 URL 可以改名；名称与 slug 可以分别修改。修改 slug 不应重新部署内容，旧 URL 应跳转到最新 URL，同时站点身份、权限、版本、runtime config 和 runtime data 必须连续。
 
 本设计是一项纵向能力：虽然涉及 pages-api、pages-router、kv-gateway、pages-console 和 CLI 兼容，但它们共同完成一次站点元数据修改，不拆成彼此独立的产品功能。
 
-参考行为：[Codex Sites — Change a Site URL](https://learn.chatgpt.com/docs/sites#change-a-site-url)。本项目只对齐“显示名称、缩略图、URL 改名与旧地址跳转”能力，不复制其完整界面或未公开实现。
+参考行为：[Codex Sites — Change a Site URL](https://learn.chatgpt.com/docs/sites#change-a-site-url)。本项目只对齐“显示名称、URL 改名与旧地址跳转”能力，不复制其完整界面或未公开实现。
 
 ## 目标
 
 - UI 使用“名称”，API 使用 `title` 表示可选展示名称；现有 `name` / `siteSlug` 语义保持为 slug。
-- `title`、`slug`、缩略图均可单独修改，一个字段失败不要求用户重做其它字段。
+- `title` 与 `slug` 可单独修改，一个字段失败不要求用户重做另一个字段。
 - 认证 Public API、Workspace Console 与 Admin Console 使用同一 application use case 和一致校验。
 - slug 改名不创建 deployment 或 site version，不调用 WFP 上传/部署接口。
 - 新 URL 在修改成功时可访问；站点存续期间所有历史 URL 以 `308` 跳到当前 URL，并保留 path 与 query。
 - slug 改名后保持 `site.id`、`site_uuid`、Owner、成员、ACL、默认访问策略、active version、runtime vars/secrets 和 runtime data 不变。
-- 缩略图由平台私有 R2 bucket 托管，不暴露 R2 object key 或公开 bucket URL。
-- staging 与 production 的 D1、KV、R2、domain 和 Worker 继续物理隔离。
+- staging 与 production 的 D1、KV、domain 和 Worker 继续物理隔离。
 
 ## 非目标
 
 - 不修改 v1 `apps/server`。
 - 不支持自定义域名、alias 手工管理或删除单个历史 alias。
-- 不自动抓取站点截图，不裁剪、压缩或转码图片。
+- 缩略图上传与托管延期，本期不引入 R2、外链图片字段或占位上传接口。
 - 不新增 CLI 元数据编辑命令；CLI 本次只处理旧 slug 的兼容和提示。
 - 不把 OpenAPI 文档开放为公网 `/openapi.json`。
 - 不改变站点内容版本、发布历史、Worker 名称或 Cloudflare execution provider。
@@ -39,7 +38,6 @@ XD Cell v2 当前把 `sites.slug` 同时用作站点展示名称、访问地址�
 | 当前地址名 | `slug` | 是 | 当前 canonical hostname 与 CLI 定位 |
 | 数据命名空间 | `dataNamespace` | 否 | runtime data/KV key 前缀 |
 | 历史地址 | slug alias | 站点存续期间保留 | 旧 hostname 到当前 hostname 的跳转 |
-| 缩略图版本 | `thumbnail.revision` | 每次上传更换 | 缓存失效，不等同于 R2 object key |
 
 UI 中统一称“名称”和“站点 URL”。API 不新增 `name` 字段，以免与 `xd-cell.config.json.name` 的既有 slug 语义冲突。
 
@@ -86,36 +84,11 @@ retired_at             TEXT NULL
 
 历史 alias 在站点存续期间不自动过期。站点删除后没有有效跳转目标，因此旧地址停止跳转，并遵循现有 hostname reuse hold 规则。
 
-### `site_thumbnails`
-
-缩略图 pointer 独立成表，避免把 provider 细节混入 `sites`：
-
-```text
-site_id          TEXT PRIMARY KEY
-environment      TEXT NOT NULL
-object_key       TEXT NOT NULL
-revision         TEXT NOT NULL
-media_type       TEXT NOT NULL
-byte_size        INTEGER NOT NULL
-etag             TEXT NOT NULL
-created_by       TEXT NOT NULL
-created_at       TEXT NOT NULL
-updated_at       TEXT NOT NULL
-```
-
-R2 object key 由服务端生成，形如 `<environment>/sites/<site-id>/<revision>.<ext>`；不包含用户输入的 title 或 slug。Public API、Console 响应和审计均不得返回 `object_key`、bucket 名或其它 provider resource id。
-
-缩略图不属于 site version：deploy、rollback、Owner 转移和 slug 修改不会改变它。删除站点时清除 pointer，并异步删除当前对象。
-
 ## 应用边界
 
-新增三个聚焦 application use case：
+新增聚焦的 `updateSiteMetadata` application use case，校验并部分更新 `title` / `slug`，协调 hostname claim、alias、route snapshot 和审计。
 
-1. `updateSiteMetadata`：校验并部分更新 `title` / `slug`，协调 hostname claim、alias、route snapshot 和审计。
-2. `putSiteThumbnail`：校验图片、先写不可变 R2 object，再原子交换 D1 pointer。
-3. `deleteSiteThumbnail`：清除 D1 pointer，并在提交后异步删除旧对象。
-
-Public API、Workspace Console 和 Admin Console 只负责认证、授权、输入/响应适配，不各自实现业务规则。基础设施通过窄 port 暴露 metadata transaction、route snapshot 与 thumbnail object store，避免 handler 直接编排 D1/R2。
+Public API、Workspace Console 和 Admin Console 只负责认证、授权、输入/响应适配，不各自实现业务规则。基础设施通过窄 port 暴露 metadata transaction 与 route snapshot，避免 handler 直接编排 D1/KV。
 
 ## 名称规则
 
@@ -202,29 +175,6 @@ Location 只能由已验证的 snapshot hostname 生成；保留原始 path 与 
 
 因此 slug 改名前后的读写继续命中同一 `s/<dataNamespace>--<siteUuid>/...` 前缀，不复制或迁移用户 KV 数据。
 
-## 缩略图存储与校验
-
-pages-api 新增私有 R2 binding `SITE_THUMBNAILS`。production 与 staging 使用不同 bucket；bucket 不配置公开域名，pages-console 不直接持有 R2 binding。
-
-上传规则：
-
-- 接受原始 request body，`Content-Type` 仅允许 `image/png`、`image/jpeg`、`image/webp`。
-- 最大 2 MiB；有 `Content-Length` 时先拒绝超限，读取时仍实施硬上限。
-- 同时校验格式 magic bytes，不能只信任扩展名或 header。
-- 空 body、损坏/不匹配格式、SVG、GIF 和其它类型均拒绝。
-- 本期不校验像素尺寸；Console 以 16:9 `object-fit: cover` 展示，并提示推荐 1200×675。
-
-上传使用不可变 object key：
-
-1. 校验完整 body 后以新 revision 写 R2，并设置准确 content type。
-2. R2 成功后在 D1 transaction 中 upsert `site_thumbnails` pointer 与审计。
-3. D1 失败时 best-effort 删除新对象，返回 503；旧 pointer 不变。
-4. D1 成功后通过 `ctx.waitUntil` 删除旧对象；失败只造成不可达 orphan，不影响读路径，并记录结构化告警供运维清理。
-
-删除先在 D1 transaction 中移除 pointer 并写审计，再异步删除旧对象。无 pointer 的 DELETE 为幂等成功。对象清理失败不得恢复已删除 pointer。
-
-读取通过 pages-api 流式返回当前 pointer 对象，设置正确的 `Content-Type`、由 revision 生成的 `ETag`、`X-Content-Type-Options: nosniff` 和 `Cache-Control: private, max-age=300`。D1 有 pointer 但 R2 object 缺失时返回 `SITE_THUMBNAIL_UNAVAILABLE`，记录告警，UI 使用本地占位图。占位图不写入 R2。
-
 ## API 合约
 
 所有下列 Public API 都是公网可达但必须认证的管理 API，不是匿名 API。同步更新 `apps/pages-api/src/openapi.js`、contract tests 与 `docs/api-boundary.md`；仍不提供公网 OpenAPI endpoint。
@@ -253,14 +203,6 @@ body 只允许 `title`、`slug`，至少出现一个字段。缺失字段保持�
 }
 ```
 
-```http
-PUT    /.xd-pages/api/sites/{siteId}/thumbnail
-GET    /.xd-pages/api/sites/{siteId}/thumbnail
-DELETE /.xd-pages/api/sites/{siteId}/thumbnail
-```
-
-PUT body 为图片二进制，成功返回 `200 { thumbnail }`；DELETE 返回 `204`。GET 要求站点读权限并支持 `If-None-Match` / `304`。
-
 站点 list/detail/metadata mutation 响应增加：
 
 ```json
@@ -268,17 +210,11 @@ PUT body 为图片二进制，成功返回 `200 { thumbnail }`；DELETE 返回 `
   "title": "产品文档",
   "displayName": "产品文档",
   "slug": "product-docs",
-  "routingStatus": "ready",
-  "thumbnail": {
-    "url": "/.xd-pages/api/sites/site_x/thumbnail?v=thumb_revision",
-    "revision": "thumb_revision",
-    "mediaType": "image/webp",
-    "updatedAt": "2026-08-24T00:00:00.000Z"
-  }
+  "routingStatus": "ready"
 }
 ```
 
-所有站点 list/detail/mutation projection 都返回 `routingStatus: "ready" | "pending"`。未设置时 `title` 与 `thumbnail` 为 `null`，`displayName` 为当前 slug。响应不得包含 `dataNamespace`、R2 key/bucket、hostname claim 或 provider metadata。
+所有站点 list/detail/mutation projection 都返回 `routingStatus: "ready" | "pending"`。未设置时 `title` 为 `null`，`displayName` 为当前 slug。响应不得包含 `dataNamespace`、hostname claim 或 provider metadata。
 
 读取沿用 `read:site` / 现有兼容读 scope；修改沿用站点管理权限和 `deploy:site` / `*` scope。site-scoped access key 只能修改绑定 site。个人站点仅 Owner 可改；团队站点的 publisher/admin 可改。
 
@@ -287,23 +223,16 @@ PUT body 为图片二进制，成功返回 `200 { thumbnail }`；DELETE 返回 `
 Workspace：
 
 ```text
-PATCH     /api/console/sites/{siteId}/metadata
-PUT|GET|DELETE /api/console/sites/{siteId}/thumbnail
-GET       /api/console/directory/sites/{siteId}/thumbnail
+PATCH /api/console/sites/{siteId}/metadata
 ```
 
 Admin：
 
 ```text
-PATCH     /api/console/admin/sites/{siteId}/metadata
-PUT|GET|DELETE /api/console/admin/sites/{siteId}/thumbnail
+PATCH /api/console/admin/sites/{siteId}/metadata
 ```
 
-Workspace mutation 要求 Owner 或团队 publisher/admin；Admin mutation 要求 platform admin。所有非 GET 请求继续经过 pages-console 的 same-origin 与 CSRF 校验。Admin 与 Workspace handler 调用同一 use case，只传入不同授权结果和 audit source。
-
-directory thumbnail GET 使用与 directory 列表相同的可见性判定：未登录访问只可读取本来可出现在匿名 directory 中的 internal 站点；登录用户还可读取其 org/ACL/owned/team-visible 站点。pages-console 的公司网络门禁始终先执行。不能仅凭 site id 绕过目录可见性。
-
-Console projection 生成自身 `/api/console/...` URL；pages-console 流式代理 binary response，不返回 R2 地址。带 revision query 用于浏览器 cache busting，服务端忽略该 query 的资源选择，始终读取 D1 当前 pointer。现有 BFF 的统一 `Cache-Control: no-store` 逻辑需要只对 JSON/敏感响应保留；thumbnail binary response 应保留 pages-api 设置的 private cache 与 ETag header。
+Workspace mutation 要求 Owner 或团队 publisher/admin；Admin mutation 要求 platform admin。请求继续经过 pages-console 的 same-origin 与 CSRF 校验。Admin 与 Workspace handler 调用同一 use case，只传入不同授权结果和 audit source。
 
 ### 错误语义
 
@@ -315,26 +244,18 @@ Console projection 生成自身 `/api/console/...` URL；pages-console 流式代
 | `SITE_SLUG_CONFLICT` | 409 | 当前 slug、alias、v1 claim 或 hold 冲突 |
 | `SITE_METADATA_CONFLICT` | 409 | 并发 mutation / lease fencing 冲突 |
 | `SITE_METADATA_ROUTING_PENDING` | 202 | 仅出现在上述 warning 成功体；D1 已提交，Router pointer 正在修复 |
-| `SITE_THUMBNAIL_INVALID` | 400 | 空文件或 magic bytes 不合法/不匹配 |
-| `SITE_THUMBNAIL_TOO_LARGE` | 413 | 超过 2 MiB |
-| `SITE_THUMBNAIL_CONTENT_TYPE_INVALID` | 415 | 不支持的 media type |
-| `SITE_THUMBNAIL_NOT_FOUND` | 404 | 未设置缩略图 |
-| `SITE_THUMBNAIL_UNAVAILABLE` | 503 | pointer 存在但对象读取失败 |
-| `SITE_THUMBNAIL_STORE_UNAVAILABLE` | 503 | R2 写入或 pointer 交换失败 |
 | `SITE_METADATA_MUTATIONS_DISABLED` | 503 | rollout/止损开关尚未开启 |
 
-不存在或无权访问的站点继续统一返回 `SITE_NOT_FOUND`，避免枚举。错误、日志和响应不得包含 token、session、R2 object key/bucket、Cloudflare resource id 或图片 body。
+不存在或无权访问的站点继续统一返回 `SITE_NOT_FOUND`，避免枚举。错误、日志和响应不得包含 token、session、Cloudflare resource id 或内部 route metadata。
 
 ## Console 体验
 
 - Directory、Workspace、站点详情与 Admin 站点视图以 `displayName` 为主标题，slug / URL 为次要信息。
-- 未设置缩略图或图片加载失败时使用本地占位图；不触发自动上传。
-- Settings 将“名称”“站点 URL”“缩略图”拆为三个独立控件、保存状态与错误区域。
+- Settings 将“名称”和“站点 URL”拆为两个独立控件、保存状态与错误区域。
 - 名称可清空，清空后立即回退显示 slug。
 - URL 保存前展示新 hostname，并明确“旧地址会永久跳转；本地 `xd-cell.config.json.name` 需同步更新”。
-- 缩略图选择后先本地预览；只接受 PNG/JPEG/WebP，前端预检 2 MiB，服务端仍重复校验；提供独立“移除缩略图”。
 - mutation 成功后只刷新对应 metadata；`202` 时显示“设置已保存，地址正在生效”，并轮询 detail 中持久化的 `site.routingStatus`，直到 `ready`，不把它显示为完全失败。
-- 各控件在自身请求中禁用，不能因缩略图上传失败回滚已保存的 title 或 slug。
+- 两个控件各自维护 pending/error 状态，一个请求失败不回滚另一个已保存的字段。
 
 ## CLI 旧 slug 兼容
 
@@ -351,19 +272,14 @@ Console projection 生成自身 `/api/console/...` URL；pages-console 流式代
 ## 审计与可观测性
 
 - metadata 成功提交记录 `site_metadata_updated`，metadata 仅含 changed fields、旧/新 slug、是否清空 title、source 和 slug revision。
-- thumbnail 上传/删除记录 `site_thumbnail_updated` / `site_thumbnail_deleted`，只记录 revision、media type、byte size 和 source，不记录 object key 或图片内容。
 - slug snapshot 同步记录成功、pending、reconciled 与 terminal failure 计数；日志带 site id、environment、slug revision 和 trace id。
-- rename、thumbnail 与 reconciler 指标按 environment 分开，至少覆盖请求数、冲突、pending、修复成功/失败和 R2 错误。
-- title-only、thumbnail-only 操作不伪造 deployment 事件。
+- rename 与 reconciler 指标按 environment 分开，至少覆盖请求数、冲突、pending 和修复成功/失败。
+- title-only 操作不伪造 deployment 事件。
 
 ## 配置与环境隔离
 
-- `apps/pages-api/wrangler.production.template.toml` 与 staging template 增加 `SITE_THUMBNAILS` R2 binding。
-- `scripts/render-pages-v2-wrangler.mjs` 为 pages-api 要求 `SITE_THUMBNAILS_R2_BUCKET`，部署 workflow 从非敏感 GitHub var `PAGES_V2_SITE_THUMBNAILS_R2_BUCKET` 注入。
-- pages-api 增加 `SITE_METADATA_MUTATIONS_ENABLED` feature flag；只有精确值 `true` 才注册 metadata/thumbnail mutation，关闭时返回 `503 SITE_METADATA_MUTATIONS_DISABLED`。读取与兼容 writer 不受该开关影响。
-- production/staging 必须配置不同 bucket name；render/config inventory/workflow tests 断言不能缺失或串用。
-- pages-router 与 kv-gateway 不获得缩略图 bucket 权限。
-- R2 bucket 必须关闭 public access，生命周期规则只作为 orphan 成本控制，不能删除仍有 D1 pointer 的对象。
+- pages-api 增加 `SITE_METADATA_MUTATIONS_ENABLED` feature flag；只有精确值 `true` 才注册 metadata mutation，关闭时返回 `503 SITE_METADATA_MUTATIONS_DISABLED`。读取与兼容 writer 不受该开关影响。
+- production/staging 的 D1、route snapshot KV、Worker 和 domain 保持现有物理隔离；本期不新增 Cloudflare 存储资源。
 
 ## 兼容发布顺序
 
@@ -372,7 +288,7 @@ Console projection 生成自身 `/api/console/...` URL；pages-console 流式代
 1. 应用 additive D1 migration，回填 `data_namespace`；旧应用可继续运行。
 2. 先发布 KV Gateway dual-reader，使其接受旧 claim 与新 `siteId + dataNamespace` claim。
 3. 发布能读取 v2/v3/v4、识别 redirect 且 fail closed 的 Router；此时 pages-api 仍只写旧 serve snapshot。
-4. 创建并绑定 staging/production 独立私有 R2 bucket，部署 pages-api 兼容基线：新建站点写 `data_namespace`，所有 snapshot 写入都携带 namespace，删除逻辑认识 aliases，但 metadata mutation feature flag 仍关闭。
+4. 部署 pages-api 兼容基线：新建站点写 `data_namespace`，所有 snapshot 写入都携带 namespace，删除逻辑认识 aliases，但 metadata mutation feature flag 仍关闭。
 5. 部署 pages-console 与 CLI 兼容输出，先在 staging 完成端到端验证，再手动触发 production workflow。
 6. 确认没有旧 pages-api 实例、抽查空 namespace 为零且 Router/Gateway compatibility 已生效后，再打开 metadata mutation feature flag。
 
@@ -384,15 +300,15 @@ Console projection 生成自身 `/api/console/...` URL；pages-console 流式代
 
 ### 数据与应用测试
 
-- migration/schema 覆盖 title、data namespace 回填、alias unique constraint、thumbnail pointer 和环境隔离。
-- title set/change/clear、slug-only、thumbnail-only 和组合 metadata 请求均保持未提交字段不变。
+- migration/schema 覆盖 title、data namespace 回填、alias unique constraint 和环境隔离。
+- title set/change/clear、slug-only 和组合 metadata 请求均保持未提交字段不变。
 - title-only 不改变 route generation；slug-only 只增加一次 route generation，不新增 deployment/version，不调用 provider。
 - 改名保持 site id/uuid、Owner、成员、ACL、active version、vars/secrets 与 data namespace。
 - A→B→C 的 A/B 都直接指向 C；C→A 可提升本 site 历史 alias；其它 site 不能占用 A/B。
 - 并发 rename/create/deploy/delete 由 claim、lease 和 fencing 阻止丢失更新。
 - snapshot 部分失败返回 202，同值重试与 scheduled reconciliation 可收敛。
 - canonical 未同步、部分 alias 未同步和 stale reconcile CAS 均能正确维持 `routingStatus=pending`；全部 pointer 确认后 list/detail 变为 ready。
-- 删除站点退役全部 alias、hold 全部 claim、清理全部 pointer 与缩略图 pointer。
+- 删除站点退役全部 alias、hold 全部 claim并清理全部 route pointer。
 
 ### Router 与 Gateway 测试
 
@@ -407,20 +323,17 @@ Console projection 生成自身 `/api/console/...` URL；pages-console 流式代
 
 - Public API 未认证、scope 不足、跨 site access key、team viewer 与不存在站点均按契约拒绝。
 - Console mutation 覆盖 CSRF、Owner、team publisher/admin、team viewer 和 platform admin。
-- directory thumbnail 复用目录可见性，不能通过猜测 site id 读取隐藏缩略图。
-- R2 校验覆盖三种允许格式、伪造 content type、空 body、超限、写失败、D1 失败清理、替换与幂等删除。
-- 响应不包含 object key/bucket/data namespace；GET 正确处理 Content-Type、ETag、304、private cache 与 missing object。
-- UI 覆盖 displayName fallback、placeholder、三个独立 pending/error 状态和 202 提示。
+- 响应不包含 data namespace、hostname claim 或内部 route metadata。
+- UI 覆盖 displayName fallback、两个独立 pending/error 状态和 202 提示。
 - CLI 使用历史 slug 发布到原 site，输出 canonical warning，且不会创建新 site。
-- render、config inventory、workflow 和 docs tests 覆盖两个环境的独立 R2 配置。
+- config inventory、workflow 和 docs tests 覆盖 feature flag 与两个环境的隔离。
 
-最后运行相关 focused `node:test`、`pnpm lint` 和 `pnpm test`。staging 验收至少包括：上传/替换/删除缩略图、连续两次 rename、旧地址 308 path/query、当前地址内容、访问策略、deploy/rollback、runtime data 改名前后读写，以及 Admin/Workspace 权限矩阵。
+最后运行相关 focused `node:test`、`pnpm lint` 和 `pnpm test`。staging 验收至少包括：连续两次 rename、旧地址 308 path/query、当前地址内容、访问策略、deploy/rollback、runtime data 改名前后读写，以及 Admin/Workspace 权限矩阵。
 
 ## 完成标准
 
-- 用户可在 Public API、Workspace Console 和 Admin Console 分别修改 title、slug、thumbnail。
-- 任一字段可独立保存，API 与 UI 对空值、格式、大小、权限和冲突的行为一致。
+- 用户可在 Public API、Workspace Console 和 Admin Console 分别修改 title 与 slug。
+- 两个字段可独立保存，API 与 UI 对空值、格式、权限和冲突的行为一致。
 - 活跃站点 rename 不产生 deployment/version，所有历史 hostname 最终直接 308 到当前 hostname。
 - 改名前后的内容、权限、版本、runtime config 和 runtime data 连续，且无跨站、跨环境或 fail-open 路径。
-- 缩略图仅经授权的 API/BFF 读取，R2 私有且不泄露 provider identifier。
 - OpenAPI、CLI/skill 帮助、Console 文案、部署配置和测试与真实行为同步。
