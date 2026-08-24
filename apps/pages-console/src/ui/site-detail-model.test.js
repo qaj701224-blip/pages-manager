@@ -19,9 +19,11 @@ import {
   toAclUpdatePayload,
 } from './site-detail-model.js';
 
-test('runtime config visibility follows management capability while preserving platform admin access', () => {
-  assert.equal(canViewRuntimeConfig({ permissions: { canManage: true } }), true);
-  assert.equal(canViewRuntimeConfig({ permissions: { canManage: false } }), false);
+test('runtime config visibility follows effective role while preserving platform admin access', () => {
+  assert.equal(canViewRuntimeConfig({ permissions: { role: 'admin', canManage: true } }), true);
+  assert.equal(canViewRuntimeConfig({ permissions: { role: 'publisher', canManage: true } }), true);
+  assert.equal(canViewRuntimeConfig({ permissions: { role: 'viewer', canManage: true } }), false);
+  assert.equal(canViewRuntimeConfig({ permissions: { canManage: true } }), false);
   assert.equal(canViewRuntimeConfig(null), false);
   assert.equal(canViewRuntimeConfig(null, 'admin'), true);
 });
