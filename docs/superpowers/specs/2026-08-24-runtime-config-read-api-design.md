@@ -197,6 +197,7 @@ Workspace 站点详情根据现有 `site.permissions.canManage` 控制运行配�
 ### 合约与回归
 
 - 更新 `apps/pages-api/src/openapi.js` 和对应 OpenAPI tests。
+- 修正现有 var schema 中“value 永不由 API 返回”的描述：mutation 响应仍不返回 value，但获得授权的 GET 会返回非敏感明文 value。
 - 更新 `docs/api-boundary.md`，把受控集成能力从 vars/secrets mutation 扩展为 read/mutation。
 - 运行 pages-api、pages-console、architecture focused tests，再运行 `pnpm lint` 和 `pnpm test`。
 
