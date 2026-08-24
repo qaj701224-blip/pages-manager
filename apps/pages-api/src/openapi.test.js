@@ -66,9 +66,10 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
   );
   assert.ok(body.paths['/.xd-pages/api/sites/{site}/secrets'].put);
   assert.ok(body.paths['/.xd-pages/api/sites/{site}/secrets'].delete);
+  assert.ok(body.paths['/.xd-pages/api/sites/{site}/secrets'].get);
   assert.ok(body.paths['/.xd-pages/api/sites/{site}/vars'].put);
   assert.ok(body.paths['/.xd-pages/api/sites/{site}/vars'].delete);
-  assert.equal(body.paths['/.xd-pages/api/sites/{site}/vars'].get, undefined);
+  assert.ok(body.paths['/.xd-pages/api/sites/{site}/vars'].get);
   assert.ok(body.paths['/.xd-pages/api/access-keys']);
   assert.ok(body.paths['/.xd-pages/api/auth/whoami']);
   assert.equal(body.paths['/.xd-pages/api/s2s/tokens'], undefined);
@@ -223,6 +224,19 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
     body.paths['/.xd-pages/api/sites/{site}/secrets'].delete.requestBody.content['application/json'].schema.$ref,
     '#/components/schemas/SiteSecretDeleteRequest'
   );
+  assert.equal(
+    body.paths['/.xd-pages/api/sites/{site}/secrets'].get.responses[200].content['application/json'].schema.$ref,
+    '#/components/schemas/SiteSecretsResponse'
+  );
+  assert.deepEqual(body.paths['/.xd-pages/api/sites/{site}/secrets'].get['x-error-codes'], [
+    'SITE_SLUG_INVALID',
+    'SITE_SLUG_RESERVED',
+    'SITE_NOT_FOUND',
+    'DEPLOY_FORBIDDEN',
+    'RUNTIME_CONFIG_UNSUPPORTED',
+  ]);
+  assert.deepEqual(body.components.schemas.SiteSecretMetadata.required, ['name', 'revision', 'updatedAt']);
+  assert.equal(body.components.schemas.SiteSecretMetadata.properties.value, undefined);
   assert.ok(
     body.paths['/.xd-pages/api/sites/{site}/secrets'].put['x-error-codes'].includes('SECRET_VALUE_TOO_LARGE')
   );
@@ -264,6 +278,19 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
     varsPath.delete.requestBody.content['application/json'].schema.$ref,
     '#/components/schemas/SiteVarDeleteRequest'
   );
+  assert.equal(
+    varsPath.get.responses[200].content['application/json'].schema.$ref,
+    '#/components/schemas/SiteVarsResponse'
+  );
+  assert.deepEqual(varsPath.get['x-error-codes'], [
+    'SITE_SLUG_INVALID',
+    'SITE_SLUG_RESERVED',
+    'SITE_NOT_FOUND',
+    'DEPLOY_FORBIDDEN',
+    'RUNTIME_CONFIG_UNSUPPORTED',
+  ]);
+  assert.deepEqual(body.components.schemas.SiteRuntimeVar.required, ['name', 'value', 'revision', 'updatedAt']);
+  assert.match(body.components.schemas.SiteVarPutRequest.properties.value.description, /authorized GET/);
   assert.deepEqual(varsPath.put['x-error-codes'], [
     'INVALID_JSON',
     'RUNTIME_VAR_INVALID',

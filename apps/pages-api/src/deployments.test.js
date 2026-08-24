@@ -3393,7 +3393,8 @@ test('secrets API stores site-level secrets and delete disables future deploymen
 
   assert.equal(put.status, 200, await put.clone().text());
   assert.equal(del.status, 200, await del.clone().text());
-  assert.equal(list.status, 405);
+  assert.equal(list.status, 200, await list.clone().text());
+  assert.deepEqual(await list.json(), { secrets: [] });
   assert.deepEqual(await put.clone().json(), {
     secret: { site: 'guide', name: 'API_TOKEN', updated: true, deleted: false },
   });

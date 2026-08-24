@@ -1088,11 +1088,6 @@ test('site config writes allow publisher access policy and runtime config', asyn
     }),
     env(store)
   );
-  const config = await worker.fetch(
-    internalConsoleRequest('/.xd-pages/api/console/sites/site_team/config', { userId: 'usr_publisher' }),
-    env(store)
-  );
-
   assert.equal(putVar.status, 200, await putVar.clone().text());
   assert.deepEqual((await putVar.json()).var, {
     name: 'API_BASE',
@@ -1111,6 +1106,15 @@ test('site config writes allow publisher access policy and runtime config', asyn
     updatedAt: '2026-06-15T00:00:00.000Z',
   });
   assert.doesNotMatch(JSON.stringify(secretBody), /super-secret-value/);
+  store.secretEncryptionKey = null;
+  store.listEnabledSiteSecrets = async () => {
+    throw new Error('SECRET_DECRYPTION_MUST_NOT_RUN');
+  };
+  const config = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/sites/site_team/config', { userId: 'usr_publisher' }),
+    env(store)
+  );
+  assert.equal(config.status, 200, await config.clone().text());
   assert.deepEqual(await config.json(), {
     config: {
       vars: [
@@ -1130,6 +1134,118 @@ test('site config writes allow publisher access policy and runtime config', asyn
       ],
     },
   });
+});
+
+test('site config reads allow team publisher and admin but reject viewer before repository access', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedConsoleUsers(store, ['usr_admin', 'usr_publisher', 'usr_viewer']);
+  const team = await store.createTeam({
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Console Team',
+    description: null,
+    createdByUserId: 'usr_admin',
+  });
+  for (const [userId, role] of [
+    ['usr_admin', 'admin'],
+    ['usr_publisher', 'publisher'],
+    ['usr_viewer', 'viewer'],
+  ]) {
+    await store.addTeamMember({
+      teamId: team.id,
+      userId,
+      role,
+      membershipSource: 'manual',
+      actorUserId: 'usr_admin',
+    });
+  }
+  await seedSite(store, {
+    id: 'site_team',
+    slug: 'team-owned',
+    ownerUserId: 'usr_legacy_owner',
+    ownerType: 'team',
+    ownerId: team.id,
+    visibility: 'org',
+  });
+
+  const calls = [];
+  const listVars = store.listEnabledSiteVars.bind(store);
+  const listSecretMetadata = store.listEnabledSiteSecretMetadata.bind(store);
+  store.listEnabledSiteVars = async (...args) => {
+    calls.push('vars');
+    return listVars(...args);
+  };
+  store.listEnabledSiteSecretMetadata = async (...args) => {
+    calls.push('secrets');
+    return listSecretMetadata(...args);
+  };
+
+  for (const userId of ['usr_admin', 'usr_publisher']) {
+    const response = await worker.fetch(
+      internalConsoleRequest('/.xd-pages/api/console/sites/site_team/config', { userId }),
+      env(store)
+    );
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.deepEqual(await response.json(), { config: { vars: [], secrets: [] } });
+  }
+  assert.deepEqual(calls, ['vars', 'secrets', 'vars', 'secrets']);
+
+  const viewerResponse = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/sites/site_team/config', { userId: 'usr_viewer' }),
+    env(store)
+  );
+
+  assert.equal(viewerResponse.status, 403, await viewerResponse.clone().text());
+  assert.equal((await viewerResponse.json()).error.code, 'SITE_PUBLISHER_REQUIRED');
+  assert.deepEqual(calls, ['vars', 'secrets', 'vars', 'secrets']);
+});
+
+test('site config reads map missing or failing repository capabilities to a safe 503', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedSite(store, {
+    id: 'site_mine',
+    slug: 'mine',
+    ownerUserId: 'usr_me',
+    visibility: 'org',
+  });
+  const lines = [];
+  const environment = env(store, { logRuntimeConfigFailure: (line) => lines.push(line) });
+  store.listEnabledSiteSecretMetadata = undefined;
+
+  const missing = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/sites/site_mine/config', { userId: 'usr_me' }),
+    environment
+  );
+  store.listEnabledSiteSecretMetadata = async () => {
+    throw new Error('SENSITIVE_SECRET_STORE_FAILURE');
+  };
+  const failing = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/sites/site_mine/config', { userId: 'usr_me' }),
+    environment
+  );
+
+  assert.equal(missing.status, 503, await missing.clone().text());
+  assert.deepEqual(await missing.json(), {
+    error: {
+      code: 'RUNTIME_CONFIG_UNSUPPORTED',
+      message: 'Runtime config store is unavailable.',
+      action: 'Retry later.',
+    },
+  });
+  const failingText = await failing.text();
+  assert.equal(failing.status, 503, failingText);
+  assert.equal(JSON.parse(failingText).error.code, 'RUNTIME_CONFIG_UNSUPPORTED');
+  assert.deepEqual(
+    lines.map((line) => {
+      const { operation, stage, reason } = JSON.parse(line);
+      return { operation, stage, reason };
+    }),
+    [
+      { operation: 'config_list', stage: 'capability_check', reason: 'capability_unavailable' },
+      { operation: 'config_list', stage: 'read', reason: 'store_operation_failed' },
+    ]
+  );
+  assert.doesNotMatch(`${failingText}\n${lines.join('\n')}`, /SENSITIVE_SECRET_STORE_FAILURE/);
 });
 
 test('Console access emits site.disabled only for the visibility transition', async () => {

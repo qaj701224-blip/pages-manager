@@ -6,6 +6,13 @@ export function createRuntimeConfigMutationPort(store) {
   };
 }
 
+export function createRuntimeConfigReadPort(store) {
+  return {
+    listVars: bindOptional(store, 'listEnabledSiteVars'),
+    listSecretMetadata: bindOptional(store, 'listEnabledSiteSecretMetadata'),
+  };
+}
+
 export function createDeploymentRuntimeConfigResolutionPort(store, { hashInput } = {}) {
   if (typeof hashInput !== 'function') throw new TypeError('runtime config hashInput is required');
   return {

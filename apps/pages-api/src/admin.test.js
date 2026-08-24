@@ -4246,6 +4246,13 @@ test('platform admin can edit admin-scope site settings without asset membership
     }),
     env(store)
   );
+  const runtimeConfig = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_console/config', {
+      userId: 'usr_root',
+      admin: true,
+    }),
+    env(store)
+  );
   const access = await worker.fetch(
     internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_console/access', {
       userId: 'usr_root',
@@ -4267,6 +4274,20 @@ test('platform admin can edit admin-scope site settings without asset membership
 
   assert.equal(putVar.status, 200, await putVar.clone().text());
   assert.equal((await putVar.json()).var.name, 'API_BASE');
+  assert.equal(runtimeConfig.status, 200, await runtimeConfig.clone().text());
+  assert.deepEqual(await runtimeConfig.json(), {
+    config: {
+      vars: [
+        {
+          name: 'API_BASE',
+          value: 'https://api.example.com',
+          revision: 1,
+          updatedAt: '2026-07-02T00:00:00.000Z',
+        },
+      ],
+      secrets: [],
+    },
+  });
   assert.equal(access.status, 200, await access.clone().text());
   assert.equal((await access.json()).access.visibility, 'acl');
   assert.equal(settings.status, 200, await settings.clone().text());

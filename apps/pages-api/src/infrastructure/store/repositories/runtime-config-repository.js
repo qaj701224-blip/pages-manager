@@ -1,4 +1,4 @@
-import { mapSiteSecret, mapSiteVar } from '../store-support.js';
+import { mapSiteSecret, mapSiteSecretReadMetadata, mapSiteVar } from '../store-support.js';
 
 export const runtimeConfigRepositoryMethods = {
   async getLiveSiteSecretRow(environment, siteId, name) {
@@ -25,6 +25,18 @@ export const runtimeConfigRepositoryMethods = {
       secrets.push(await mapSiteSecret(row, this.secretEncryptionKey));
     }
     return secrets;
+  },
+
+  async listEnabledSiteSecretMetadata(environment, siteId) {
+    const result = await this.db
+      .prepare(
+        `SELECT name, revision, updated_at FROM site_secrets
+            WHERE environment = ? AND site_id = ? AND deleted_at IS NULL
+            ORDER BY name ASC`
+      )
+      .bind(environment, siteId)
+      .all();
+    return (result.results || []).map(mapSiteSecretReadMetadata);
   },
 
   async listEnabledSiteVars(environment, siteId) {

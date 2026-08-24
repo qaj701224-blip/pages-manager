@@ -30,6 +30,8 @@ import {
 import {
   deleteSiteSecret,
   deleteSiteVar,
+  listSiteSecretMetadata,
+  listSiteVars,
   putSiteSecret,
   putSiteVar,
 } from './site-runtime-config-handler.js';
@@ -63,6 +65,7 @@ export async function handleSitesApi(request, env, config, store, ctx) {
 
   const secretsSiteSlug = matchSiteSecrets(url.pathname);
   if (secretsSiteSlug) {
+    if (request.method === 'GET') return listSiteSecretMetadata(env, config, store, auth.actor, secretsSiteSlug);
     if (request.method === 'PUT') return putSiteSecret(request, env, config, store, auth.actor, secretsSiteSlug);
     if (request.method === 'DELETE') return deleteSiteSecret(request, env, config, store, auth.actor, secretsSiteSlug);
     return methodNotAllowed();
@@ -70,6 +73,7 @@ export async function handleSitesApi(request, env, config, store, ctx) {
 
   const varsSiteSlug = matchSiteVars(url.pathname);
   if (varsSiteSlug) {
+    if (request.method === 'GET') return listSiteVars(env, config, store, auth.actor, varsSiteSlug);
     if (request.method === 'PUT') return putSiteVar(request, env, config, store, auth.actor, varsSiteSlug);
     if (request.method === 'DELETE') return deleteSiteVar(request, env, config, store, auth.actor, varsSiteSlug);
     return methodNotAllowed();

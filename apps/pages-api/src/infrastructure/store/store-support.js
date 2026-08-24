@@ -94,7 +94,12 @@ export {
 } from './row-mappers/sites.js';
 export { mapAdminDeploymentWithOwner, mapPlatformAdmin, mapAuditEvent } from './row-mappers/governance.js';
 export { mapWebhookSubscription, mapWebhookDelivery, withoutWebhookSecret } from './row-mappers/webhooks.js';
-export { mapSiteSecret, mapSiteSecretMetadata, mapSiteVar } from './row-mappers/runtime-config.js';
+export {
+  mapSiteSecret,
+  mapSiteSecretMetadata,
+  mapSiteSecretReadMetadata,
+  mapSiteVar,
+} from './row-mappers/runtime-config.js';
 export { mapWorkerSlot, mapAdminNormalWorkerSlot } from './row-mappers/worker-slots.js';
 export { mapAccessKey } from './row-mappers/access-keys.js';
 export {

@@ -182,6 +182,14 @@ test('runtime config uses add dialogs instead of inline creation forms', () => {
   assert.doesNotMatch(siteDetailSource, /<RuntimeSecretForm siteId=\{site\.id\}/);
 });
 
+test('workspace runtime config navigation and requests are gated by management capability', () => {
+  assert.match(siteDetailSource, /state\.status === 'ready'[\s\S]*?canViewRuntimeConfig\(state\.site, scope\);/);
+  assert.match(siteDetailSource, /activeTab === 'config' && !canViewConfig/);
+  assert.match(siteDetailSource, /\{canViewConfig \? \([\s\S]*?label="运行配置"[\s\S]*?\) : null\}/);
+  assert.match(siteDetailSource, /当前角色无权查看运行配置/);
+  assert.doesNotMatch(siteDetailSource, /当前角色只能查看运行配置/);
+});
+
 test('team cards stay compact and omit custom team type tag', () => {
   assert.match(teamsSource, /\{team\.typeLabel \? <span className="tag muted">\{team\.typeLabel\}<\/span> : null\}/);
   assert.match(teamsSource, /team-card__stats/);

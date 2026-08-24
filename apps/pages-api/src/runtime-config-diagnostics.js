@@ -1,4 +1,14 @@
-const OPERATIONS = new Set(['var_put', 'var_delete', 'secret_put', 'secret_delete', 'plain_text_sync', 'secret_sync']);
+const OPERATIONS = new Set([
+  'var_put',
+  'var_delete',
+  'secret_put',
+  'secret_delete',
+  'var_list',
+  'secret_list',
+  'config_list',
+  'plain_text_sync',
+  'secret_sync',
+]);
 const ENVIRONMENTS = new Set(['production', 'staging', 'local']);
 const STAGES = new Set([
   'capability_check',
@@ -9,6 +19,7 @@ const STAGES = new Set([
   'statement_build',
   'mutation_batch',
   'post_commit_read',
+  'read',
   'provider_setup',
   'provider_sync',
   'unknown',
