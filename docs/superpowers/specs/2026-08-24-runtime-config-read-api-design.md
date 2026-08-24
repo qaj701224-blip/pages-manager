@@ -139,10 +139,11 @@ Public 与 Console transport 不互相 import handler。两者分别完成各自
 
 ### Console UI
 
-Workspace 站点详情根据现有 `site.permissions.canManage` 控制运行配置入口：
+Workspace 站点详情根据 `site.permissions.role` 的有效角色控制运行配置入口，只接受 `admin` 或 `publisher`。个人站点 owner 由 Console API 投影为 `admin`；UI 不再额外根据 `ownerUserId` 或较宽的 `canManage` capability 推断读取权限：
 
 - admin/publisher 显示“运行配置”导航和页面；
 - viewer 不显示该导航；
+- 即使历史团队站点的 `ownerUserId` 仍指向当前用户，只要当前团队角色为 viewer，也必须按 viewer 处理；
 - viewer 直接访问 config URL 时不能触发配置查询，页面显示无权限状态或返回站点概览；
 - 后端始终执行独立权限检查，UI 隐藏不作为安全边界；
 - Platform Admin 站点详情继续显示运行配置。
@@ -191,7 +192,7 @@ Workspace 站点详情根据现有 `site.permissions.canManage` 控制运行配�
 
 - 个人 owner、团队 publisher/admin 继续读取现有 config envelope。
 - viewer 的 config API 返回 403，且 Store 列表方法未调用。
-- Workspace viewer 看不到运行配置导航，直接 URL 不展示配置；admin/publisher 和 Platform Admin 保持可见。
+- Workspace viewer 看不到运行配置导航，直接 URL 不展示配置；覆盖 `role = viewer` 但旧权限投影仍有 `canManage = true` 的历史团队 owner 场景；admin/publisher 和 Platform Admin 保持可见。
 - Console 中 vars/secrets 的版本和更新时间展示不回退。
 
 ### 合约与回归

@@ -4,7 +4,7 @@
 
 **Goal:** 为外部管理 API 和 Console 提供安全一致的运行配置读取能力；只有 publisher/admin 可读，secret 查询与响应均不接触 value。
 
-**Architecture:** Public 与 Console transport 分别完成认证和 HTTP 投影，共享 `application/runtime-config` 的只读 use case。Infrastructure 提供 vars 查询和 metadata-only secret 查询；后者不选择密文、不依赖解密 key。Console UI 根据已投影的管理权限隐藏 viewer 的运行配置入口，后端独立 fail closed。
+**Architecture:** Public 与 Console transport 分别完成认证和 HTTP 投影，共享 `application/runtime-config` 的只读 use case。Infrastructure 提供 vars 查询和 metadata-only secret 查询；后者不选择密文、不依赖解密 key。Console UI 根据已投影的有效角色（仅 `admin`/`publisher`）隐藏 viewer 的运行配置入口，不使用较宽的 `canManage` capability 推断读取权限；后端独立 fail closed。
 
 **Tech Stack:** Cloudflare Workers、D1、JavaScript ESM、React、Node.js `node:test`、OpenAPI source contract。
 
@@ -68,7 +68,7 @@
 
 - [ ] 先覆盖个人 owner、团队 publisher/admin 可读，viewer 返回 `SITE_PUBLISHER_REQUIRED` 且不调用配置 repository。
 - [ ] Console config 改用共享 application reader 与 metadata-only secret port，保持现有响应字段。
-- [ ] Workspace viewer 隐藏“运行配置”导航；直接 config URL 不展示或请求配置。
+- [ ] Workspace viewer 隐藏“运行配置”导航；直接 config URL 不展示或请求配置；覆盖历史团队 owner 仍有 `canManage = true`、但有效角色已是 viewer 的场景。
 - [ ] Platform Admin Console 保持可读；admin/publisher 的版本和更新时间展示不回退。
 - [ ] 运行 pages-api Console 与 pages-console UI/worker focused tests。
 
