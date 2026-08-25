@@ -23,6 +23,69 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
   assert.deepEqual(body.components.schemas.AdminUsersResponse.properties.pagination.required, ['total', 'limit', 'offset']);
   assert.ok(body.paths['/.xd-pages/api/sites/{id}'].patch);
   assert.ok(body.paths['/.xd-pages/api/sites/{id}'].delete);
+  assert.ok(body.paths['/.xd-pages/api/sites/{id}/metadata'].patch);
+  assert.equal(
+    body.paths['/.xd-pages/api/sites/{id}/metadata'].patch.requestBody.content['application/json'].schema.$ref,
+    '#/components/schemas/SiteMetadataUpdateRequest'
+  );
+  assert.deepEqual(body.components.schemas.SiteMetadataUpdateRequest.properties.title, {
+    type: ['string', 'null'],
+    pattern: '\\S',
+    description:
+      'Optional display name. String values are NFC-normalized; control characters and U+2028/U+2029 are rejected, ' +
+      'then surrounding whitespace is trimmed and the result must contain 1-80 Unicode code points. ' +
+      'Send null to clear it.',
+  });
+  assert.deepEqual(body.components.schemas.SiteMetadataUpdateRequest.properties.slug, {
+    type: 'string',
+    description:
+      'Canonical site URL slug. Input is trimmed and lowercased before validation; the normalized slug must contain ' +
+      '2-50 lowercase ASCII letters, digits, or hyphens, start and end with an alphanumeric character, and not be ' +
+      'reserved. The previous URL stops resolving and is released after a safety hold.',
+  });
+  assert.equal(new RegExp(body.components.schemas.SiteMetadataUpdateRequest.properties.title.pattern, 'u').test('   '), false);
+  assert.equal(
+    new RegExp(body.components.schemas.SiteMetadataUpdateRequest.properties.title.pattern, 'u').test('产品文档'),
+    true
+  );
+  assert.deepEqual(body.components.schemas.SiteMetadataProjection.required, [
+    'id',
+    'title',
+    'displayName',
+    'slug',
+    'routingStatus',
+    'url',
+  ]);
+  assert.equal(body.components.schemas.SiteMetadataProjection.additionalProperties, false);
+  assert.equal(
+    body.paths['/.xd-pages/api/sites/{id}/metadata'].patch.responses[202].content['application/json'].schema.$ref,
+    '#/components/schemas/SiteMetadataPendingResponse'
+  );
+  assert.equal(
+    body.paths['/.xd-pages/api/sites/{id}/metadata'].patch.responses[200].description,
+    'Site metadata saved; routingStatus may be ready or pending'
+  );
+  assert.deepEqual(body.paths['/.xd-pages/api/sites/{id}/metadata'].patch['x-error-codes'], [
+    'INVALID_JSON',
+    'SITE_METADATA_INVALID',
+    'SITE_TITLE_INVALID',
+    'SITE_SLUG_INVALID',
+    'SITE_SLUG_RESERVED',
+    'SITE_SLUG_CONFLICT',
+    'SITE_METADATA_CONFLICT',
+    'SITE_NOT_FOUND',
+    'SITE_METADATA_MUTATIONS_DISABLED',
+    'SITE_METADATA_UPDATE_FAILED',
+  ]);
+  assert.equal(
+    body.paths['/.xd-pages/api/sites/{id}/metadata'].patch.responses[400].description,
+    'Invalid JSON, metadata, title, or slug'
+  );
+  assert.deepEqual(body.paths['/.xd-pages/api/sites/{id}/metadata'].patch.responses[500], {
+    description: 'Site metadata update failed',
+  });
+  assert.equal(serialized.includes('thumbnail'), false);
+  assert.equal(serialized.includes('R2'), false);
   assert.ok(body.paths['/.xd-pages/api/sites/{id}/acl'].get);
   assert.ok(body.paths['/.xd-pages/api/sites/{id}/acl'].put);
   assert.ok(body.paths['/.xd-pages/api/sites/{id}/acl/entries'].post);
@@ -45,6 +108,16 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
     'SITE_POLICY_CONFLICT',
     'ROUTE_POLICY_REPAIR_REQUIRED',
   ]);
+  assert.deepEqual(body.paths['/.xd-pages/api/sites/{id}'].delete['x-error-codes'], [
+    'SITE_POLICY_FORBIDDEN',
+    'SITE_POLICY_CONFLICT',
+    'SITE_NOT_FOUND',
+    'ROUTE_SNAPSHOT_WRITE_FAILED',
+    'ROUTE_POLICY_REPAIR_REQUIRED',
+  ]);
+  assert.deepEqual(body.paths['/.xd-pages/api/sites/{id}'].delete.responses[503], {
+    description: 'Route snapshot write or recovery failed',
+  });
   assert.ok(body.paths['/.xd-pages/api/console/admin/sites/{id}/exposure'].patch);
   assert.equal(
     body.paths['/.xd-pages/api/console/admin/sites/{id}/access'].get.responses[200].content['application/json'].schema.$ref,
@@ -110,6 +183,19 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
     'Create a personal access key, optionally scoped to one site'
   );
   assert.ok(body.components.schemas.CliManagedDeploymentRequest);
+  assert.equal(
+    body.components.schemas.CliManagedDeploymentRequest.properties.metadata.contentMediaType,
+    'application/json'
+  );
+  assert.equal(
+    body.components.schemas.CliManagedDeploymentRequest.properties.metadata.contentSchema.$ref,
+    '#/components/schemas/DeploymentMetadata'
+  );
+  assert.deepEqual(body.components.schemas.DeploymentMetadata.properties.title.type, ['string', 'null']);
+  assert.match(body.components.schemas.CliManagedDeploymentRequest.properties.metadata.description, /optional title/);
+  assert.match(body.components.schemas.CliManagedDeploymentRequest.properties.metadata.description, /omit it/);
+  assert.match(body.components.schemas.CliManagedDeploymentRequest.properties.metadata.description, /send null to clear/);
+  assert.match(body.components.schemas.CliManagedDeploymentRequest.properties.metadata.description, /CLI does not send title/);
   assert.equal(body.components.schemas.Team.properties.siteCount.type, 'integer');
   assert.equal(body.components.schemas.Team.properties.memberCount.type, 'integer');
   assert.ok(body.components.schemas.DeploymentDecision);
@@ -176,6 +262,10 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
     'INVALID_MULTIPART',
     'PAYLOAD_TOO_LARGE',
     'SITE_REQUIRED',
+    'SITE_TITLE_INVALID',
+    'SITE_METADATA_MUTATIONS_DISABLED',
+    'SITE_METADATA_CONFLICT',
+    'SITE_METADATA_UPDATE_FAILED',
     'SITE_NOT_FOUND',
     'SITE_SLUG_INVALID',
     'SITE_SLUG_RESERVED',
@@ -207,15 +297,22 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
     'ROUTE_SNAPSHOT_WRITE_FAILED',
     'IDEMPOTENCY_CONFLICT',
   ]);
-  assert.ok(
-    body.paths['/.xd-pages/api/versions/{id}/rollback'].post['x-error-codes'].includes('ROLLBACK_ACTIVATION_FAILED')
-  );
+  assert.ok(body.paths['/.xd-pages/api/versions/{id}/rollback'].post['x-error-codes'].includes('ROLLBACK_ACTIVATION_FAILED'));
   assert.ok(body.paths['/.xd-pages/api/versions/{id}/rollback'].post['x-error-codes'].includes('DEPLOYMENT_REQUEST_FAILED'));
   assert.deepEqual(body.paths['/.xd-pages/api/sites'].post['x-error-codes'], [
     'SITE_SLUG_CONFLICT',
     'HOSTNAME_CLAIM_CONFLICT',
     'SITE_CREATE_UNAVAILABLE',
   ]);
+  assert.ok(body.paths['/.xd-pages/api/sites/{id}/transfer'].post['x-error-codes'].includes('SITE_POLICY_CONFLICT'));
+  assert.ok(body.paths['/.xd-pages/api/sites/{id}/transfer'].post['x-error-codes'].includes('ROUTE_SNAPSHOT_WRITE_FAILED'));
+  assert.ok(body.paths['/.xd-pages/api/sites/{id}/transfer'].post['x-error-codes'].includes('ROUTE_POLICY_REPAIR_REQUIRED'));
+  assert.deepEqual(body.paths['/.xd-pages/api/sites/{id}/transfer'].post.responses[409], {
+    description: 'Site changed concurrently',
+  });
+  assert.deepEqual(body.paths['/.xd-pages/api/sites/{id}/transfer'].post.responses[503], {
+    description: 'Site transfer store, route snapshot write, or recovery unavailable',
+  });
   assert.equal(
     body.paths['/.xd-pages/api/sites/{site}/secrets'].put.requestBody.content['application/json'].schema.$ref,
     '#/components/schemas/SiteSecretPutRequest'
@@ -237,21 +334,11 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
   ]);
   assert.deepEqual(body.components.schemas.SiteSecretMetadata.required, ['name', 'revision', 'updatedAt']);
   assert.equal(body.components.schemas.SiteSecretMetadata.properties.value, undefined);
-  assert.ok(
-    body.paths['/.xd-pages/api/sites/{site}/secrets'].put['x-error-codes'].includes('SECRET_VALUE_TOO_LARGE')
-  );
-  assert.ok(
-    body.paths['/.xd-pages/api/sites/{site}/secrets'].put['x-error-codes'].includes('RUNTIME_CONFIG_CHANGED')
-  );
-  assert.ok(
-    body.paths['/.xd-pages/api/sites/{site}/secrets'].put['x-error-codes'].includes('RUNTIME_BINDING_NAME_CONFLICT')
-  );
-  assert.ok(
-    body.paths['/.xd-pages/api/sites/{site}/secrets'].put['x-error-codes'].includes('RUNTIME_BINDINGS_LIMIT_EXCEEDED')
-  );
-  assert.ok(
-    body.paths['/.xd-pages/api/sites/{site}/secrets'].delete['x-error-codes'].includes('RUNTIME_CONFIG_CHANGED')
-  );
+  assert.ok(body.paths['/.xd-pages/api/sites/{site}/secrets'].put['x-error-codes'].includes('SECRET_VALUE_TOO_LARGE'));
+  assert.ok(body.paths['/.xd-pages/api/sites/{site}/secrets'].put['x-error-codes'].includes('RUNTIME_CONFIG_CHANGED'));
+  assert.ok(body.paths['/.xd-pages/api/sites/{site}/secrets'].put['x-error-codes'].includes('RUNTIME_BINDING_NAME_CONFLICT'));
+  assert.ok(body.paths['/.xd-pages/api/sites/{site}/secrets'].put['x-error-codes'].includes('RUNTIME_BINDINGS_LIMIT_EXCEEDED'));
+  assert.ok(body.paths['/.xd-pages/api/sites/{site}/secrets'].delete['x-error-codes'].includes('RUNTIME_CONFIG_CHANGED'));
   for (const operation of ['put', 'delete']) {
     const errorCodes = body.paths['/.xd-pages/api/sites/{site}/secrets'][operation]['x-error-codes'];
     assert.ok(errorCodes.includes('SITE_SLUG_INVALID'));
@@ -270,18 +357,9 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
   assert.deepEqual(body.components.schemas.SiteVarDeleteRequest.required, ['name']);
   assert.equal(body.components.schemas.SiteVarDeleteRequest.additionalProperties, false);
   const varsPath = body.paths['/.xd-pages/api/sites/{site}/vars'];
-  assert.equal(
-    varsPath.put.requestBody.content['application/json'].schema.$ref,
-    '#/components/schemas/SiteVarPutRequest'
-  );
-  assert.equal(
-    varsPath.delete.requestBody.content['application/json'].schema.$ref,
-    '#/components/schemas/SiteVarDeleteRequest'
-  );
-  assert.equal(
-    varsPath.get.responses[200].content['application/json'].schema.$ref,
-    '#/components/schemas/SiteVarsResponse'
-  );
+  assert.equal(varsPath.put.requestBody.content['application/json'].schema.$ref, '#/components/schemas/SiteVarPutRequest');
+  assert.equal(varsPath.delete.requestBody.content['application/json'].schema.$ref, '#/components/schemas/SiteVarDeleteRequest');
+  assert.equal(varsPath.get.responses[200].content['application/json'].schema.$ref, '#/components/schemas/SiteVarsResponse');
   assert.deepEqual(varsPath.get['x-error-codes'], [
     'SITE_SLUG_INVALID',
     'SITE_SLUG_RESERVED',
@@ -358,12 +436,15 @@ test('does not serve OpenAPI as public pages-api routes', async () => {
     assert.equal(publicResponse.status, 404);
     assert.equal((await publicResponse.json()).error.code, 'NOT_FOUND');
 
-    const response = await worker.fetch(new Request(`https://api.pages.xd.team${path}`, {
-      headers: { 'CF-Connecting-IP': '10.1.2.3' },
-    }), {
-      PAGES_ENV: 'production',
-      IP_ALLOWLIST: '10.0.0.0/8',
-    });
+    const response = await worker.fetch(
+      new Request(`https://api.pages.xd.team${path}`, {
+        headers: { 'CF-Connecting-IP': '10.1.2.3' },
+      }),
+      {
+        PAGES_ENV: 'production',
+        IP_ALLOWLIST: '10.0.0.0/8',
+      }
+    );
 
     assert.equal(response.status, 404);
     assert.equal((await response.json()).error.code, 'NOT_FOUND');
@@ -383,11 +464,14 @@ test('staging OpenAPI contract uses staging server URL without v1 addresses', ()
 });
 
 test('legacy token headers are rejected before route matching', async () => {
-  const response = await worker.fetch(new Request('https://api.pages.xd.team/.xd-pages/api/sites', {
-    headers: { 'X-Pages-Token': 'legacy' },
-  }), {
-    PAGES_ENV: 'production',
-  });
+  const response = await worker.fetch(
+    new Request('https://api.pages.xd.team/.xd-pages/api/sites', {
+      headers: { 'X-Pages-Token': 'legacy' },
+    }),
+    {
+      PAGES_ENV: 'production',
+    }
+  );
 
   assert.equal(response.status, 400);
   assert.equal((await response.json()).error.code, 'LEGACY_TOKEN_UNSUPPORTED');

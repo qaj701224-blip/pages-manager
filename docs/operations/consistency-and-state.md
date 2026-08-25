@@ -92,6 +92,7 @@ v2 发布不能简单理解为“上传 Worker 后写 active version”。发布
 3. 计算 effective execution mode：
      site.execution_mode_override ?? PAGES_EXECUTION_MODE。
 4. D1 创建 deployments(status=pending)。
+   新站点把规范化后的可选 `title` 随 pending site creation 一次写入；已有站点仅在部署 metadata 显式携带 `title` 时，复用 metadata application use case，在 deployment idempotency claim 后、provider upload 前提交名称修改。省略 `title` 不触发 mutation，也不改变历史 request hash。
 5. status=uploading。
 6. 调用 execution provider：
      wfp:
@@ -125,6 +126,8 @@ v2 发布不能简单理解为“上传 Worker 后写 active version”。发布
 失败处理：
 
 - 1-8 失败：保留旧 active version，不创建新 active route。
+- 已有站点的部署 title mutation 失败：provider upload 不启动，deployment 以 `failure_stage=site_metadata` 收口为 `failed`。title 的 D1 batch 是提交点；如果 batch 已提交但后续 readback 失败，名称可能已经生效且不回滚，调用方必须先查询站点状态，再使用新的 Idempotency-Key 重试。
+- deployment 的失败终态连续两次写入失败时，返回 `DEPLOYMENT_STATE_WRITE_FAILED` 并写 recovery marker。marker 只会在后续已授权且仍能解析到同一既有站点的 deploy/rollback 启动阶段尝试恢复；deployment GET 不触发恢复。
 - 9 之后、route 激活前失败：保留旧 active version；已创建但未激活的 version 保留为非 active 历史记录或由 reconciliation 标记。
 - route 激活必须用上一版 route 的 `active_version_id`、`route_generation` 和 `policy_version` 做 CAS；如果并发 deploy / policy change 已更新 route，本次操作返回 `ROUTE_ACTIVATION_CONFLICT`，清理本次上传的执行面资源，保留并发成功的 route。
 - route 激活成功但 snapshot / pointer 写入失败：当前实现立即恢复 previous route，并把 deployment 标记为 `failed`，避免 router 看到 D1 与 KV 指针不一致的半激活状态。route pointer 写入 KV 是 router 可见的提交点；如果 KV pointer 已提交但 DO 自身 pointer state 写入失败，操作仍应视为提交成功，由 reconciliation 修复 DO state，不能回滚 D1。
@@ -132,5 +135,7 @@ v2 发布不能简单理解为“上传 Worker 后写 active version”。发布
 - 已上传但未激活的 user Worker / assets：部署失败路径会 best-effort 删除；删除结果和阶段写入 deployment 诊断。删除失败时通过失败诊断和 cleanup task/admin 工具补救，不能反向切换 route。
 - 已成功切走的上一版 WFP user Worker：不在请求路径立即删除。先创建 cleanup task，`cleanup_after` 超过 drain window 且确认 active route 不再引用 `worker_name` / `version_id` 后再删除；GC 失败只更新 cleanup task，不把成功发布改成失败。
 - deployment 失败记录必须写 `failure_stage` 和脱敏 `failure_diagnostics_json`。普通部署查询最多暴露 `failureStage`；Admin Console 可查看完整诊断，用于判断 `retry_deploy`、等待 drain、检查 Cloudflare 凭证或人工处理 orphan。
+
+部署 pipeline 不承诺跨进程 exactly-once。已有站点在 claim 后硬中断时，旧 key replay 返回既有 pending deployment，不补跑 title mutation；中断发生在提交前时名称不变，提交后则保留新名称。新站点在 claim 后、site creation 前还受随机 `siteId`/idempotency scope 的既有限制，旧 key 不保证能重新命中原 pending deployment。运维处理这类状态时应同时查询站点与 deployment，确认事实状态后再决定是否使用新 Idempotency-Key。
 
 新发布流程不把 rollback 作为安全机制：用户可见切换点是 route snapshot pointer，Worker 上传和 D1 route 更新都不是 router 可见提交。历史 rollback API 仍需遵守同一套 active route / snapshot CAS 约束，但后续新设计应优先通过重新发布一个新 WFP Worker 修复问题。

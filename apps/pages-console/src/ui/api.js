@@ -426,6 +426,22 @@ export function updateAdminSiteSettings(siteId, body, options = {}) {
   });
 }
 
+export function updateSiteMetadata(siteId, body, options = {}) {
+  return fetchJson(`/api/console/sites/${encodeURIComponent(siteId)}/metadata`, {
+    ...options,
+    method: 'PATCH',
+    body,
+  });
+}
+
+export function updateAdminSiteMetadata(siteId, body, options = {}) {
+  return fetchJson(`/api/console/admin/sites/${encodeURIComponent(siteId)}/metadata`, {
+    ...options,
+    method: 'PATCH',
+    body,
+  });
+}
+
 export function deleteSite(siteId, options = {}) {
   return fetchJson(`/api/console/sites/${encodeURIComponent(siteId)}`, {
     ...options,

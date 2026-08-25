@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 20;
+export const SCHEMA_VERSION = 21;
 
 export function createSchemaSql() {
   return [
@@ -23,6 +23,11 @@ export function createSchemaSql() {
     `CREATE TABLE IF NOT EXISTS sites (
       id TEXT PRIMARY KEY,
       slug TEXT NOT NULL,
+      title TEXT,
+      data_namespace TEXT,
+      slug_revision INTEGER NOT NULL DEFAULT 1,
+      slug_routing_synced_revision INTEGER NOT NULL DEFAULT 1,
+      slug_routing_reconcile_attempted_at TEXT,
       environment TEXT NOT NULL,
       owner_type TEXT NOT NULL DEFAULT 'user',
       owner_id TEXT,
@@ -391,6 +396,9 @@ export function createSchemaSql() {
       WHERE deleted_at IS NULL`,
     `CREATE INDEX IF NOT EXISTS idx_sites_owner
       ON sites(environment, owner_type, owner_id)
+      WHERE deleted_at IS NULL`,
+    `CREATE INDEX IF NOT EXISTS idx_sites_slug_routing_reconciliation
+      ON sites(environment, slug_routing_reconcile_attempted_at, updated_at, id)
       WHERE deleted_at IS NULL`,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_site_routes_hostname_live
       ON site_routes(hostname)

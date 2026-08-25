@@ -51,7 +51,7 @@ test('deployment route activation preserves a visibility policy change made duri
   assert.equal(result.activation.visibility, 'owner');
 });
 
-test('deployment route activation applies the transferred site default visibility', () => {
+test('deployment route activation applies an explicitly requested transfer visibility', () => {
   const latestRoute = { ...routeBeforeActivation, visibility: 'owner', exposure: 'public' };
 
   const result = resolveDeploymentRouteActivation({
@@ -60,12 +60,28 @@ test('deployment route activation applies the transferred site default visibilit
     latestRoute,
     uploadExposure: 'public',
     ownerTransferApplied: true,
+    ownerTransferVisibility: 'disabled',
   });
 
   assert.equal(result.ok, true);
   assert.equal(result.activation.exposure, 'public');
   assert.equal(result.activation.visibility, 'disabled');
   assert.equal(result.activation.expectedRoute.exposure, 'public');
+});
+
+test('deployment route activation preserves latest visibility when transfer visibility is omitted', () => {
+  const latestRoute = { ...routeBeforeActivation, visibility: 'disabled' };
+
+  const result = resolveDeploymentRouteActivation({
+    site,
+    routeBeforeActivation,
+    latestRoute,
+    uploadExposure: 'internal',
+    ownerTransferApplied: true,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.activation.visibility, 'disabled');
 });
 
 test('deployment route activation rejects a missing latest route', () => {

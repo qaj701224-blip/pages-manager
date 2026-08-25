@@ -83,6 +83,7 @@ body {
 
 html {
   overflow-x: clip;
+  scrollbar-gutter: stable;
 }
 
 a {
@@ -3497,6 +3498,29 @@ button {
 
 .runtime-form-body {
   padding: 16px;
+}
+
+.site-metadata-form-body {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+
+.site-metadata-form-body .field-help,
+.site-url-preview {
+  margin: 0;
+  color: var(--xd-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.site-url-preview {
+  overflow-wrap: anywhere;
+}
+
+.site-metadata-form-body code {
+  color: var(--xd-text-2);
+  font-size: 0.95em;
 }
 
 .team-settings-form-body,

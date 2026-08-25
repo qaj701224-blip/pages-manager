@@ -29,12 +29,12 @@
 
 **Steps**
 
-- [ ] 先写 migration/schema 测试，覆盖 `title`、`data_namespace` 与两个 slug revision。
-- [ ] 增加 migration 并回填存量 `data_namespace=slug`；fresh schema 对齐目标结构。
-- [ ] 扩展 site mapper/projection，内部保留 namespace/revision，公开层不泄露 namespace。
-- [ ] 实现仅按 canonical slug 的 lookup、pending-cleanup hostname claim 查询和 routing reconciliation list。
-- [ ] 实现带 site commit lease/fencing 的 metadata D1 transaction；空 namespace 在首次 rename 时以旧 slug 固化。
-- [ ] 覆盖 title-only、rename、旧 claim 清理/释放、同站点 hold 内回切、冲突、并发 CAS 和无 deployment/version 副作用。
+- [x] 先写 migration/schema 测试，覆盖 `title`、`data_namespace` 与两个 slug revision。
+- [x] 增加 migration 并回填存量 `data_namespace=slug`；fresh schema 对齐目标结构。
+- [x] 扩展 site mapper/projection，内部保留 namespace/revision，公开层不泄露 namespace。
+- [x] 实现仅按 canonical slug 的 lookup、pending-cleanup hostname claim 查询和 routing reconciliation list。
+- [x] 实现带 site commit lease/fencing 的 metadata D1 transaction；空 namespace 在首次 rename 时以旧 slug 固化。
+- [x] 覆盖 title-only、rename、旧 claim 清理/释放、同站点 hold 内回切、冲突、并发 CAS 和无 deployment/version 副作用。
 
 **Verify**
 
@@ -54,11 +54,11 @@ node --test apps/pages-api/src/schema.test.js apps/pages-api/src/store.test.js a
 
 **Steps**
 
-- [ ] 先写旧 claim、新 `namespaceVersion: 2` claim、非法真实 site id / namespace 的验证测试。
-- [ ] Gateway 规范化为 `{ siteId, dataNamespace }`；旧 claim fallback 为 `dataNamespace=siteId`。
-- [ ] 所有 site/user key、prefix、provider metadata 与 cursor context 使用 `dataNamespace`，真实 site id 单独保留。
-- [ ] 新 cursor version 同时绑定 site id 与 namespace；旧 cursor 在其 key 有效期间继续按旧 namespace 规则读取。
-- [ ] 覆盖 rename 前后相同 KV prefix、跨 site/namespace cursor 拒绝与旧 token TTL 窗口。
+- [x] 先写旧 claim、新 `namespaceVersion: 2` claim、非法真实 site id / namespace 的验证测试。
+- [x] Gateway 规范化为 `{ siteId, dataNamespace }`；旧 claim fallback 为 `dataNamespace=siteId`。
+- [x] 所有 site/user key、prefix、provider metadata 与 cursor context 使用 `dataNamespace`，真实 site id 单独保留。
+- [x] 新 cursor version 同时绑定 site id 与 namespace；旧 cursor 在其 key 有效期间继续按旧 namespace 规则读取。
+- [x] 覆盖 rename 前后相同 KV prefix、跨 site/namespace cursor 拒绝与旧 token TTL 窗口。
 
 **Verify**
 
@@ -76,9 +76,9 @@ node --test apps/kv-gateway/src/auth.test.js apps/kv-gateway/src/index.test.js p
 
 **Steps**
 
-- [ ] 先写 v2/v3 兼容和 v4 serve snapshot 测试；不增加 redirect/308 分支。
-- [ ] v4 serve capability 发出真实 `siteId`、不可变 `dataNamespace` 与 `namespaceVersion: 2`；v2/v3 snapshot 使用 slug fallback。
-- [ ] 覆盖 pointer 缺失的旧 hostname 不执行 user Worker、不生成 capability，以及 runtime path 的 fail-closed 行为。
+- [x] 先写 v2/v3 兼容和 v4 serve snapshot 测试；不增加 redirect/308 分支。
+- [x] v4 serve capability 发出真实 `siteId`、不可变 `dataNamespace` 与 `namespaceVersion: 2`；v2/v3 snapshot 使用 slug fallback。
+- [x] 覆盖 pointer 缺失的旧 hostname 不执行 user Worker、不生成 capability，以及 runtime path 的 fail-closed 行为。
 
 **Verify**
 
@@ -100,12 +100,12 @@ node --test apps/pages-router/src/*.test.js apps/kv-gateway/src/*.test.js
 
 **Steps**
 
-- [ ] 先锁定 v4 serve snapshot shape，同时保留现有 pointer monotonic/CAS 测试。
-- [ ] 实现 title NFC/trim/control/长度规则和 metadata patch shape 校验。
-- [ ] use case 在 site commit lease 内调用 Task 1 transaction，commit 后确认 canonical，再清理每个 pending-cleanup 旧 pointer。
-- [ ] pointer 清理后将旧 claim 转入 5 分钟 reuse hold；全部确认后以 slug-revision CAS 标记 site ready。
-- [ ] 部分失败返回 pending 结果；同 slug retry 与 scheduled bounded reconciliation 可恢复，stale repair 不能误标 ready。
-- [ ] 所有既有 snapshot writer 带 `dataNamespace`；delete 清理 canonical 与待清理旧 pointer，且遗留 pointer 无法跨 site。
+- [x] 先锁定 v4 serve snapshot shape，同时保留现有 pointer monotonic/CAS 测试。
+- [x] 实现 title NFC/trim/control/长度规则和 metadata patch shape 校验。
+- [x] use case 在 site commit lease 内调用 Task 1 transaction，commit 后确认 canonical，再清理每个 pending-cleanup 旧 pointer。
+- [x] pointer 清理后将旧 claim 转入 5 分钟 reuse hold；全部确认后以 slug-revision CAS 标记 site ready。
+- [x] 部分失败返回 pending 结果；同 slug retry 与 scheduled bounded reconciliation 可恢复，stale repair 不能误标 ready。
+- [x] 所有既有 snapshot writer 带 `dataNamespace`；delete 清理 canonical 与待清理旧 pointer，且遗留 pointer 无法跨 site。
 
 **Verify**
 
@@ -125,11 +125,11 @@ node --test apps/pages-api/src/route-snapshot.test.js 'apps/pages-api/src/applic
 
 **Steps**
 
-- [ ] 新增 `PATCH /sites/{id}/metadata` 路由，确保先于通用 site-id matcher。
-- [ ] 读取沿用 read scope；mutation 复用 owner/team publisher/admin 与 deploy scope，跨 site 返回不可枚举的 `SITE_NOT_FOUND`。
-- [ ] 实现精确 200/202 success shape、错误矩阵和公开 site 的 title/displayName/routingStatus projection。
-- [ ] mutation feature flag 只有精确 `true` 才开启，关闭返回稳定 503；读取和兼容 writer 不受影响。
-- [ ] OpenAPI 与 boundary 文档同步，继续断言没有公开 `/openapi.json`。
+- [x] 新增 `PATCH /sites/{id}/metadata` 路由，确保先于通用 site-id matcher。
+- [x] 读取沿用 read scope；mutation 复用 owner/team publisher/admin 与 deploy scope，跨 site 返回不可枚举的 `SITE_NOT_FOUND`。
+- [x] 实现精确 200/202 success shape、错误矩阵和公开 site 的 title/displayName/routingStatus projection。
+- [x] mutation feature flag 只有精确 `true` 才开启，关闭返回稳定 503；读取和兼容 writer 不受影响。
+- [x] OpenAPI 与 boundary 文档同步，继续断言没有公开 `/openapi.json`。
 
 **Verify**
 
@@ -157,12 +157,12 @@ node --test apps/pages-api/src/sites.test.js apps/pages-api/src/openapi.test.js 
 
 **Steps**
 
-- [ ] 增加 Workspace/Admin metadata routes，调用同一 use case；保留 Owner transfer `/settings` 契约和 CSRF/same-origin。
-- [ ] API client 增加 metadata patch；处理 202 success 而不是抛错。
-- [ ] Directory/Workspace/Admin/detail 显示 title 主标题和 slug 次信息。
-- [ ] Settings 提供名称、URL 两个独立保存状态；URL 确认提示 config 更新，pending 时轮询 detail。
-- [ ] 运行配置 mutation 后保留现有列表并后台刷新，Dialog 打开/关闭不改变页面横向布局。
-- [ ] 覆盖 Owner、team publisher/admin/viewer、platform admin、匿名 directory、CSRF 和独立错误状态。
+- [x] 增加 Workspace/Admin metadata routes，调用同一 use case；保留 Owner transfer `/settings` 契约和 CSRF/same-origin。
+- [x] API client 增加 metadata patch；处理 202 success 而不是抛错。
+- [x] Directory/Workspace/Admin/detail 显示 title 主标题和 slug 次信息。
+- [x] Settings 提供名称、URL 两个独立保存状态；URL 确认提示 config 更新，pending 时轮询 detail。
+- [x] 运行配置 mutation 后保留现有列表并后台刷新，Dialog 打开/关闭不改变页面横向布局。
+- [x] 覆盖 Owner、team publisher/admin/viewer、platform admin、匿名 directory、CSRF 和独立错误状态。
 
 **Verify**
 
@@ -184,9 +184,9 @@ pnpm --filter @xd-cell/pages-console build
 
 **Steps**
 
-- [ ] deployment resolution 只按 canonical slug，历史 slug 不再解析到原 site id。
-- [ ] Console URL 修改确认文案明确要求同步本地 `xd-cell.config.json.name`。
-- [ ] 覆盖 reuse hold 内旧 slug 冲突，以及 hold 到期后 slug 可正常重新获取。
+- [x] deployment resolution 只按 canonical slug，历史 slug 不再解析到原 site id。
+- [x] Console URL 修改确认文案明确要求同步本地 `xd-cell.config.json.name`。
+- [x] 覆盖 reuse hold 内旧 slug 冲突，以及 hold 到期后 slug 可正常重新获取。
 
 **Verify**
 
@@ -204,10 +204,10 @@ node --test apps/pages-api/src/application/deployments/resolve-deploy-site.test.
 
 **Steps**
 
-- [ ] 配置 metadata mutation feature flag；本期不新增 Cloudflare resource binding。
-- [ ] workflow 保持 production 手动触发，且 consumer-before-producer 通过兼容基线/两阶段 rollout 文档与检查保证。
-- [ ] 更新 API/CLI/Console 行为文档和运维步骤，不复制历史 spec 内容，不写真实资源值。
-- [ ] 增加静态检查，禁止 API response 暴露 data namespace、hostname claim 或内部 route metadata。
+- [x] 配置 metadata mutation feature flag；本期不新增 Cloudflare resource binding。
+- [x] workflow 保持 production 手动触发，且 consumer-before-producer 通过兼容基线/两阶段 rollout 文档与检查保证。
+- [x] 更新 API/CLI/Console 行为文档和运维步骤，不复制历史 spec 内容，不写真实资源值。
+- [x] 增加静态检查，禁止 API response 暴露 data namespace、hostname claim 或内部 route metadata。
 
 **Verify**
 
@@ -217,9 +217,9 @@ node --test scripts/workflows.test.js scripts/pages-v2-docs.test.js apps/pages-a
 
 ## Task 9：集成验证与完成审计
 
-- [ ] 跑所有本功能 focused tests，修复 flaky/竞态，不扩大无关改动。
-- [ ] 运行 `pnpm lint`。
-- [ ] 运行 `pnpm test`。
-- [ ] 构造需求—证据矩阵，逐项确认独立 mutation、API/Console 权限、旧 URL 停止路由、slug 释放、无部署、数据连续与环境隔离。
-- [ ] 检查 `git diff --check`、敏感信息、未跟踪文件和最终 commit 范围。
+- [x] 跑所有本功能 focused tests，修复 flaky/竞态，不扩大无关改动。
+- [x] 运行 `pnpm lint`。
+- [x] 运行 `pnpm test`。
+- [x] 构造需求—证据矩阵，逐项确认独立 mutation、API/Console 权限、旧 URL 停止路由、slug 释放、无部署、数据连续与环境隔离。
+- [x] 检查 `git diff --check`、敏感信息、未跟踪文件和最终 commit 范围。
 - [ ] staging 手工验收项保留给部署者；本地无法证明的外部 Cloudflare 状态不得宣称已验证。

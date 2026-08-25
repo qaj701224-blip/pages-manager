@@ -6,10 +6,24 @@ import {
   adminDeploymentActorView,
   adminDeploymentOwnerView,
   adminSiteOwnerView,
+  patchSiteSummaryForId,
   siteCardOwnerLabel,
   sitePublicUrl,
   siteVisibilityLabel,
 } from './site-display-model.js';
+
+test('site summary patches keep admin list names in sync with detail mutations', () => {
+  const untouched = { id: 'site_2', title: 'Two', displayName: 'Two', slug: 'two' };
+  const sites = [
+    { id: 'site_1', title: 'One', displayName: 'One', slug: 'one' },
+    untouched,
+  ];
+
+  const renamed = patchSiteSummaryForId(sites, 'site_1', { title: null, slug: 'renamed' });
+
+  assert.deepEqual(renamed[0], { id: 'site_1', title: null, displayName: 'renamed', slug: 'renamed' });
+  assert.strictEqual(renamed[1], untouched);
+});
 
 test('sitePublicUrl displays hostnames with https protocol', () => {
   assert.equal(sitePublicUrl('demo.workers.xd.team'), 'https://demo.workers.xd.team');

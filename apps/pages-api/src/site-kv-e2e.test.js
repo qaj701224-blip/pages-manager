@@ -56,6 +56,7 @@ test('site created by API can deploy and use router-proxied Pages KV', async () 
       upload: async ({ workerName }) => ({ artifactRef: `wfp://test/${workerName}` }),
       verify: async () => ({ ok: true }),
     },
+    SITE_METADATA_MUTATIONS_ENABLED: 'true',
   };
 
   const createSite = await apiWorker.fetch(
@@ -94,12 +95,46 @@ test('site created by API can deploy and use router-proxied Pages KV', async () 
   assert.equal(routerResponse.status, 200);
   assert.equal((await routerResponse.json()).ok, true);
   assert.deepEqual([...siteData.values.values()], [JSON.stringify({ enabled: true })]);
+
+  const rename = await apiWorker.fetch(
+    jsonRequest(`https://api.pages.xd.team/.xd-pages/api/sites/${siteBody.site.id}/metadata`, { slug: 'handbook' }, {}, 'PATCH'),
+    apiEnv
+  );
+  assert.equal(rename.status, 200, await rename.clone().text());
+  const renamedSite = (await rename.json()).site;
+  assert.equal(renamedSite.url, 'https://handbook.workers.xd.team');
+
+  const renamedGet = await routerWorker.fetch(
+    new Request(`${renamedSite.url}/.xd-pages/runtime/v1/kv/get`, {
+      method: 'POST',
+      headers: {
+        'CF-Connecting-IP': '10.1.2.3',
+        'Content-Type': 'application/json',
+        'X-XD-Pages-Runtime': '1',
+        Origin: renamedSite.url,
+      },
+      body: JSON.stringify({ key: 'app/config', type: 'json' }),
+    }),
+    routerEnv(snapshots, siteData)
+  );
+  assert.equal(renamedGet.status, 200, await renamedGet.clone().text());
+  assert.deepEqual((await renamedGet.json()).value, { enabled: true });
+
+  const oldUrl = await routerWorker.fetch(
+    new Request('https://guide.workers.xd.team/', {
+      headers: { Accept: 'application/json', 'CF-Connecting-IP': '10.1.2.3' },
+    }),
+    routerEnv(snapshots, siteData)
+  );
+  assert.equal(oldUrl.status, 404);
+  assert.equal(oldUrl.headers.get('Location'), null);
 });
 
 function deterministicId() {
   const counters = { site: 0, route: 0, dep: 0, ver: 0 };
   return (prefix) => {
     counters[prefix] = (counters[prefix] || 0) + 1;
+    if (prefix === 'site') return `site_${String(counters[prefix]).padStart(32, '0')}`;
     return `${prefix}_${counters[prefix]}`;
   };
 }
@@ -137,9 +172,9 @@ function routerEnv(routeSnapshots, siteData) {
   };
 }
 
-function jsonRequest(url, body, headers = {}) {
+function jsonRequest(url, body, headers = {}, method = 'POST') {
   return new Request(url, {
-    method: 'POST',
+    method,
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${BEARER_USR_1}`,
@@ -251,6 +286,10 @@ class MemoryRouteSnapshots {
 
   async get(key) {
     return this.values.get(key) ?? null;
+  }
+
+  async delete(key) {
+    this.values.delete(key);
   }
 }
 

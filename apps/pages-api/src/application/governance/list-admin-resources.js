@@ -53,7 +53,10 @@ export function projectAdminUser(user) {
 export function projectAdminSite(site) {
   return {
     id: site.id,
+    title: site.title || null,
+    displayName: site.title || site.slug,
     slug: site.slug,
+    routingStatus: site.slugRoutingSyncedRevision === site.slugRevision ? 'ready' : 'pending',
     hostname: site.route?.hostname || null,
     owner: {
       type: site.ownerType || 'user',

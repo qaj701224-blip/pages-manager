@@ -106,6 +106,7 @@ test('owner-scoped access keys prepare personal sites without committing them', 
         ownerType: input.ownerType,
         ownerId: input.ownerId,
         ownerUserId: input.ownerUserId,
+        title: input.title,
         siteUuid: 'uuid_new',
         defaultVisibility: input.visibility,
         environment: input.environment,
@@ -123,6 +124,7 @@ test('owner-scoped access keys prepare personal sites without committing them', 
     teamId: '',
     visibility: 'internal',
     requestedVisibility: 'internal',
+    title: 'New guide',
   });
 
   assert.equal(result.ok, true);
@@ -137,8 +139,10 @@ test('owner-scoped access keys prepare personal sites without committing them', 
       ownerId: 'usr_1',
       ownerUserId: 'usr_1',
       visibility: 'internal',
+      title: 'New guide',
     },
   ]);
+  assert.equal(result.site.pendingSiteCreation.title, 'New guide');
 });
 
 test('team publishers prepare team-owned sites while viewers are rejected', async () => {

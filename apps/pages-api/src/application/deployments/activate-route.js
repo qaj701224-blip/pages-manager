@@ -11,7 +11,7 @@ export function createDeploymentRouteActivation({ routes, telemetry, clock }) {
   async function activate(command) {
     const stage = telemetry.start();
     try {
-      const route = await routes.activate({
+      const committed = await routes.activate({
         siteId: command.siteId,
         environment: command.environment,
         route: {
@@ -23,16 +23,16 @@ export function createDeploymentRouteActivation({ routes, telemetry, clock }) {
           dispatchBindingName: command.version.dispatchBindingName,
           slotId: command.version.slotId,
           visibility: command.activation.visibility,
-          ...(command.requiredArtifactAvailability
-            ? { requiredArtifactAvailability: command.requiredArtifactAvailability }
-            : {}),
+          ...(command.requiredArtifactAvailability ? { requiredArtifactAvailability: command.requiredArtifactAvailability } : {}),
           lease: command.lease,
           updatedAt: clock.now(),
         },
         expectedRoute: command.activation.expectedRoute,
+        ...(command.commit ? { commit: command.commit } : {}),
       });
+      const route = committed?.route || committed;
       const result = route
-        ? { ok: true, route }
+        ? { ok: true, route, ...(committed?.site ? { site: committed.site } : {}) }
         : { ok: false, error: { code: 'ROUTE_ACTIVATION_CONFLICT', reason: 'cas_conflict' } };
       await telemetry.finish(stage, result.ok ? { status: 'succeeded' } : { status: 'failed', reason: 'cas_conflict' });
       return result;

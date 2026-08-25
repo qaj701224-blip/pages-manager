@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -29,6 +29,7 @@ import {
   getAdminSiteConfig,
   getAdminSiteDeployments,
   updateAdminSiteExposure,
+  updateAdminSiteMetadata,
   listAdminTeams,
   listAdminUsers,
   listConsoleUsers,
@@ -39,6 +40,7 @@ import {
   putSiteRuntimeVar,
   updateAdminSiteSettings,
   updateAdminSiteAccess,
+  updateSiteMetadata,
   updateSiteSettings,
   updateSiteAccess,
 } from '../api.js';
@@ -48,11 +50,15 @@ import { DeploymentTracePanel } from '../components/DeploymentTracePanel.jsx';
 import {
   aclSubjectPlaceholder,
   aclSubjectTypeLabel,
+  applyResourceUpdateForKey,
   appendAclEntry,
   canViewRuntimeConfig,
+  createResourceRequestGuard,
   formatSiteActionError,
   getSiteCapabilities,
   normalizeAclEntriesForForm,
+  patchSiteStateForId,
+  pickSiteOwnershipPatch,
   removeAclEntryAt,
   siteAccessEffectLabel,
   siteAccessOptionLabel,
@@ -64,8 +70,12 @@ import {
 import {
   buildSiteOwnerSettingsForm,
   filterSiteOwnerCandidates,
+  getSiteMetadataErrorMessage,
   getSiteSettingsErrorMessage,
+  normalizeSiteSlugMetadataPayload,
+  normalizeSiteTitleMetadataPayload,
   normalizeSiteOwnerSettingsPayload,
+  siteHostnameForSlug,
   siteOwnerCandidateLabel,
   siteOwnerCandidateMeta,
 } from '../site-settings-model.js';
@@ -96,6 +106,7 @@ function createSiteApi(scope) {
       },
       updateAccess: updateAdminSiteAccess,
       updateExposure: updateAdminSiteExposure,
+      updateMetadata: updateAdminSiteMetadata,
       updateSettings: updateAdminSiteSettings,
       listOwnerUsers: ({ query } = {}) => listAdminUsers({ query }),
       listOwnerTeams: () => listAdminTeams({ status: 'active' }),
@@ -115,6 +126,7 @@ function createSiteApi(scope) {
     getSite: (siteId) => fetchJson(`/api/console/sites/${encodeURIComponent(siteId)}`),
     getResource: (siteId, resource) => fetchJson(`/api/console/sites/${encodeURIComponent(siteId)}/${resource}`),
     updateAccess: updateSiteAccess,
+    updateMetadata: updateSiteMetadata,
     updateSettings: updateSiteSettings,
     listOwnerUsers: ({ query } = {}) => listConsoleUsers({ query }),
     listOwnerTeams: () => listTeams(),
@@ -135,6 +147,7 @@ export function SiteDetail({
   basePath,
   backTo,
   backLabel,
+  onSiteChange,
 }) {
   const activeTab = SITE_TABS.has(tab) ? tab : 'overview';
   const navigate = useNavigate();
@@ -144,23 +157,59 @@ export function SiteDetail({
   const resolvedBackLabel = backLabel || siteApi.backLabel;
   const [state, setState] = useState({ status: 'loading', site: null, error: null });
   const [resourceState, setResourceState] = useState({ status: 'idle', data: null, error: null });
+  const resourceKey = `${siteId}:${activeTab}`;
+  const resourceRequestGuardRef = useRef(null);
+  if (!resourceRequestGuardRef.current) {
+    resourceRequestGuardRef.current = createResourceRequestGuard(resourceKey);
+  }
   const canViewConfig =
     state.status === 'ready' && state.site?.id === siteId && canViewRuntimeConfig(state.site, scope);
+
+  useLayoutEffect(() => {
+    resourceRequestGuardRef.current.activate(resourceKey);
+  }, [resourceKey]);
+
+  const patchActiveSite = useCallback(
+    (patch) => {
+      setState((current) => patchSiteStateForId(current, siteId, patch));
+      onSiteChange?.(siteId, patch);
+    },
+    [onSiteChange, siteId]
+  );
+
+  const updateActiveResource = useCallback(
+    (data) => {
+      setResourceState((current) => applyResourceUpdateForKey(resourceRequestGuardRef.current, resourceKey, current, data));
+    },
+    [resourceKey]
+  );
 
   const fetchActiveResource = useCallback(() => siteApi.getResource(siteId, activeTab), [activeTab, siteApi, siteId]);
 
   const reloadResource = useCallback(async () => {
     if (!RESOURCE_TABS.has(activeTab) || (activeTab === 'config' && !canViewConfig)) return null;
-    setResourceState({ status: 'loading', data: null, error: null });
+    const request = resourceRequestGuardRef.current.begin(resourceKey);
+    if (!request) return null;
+    setResourceState((current) => ({
+      status: current.data ? 'refreshing' : 'loading',
+      data: current.data,
+      error: null,
+    }));
     try {
       const data = await fetchActiveResource();
+      if (!resourceRequestGuardRef.current.isCurrent(request)) return data;
       setResourceState({ status: 'ready', data, error: null });
       return data;
     } catch (error) {
-      setResourceState({ status: 'error', data: null, error });
+      if (!resourceRequestGuardRef.current.isCurrent(request)) return null;
+      setResourceState((current) => ({
+        status: current.data ? 'ready' : 'error',
+        data: current.data,
+        error,
+      }));
       throw error;
     }
-  }, [activeTab, canViewConfig, fetchActiveResource]);
+  }, [activeTab, canViewConfig, fetchActiveResource, resourceKey]);
 
   useEffect(() => {
     let active = true;
@@ -179,26 +228,32 @@ export function SiteDetail({
   }, [siteApi, siteId]);
 
   useEffect(() => {
+    const request = resourceRequestGuardRef.current.begin(resourceKey);
     if (!RESOURCE_TABS.has(activeTab) || (activeTab === 'config' && !canViewConfig)) {
       setResourceState({ status: 'idle', data: null, error: null });
       return undefined;
     }
+    if (!request) return undefined;
 
     let active = true;
     setResourceState({ status: 'loading', data: null, error: null });
     fetchActiveResource()
       .then((data) => {
-        if (active) setResourceState({ status: 'ready', data, error: null });
+        if (active && resourceRequestGuardRef.current.isCurrent(request)) {
+          setResourceState({ status: 'ready', data, error: null });
+        }
       })
       .catch((error) => {
-        if (active) setResourceState({ status: 'error', data: null, error });
+        if (active && resourceRequestGuardRef.current.isCurrent(request)) {
+          setResourceState({ status: 'error', data: null, error });
+        }
       });
     return () => {
       active = false;
     };
-  }, [activeTab, canViewConfig, fetchActiveResource]);
+  }, [activeTab, canViewConfig, fetchActiveResource, resourceKey]);
 
-  const title = state.site?.slug || siteId;
+  const title = state.site?.displayName || state.site?.title || state.site?.slug || siteId;
 
   const content = (
     <>
@@ -223,10 +278,8 @@ export function SiteDetail({
           siteApi={siteApi}
           tab={activeTab}
           resourceState={resourceState}
-          onResourceUpdate={(data) => setResourceState({ status: 'ready', data, error: null })}
-          onSitePatch={(patch) =>
-            setState((current) => (current.site ? { ...current, site: { ...current.site, ...patch }, error: null } : current))
-          }
+          onResourceUpdate={updateActiveResource}
+          onSitePatch={patchActiveSite}
           onResourceReload={reloadResource}
           onSiteDeleted={() => navigate(siteApi.deletedRedirect)}
         />
@@ -365,6 +418,7 @@ function SiteOverview({ site }) {
       <InfoList
         title="站点信息"
         rows={[
+          ['名称', site.displayName || site.title || site.slug || '-'],
           ['Slug', site.slug || '-'],
           ['Hostname', site.hostname || '-'],
           ['Owner', ownerLabel(site.owner)],
@@ -565,9 +619,18 @@ function AccessPolicyForm({ site, siteApi, access, onResourceUpdate, onSitePatch
   const [aclDialogOpen, setAclDialogOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
+  const mutationRequestGuardRef = useRef(null);
+  if (!mutationRequestGuardRef.current) {
+    mutationRequestGuardRef.current = createResourceRequestGuard(site.id);
+  }
   const aclEnabled = visibility === 'acl';
   const currentExposure = access.exposure === 'public' ? 'public' : 'internal';
   const currentAccessMode = visibility === 'internal' ? 'anonymous' : visibility;
+
+  useLayoutEffect(() => {
+    mutationRequestGuardRef.current.activate(site.id);
+    return () => mutationRequestGuardRef.current.activate(null);
+  }, [site.id]);
 
   useEffect(() => {
     setVisibility(access.visibility || 'internal');
@@ -598,6 +661,8 @@ function AccessPolicyForm({ site, siteApi, access, onResourceUpdate, onSitePatch
   const submit = async (event) => {
     event.preventDefault();
     if (saving || !isDirty) return;
+    const request = mutationRequestGuardRef.current.begin(site.id);
+    if (!request) return;
     setSaving(true);
     setError(null);
     try {
@@ -605,15 +670,17 @@ function AccessPolicyForm({ site, siteApi, access, onResourceUpdate, onSitePatch
         visibility,
         aclEntries: toAclUpdatePayload(entries),
       });
+      if (!mutationRequestGuardRef.current.isCurrent(request)) return;
       onResourceUpdate?.({ access: { ...access, ...data.access } });
       onSitePatch?.({
         access: { ...(site.access || {}), ...data.access },
         visibility: data.access?.visibility || visibility,
       });
     } catch (nextError) {
+      if (!mutationRequestGuardRef.current.isCurrent(request)) return;
       setError(nextError);
     } finally {
-      setSaving(false);
+      if (mutationRequestGuardRef.current.isCurrent(request)) setSaving(false);
     }
   };
 
@@ -670,13 +737,23 @@ function AccessPolicyForm({ site, siteApi, access, onResourceUpdate, onSitePatch
 }
 
 function AdminExposurePanel({ site, access, updateExposure, onResourceUpdate, onSitePatch, onResourceReload }) {
+  const reasonInputRef = useRef(null);
   const [exposure, setExposure] = useState(access.exposure || 'internal');
   const [reason, setReason] = useState('');
   const [dialog, setDialog] = useState(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [auditWarning, setAuditWarning] = useState(null);
+  const mutationRequestGuardRef = useRef(null);
+  if (!mutationRequestGuardRef.current) {
+    mutationRequestGuardRef.current = createResourceRequestGuard(site.id);
+  }
   const rangeView = siteNetworkRangeView(exposure);
+
+  useLayoutEffect(() => {
+    mutationRequestGuardRef.current.activate(site.id);
+    return () => mutationRequestGuardRef.current.activate(null);
+  }, [site.id]);
 
   useEffect(() => {
     setExposure(access.exposure || 'internal');
@@ -700,6 +777,8 @@ function AdminExposurePanel({ site, access, updateExposure, onResourceUpdate, on
   };
 
   const saveExposure = async (nextExposure, nextReason = null) => {
+    const request = mutationRequestGuardRef.current.begin(site.id);
+    if (!request) return;
     setSaving(true);
     setError(null);
     try {
@@ -707,6 +786,7 @@ function AdminExposurePanel({ site, access, updateExposure, onResourceUpdate, on
         exposure: nextExposure,
         ...(nextReason ? { reason: nextReason } : {}),
       });
+      if (!mutationRequestGuardRef.current.isCurrent(request)) return;
       const nextAccess = { ...access, ...(data.access || {}), exposure: nextExposure };
       setExposure(nextExposure);
       setDialog(null);
@@ -719,6 +799,7 @@ function AdminExposurePanel({ site, access, updateExposure, onResourceUpdate, on
       onResourceUpdate?.({ access: nextAccess });
       onSitePatch?.({ access: { ...(site.access || {}), ...nextAccess } });
     } catch (nextError) {
+      if (!mutationRequestGuardRef.current.isCurrent(request)) return;
       if (nextError?.code === 'SITE_EXPOSURE_AUDIT_FAILED') {
         setExposure(nextExposure);
         setAuditWarning(siteExposureAuditWarning(nextExposure));
@@ -731,7 +812,7 @@ function AdminExposurePanel({ site, access, updateExposure, onResourceUpdate, on
         setError(nextError);
       }
     } finally {
-      setSaving(false);
+      if (mutationRequestGuardRef.current.isCurrent(request)) setSaving(false);
     }
   };
 
@@ -773,7 +854,13 @@ function AdminExposurePanel({ site, access, updateExposure, onResourceUpdate, on
           {error ? <div className="form-error">{formatSiteActionError(error)}</div> : null}
         </div>
       </section>
-      <AppDialog open={dialog === 'public'} title="允许互联网访问" eyebrow="网络范围" onOpenChange={(open) => !saving && !open && setDialog(null)}>
+      <AppDialog
+        open={dialog === 'public'}
+        title="允许互联网访问"
+        eyebrow="网络范围"
+        initialFocusRef={reasonInputRef}
+        onOpenChange={(open) => !saving && !open && setDialog(null)}
+      >
         <form className="dialog-form" onSubmit={submitPublic}>
           <p className="dialog-description">
             允许后，站点会绕过公司网络 IP 门禁。当前 Worker 会移除 XD_OFFICE_NET 绑定并校验不存在。
@@ -781,11 +868,11 @@ function AdminExposurePanel({ site, access, updateExposure, onResourceUpdate, on
           <label className="field">
             <span>开启原因</span>
             <textarea
+              ref={reasonInputRef}
               value={reason}
               onChange={(event) => setReason(event.target.value)}
               placeholder="例如：staging 互联网验收"
               maxLength={500}
-              autoFocus
             />
           </label>
           {error ? <div className="form-error">{formatSiteActionError(error)}</div> : null}
@@ -818,8 +905,16 @@ function AdminExposurePanel({ site, access, updateExposure, onResourceUpdate, on
 }
 
 function AclEntryDialog({ open, draft, error, onDraftChange, onOpenChange, onSubmit }) {
+  const subjectInputRef = useRef(null);
+
   return (
-    <AppDialog open={open} title="添加访问对象" eyebrow="ACL" onOpenChange={onOpenChange}>
+    <AppDialog
+      open={open}
+      title="添加访问对象"
+      eyebrow="ACL"
+      initialFocusRef={subjectInputRef}
+      onOpenChange={onOpenChange}
+    >
       <form
         className="dialog-form"
         onSubmit={(event) => {
@@ -837,10 +932,10 @@ function AclEntryDialog({ open, draft, error, onDraftChange, onOpenChange, onSub
         <label className="field">
           <span>{aclSubjectTypeLabel(draft.subjectType)}</span>
           <input
+            ref={subjectInputRef}
             value={draft.subjectValue}
             onChange={(event) => onDraftChange((current) => ({ ...current, subjectValue: event.target.value }))}
             placeholder={aclSubjectPlaceholder(draft.subjectType)}
-            autoFocus
           />
         </label>
         {error ? <div className="form-error">{formatSiteActionError(error)}</div> : null}
@@ -935,6 +1030,7 @@ function ConfigPanel({ site, siteApi, state, onResourceReload }) {
 
   return (
     <section className="detail-stack">
+      {state.error ? <div className="form-note">配置已保留，但最新列表刷新失败，请稍后重试。</div> : null}
       <RuntimeVarList
         vars={config.vars || []}
         canEdit={capabilities.canEditVars}
@@ -974,6 +1070,7 @@ function ConfigPanel({ site, siteApi, state, onResourceReload }) {
 }
 
 function RuntimeVarDialog({ open, siteId, siteApi, onOpenChange, onResourceReload }) {
+  const nameInputRef = useRef(null);
   const [name, setName] = useState('');
   const [value, setValue] = useState('');
   const [saving, setSaving] = useState(false);
@@ -995,8 +1092,8 @@ function RuntimeVarDialog({ open, siteId, siteApi, onOpenChange, onResourceReloa
       await siteApi.putRuntimeVar(siteId, name.trim(), value);
       setName('');
       setValue('');
-      await onResourceReload?.();
       onOpenChange(false);
+      refreshResourceInBackground(onResourceReload);
     } catch (nextError) {
       setError(nextError);
     } finally {
@@ -1005,11 +1102,17 @@ function RuntimeVarDialog({ open, siteId, siteApi, onOpenChange, onResourceReloa
   };
 
   return (
-    <AppDialog open={open} title="添加环境变量" eyebrow="运行配置" onOpenChange={onOpenChange}>
+    <AppDialog
+      open={open}
+      title="添加环境变量"
+      eyebrow="运行配置"
+      initialFocusRef={nameInputRef}
+      onOpenChange={onOpenChange}
+    >
       <form className="dialog-form" onSubmit={submit}>
         <label className="field">
           <span>Name</span>
-          <input value={name} onChange={(event) => setName(event.target.value)} />
+          <input ref={nameInputRef} value={name} onChange={(event) => setName(event.target.value)} />
         </label>
         <label className="field">
           <span>Value</span>
@@ -1041,8 +1144,8 @@ function RuntimeVarList({ vars, canEdit, siteId, siteApi, onAdd, onResourceReloa
     setDeleting(true);
     try {
       await siteApi.deleteRuntimeVar(siteId, deleteTarget);
-      await onResourceReload?.();
       setDeleteTarget('');
+      refreshResourceInBackground(onResourceReload);
     } catch (nextError) {
       setError(nextError);
     } finally {
@@ -1113,6 +1216,7 @@ function RuntimeVarList({ vars, canEdit, siteId, siteApi, onAdd, onResourceReloa
 }
 
 function RuntimeSecretDialog({ open, siteId, siteApi, onOpenChange, onResourceReload }) {
+  const nameInputRef = useRef(null);
   const [name, setName] = useState('');
   const [value, setValue] = useState('');
   const [saving, setSaving] = useState(false);
@@ -1134,8 +1238,8 @@ function RuntimeSecretDialog({ open, siteId, siteApi, onOpenChange, onResourceRe
       await siteApi.putRuntimeSecret(siteId, name.trim(), value);
       setName('');
       setValue('');
-      await onResourceReload?.();
       onOpenChange(false);
+      refreshResourceInBackground(onResourceReload);
     } catch (nextError) {
       setError(nextError);
     } finally {
@@ -1144,11 +1248,17 @@ function RuntimeSecretDialog({ open, siteId, siteApi, onOpenChange, onResourceRe
   };
 
   return (
-    <AppDialog open={open} title="添加 Secret" eyebrow="运行配置" onOpenChange={onOpenChange}>
+    <AppDialog
+      open={open}
+      title="添加 Secret"
+      eyebrow="运行配置"
+      initialFocusRef={nameInputRef}
+      onOpenChange={onOpenChange}
+    >
       <form className="dialog-form" onSubmit={submit}>
         <label className="field">
           <span>Name</span>
-          <input value={name} onChange={(event) => setName(event.target.value)} />
+          <input ref={nameInputRef} value={name} onChange={(event) => setName(event.target.value)} />
         </label>
         <label className="field">
           <span>Value</span>
@@ -1180,8 +1290,8 @@ function RuntimeSecretList({ secrets, canEdit, siteId, siteApi, onAdd, onResourc
     setDeleting(true);
     try {
       await siteApi.deleteRuntimeSecret(siteId, deleteTarget);
-      await onResourceReload?.();
       setDeleteTarget('');
+      refreshResourceInBackground(onResourceReload);
     } catch (nextError) {
       setError(nextError);
     } finally {
@@ -1269,6 +1379,11 @@ function RuntimeDeleteDialog({ open, title, targetName, description, confirmLabe
   );
 }
 
+function refreshResourceInBackground(onResourceReload) {
+  if (typeof onResourceReload !== 'function') return;
+  void onResourceReload().catch(() => {});
+}
+
 function SiteSettingsPanel({ site, siteApi, onSiteDeleted, onSiteUpdate }) {
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState(() => buildSiteOwnerSettingsForm(site));
@@ -1276,14 +1391,25 @@ function SiteSettingsPanel({ site, siteApi, onSiteDeleted, onSiteUpdate }) {
   const [saveState, setSaveState] = useState({ saving: false, error: '', notice: '' });
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleteState, setDeleteState] = useState({ deleting: false, error: null });
+  const settingsRequestGuardRef = useRef(null);
+  if (!settingsRequestGuardRef.current) {
+    settingsRequestGuardRef.current = createResourceRequestGuard(site.id);
+  }
   const canEdit = Boolean(site.permissions?.canManage);
   const canDelete = Boolean(site.permissions?.canManageAccess);
+
+  useLayoutEffect(() => {
+    settingsRequestGuardRef.current.activate(site.id);
+    return () => settingsRequestGuardRef.current.activate(null);
+  }, [site.id]);
 
   useEffect(() => {
     setForm(buildSiteOwnerSettingsForm(site));
     setEditing(false);
     setOwnerOptions({ status: 'idle', users: [], teams: [], error: null });
     setSaveState({ saving: false, error: '', notice: '' });
+    setDeleteTarget(null);
+    setDeleteState({ deleting: false, error: null });
   }, [site.id, site.owner?.type, site.owner?.id]);
 
   useEffect(() => {
@@ -1338,36 +1464,46 @@ function SiteSettingsPanel({ site, siteApi, onSiteDeleted, onSiteUpdate }) {
   const save = async (event) => {
     event.preventDefault();
     if (!canEdit || !editing) return;
+    const request = settingsRequestGuardRef.current.begin(site.id);
+    if (!request) return;
     setSaveState({ saving: true, error: '', notice: '' });
     try {
       const data = await siteApi.updateSettings(site.id, normalizeSiteOwnerSettingsPayload(form));
-      if (data?.site) onSiteUpdate?.(data.site);
+      if (!settingsRequestGuardRef.current.isCurrent(request)) return;
+      if (data?.site) onSiteUpdate?.(pickSiteOwnershipPatch(data.site));
       setEditing(false);
       setSaveState({ saving: false, error: '', notice: '站点设置已保存' });
     } catch (error) {
+      if (!settingsRequestGuardRef.current.isCurrent(request)) return;
       setSaveState({ saving: false, error: getSiteSettingsErrorMessage(error), notice: '' });
     }
   };
 
   const confirmDelete = async () => {
     if (!deleteTarget) return;
+    const request = settingsRequestGuardRef.current.begin(site.id);
+    if (!request) return;
     setDeleteState({ deleting: true, error: null });
     try {
       await siteApi.deleteSite(site.id);
+      if (!settingsRequestGuardRef.current.isCurrent(request)) return;
       setDeleteState({ deleting: false, error: null });
       onSiteDeleted?.();
     } catch (error) {
+      if (!settingsRequestGuardRef.current.isCurrent(request)) return;
       setDeleteState({ deleting: false, error });
     }
   };
 
   return (
     <section className="detail-stack">
+      <SiteTitleSettings site={site} siteApi={siteApi} canEdit={canEdit} onSiteUpdate={onSiteUpdate} />
+      <SiteSlugSettings site={site} siteApi={siteApi} canEdit={canEdit} onSiteUpdate={onSiteUpdate} />
       <form className="info-list site-settings-card" onSubmit={save}>
         <div className="panel-head">
           <div>
             <p>设置</p>
-            <h2>{site.slug || site.id || '站点'}</h2>
+            <h2>{site.displayName || site.title || site.slug || site.id || '站点'}</h2>
           </div>
           <div className="panel-actions">
             {canEdit && !editing ? (
@@ -1463,6 +1599,216 @@ function SiteSettingsPanel({ site, siteApi, onSiteDeleted, onSiteUpdate }) {
         onConfirm={confirmDelete}
       />
     </section>
+  );
+}
+
+function SiteTitleSettings({ site, siteApi, canEdit, onSiteUpdate }) {
+  const [title, setTitle] = useState(site.title || '');
+  const [state, setState] = useState({ saving: false, error: '', notice: '' });
+  const titleRequestGuardRef = useRef(null);
+  if (!titleRequestGuardRef.current) {
+    titleRequestGuardRef.current = createResourceRequestGuard(site.id);
+  }
+  const payload = normalizeSiteTitleMetadataPayload(title);
+  const dirty = payload.title !== (site.title || null);
+
+  useLayoutEffect(() => {
+    titleRequestGuardRef.current.activate(site.id);
+    return () => titleRequestGuardRef.current.activate(null);
+  }, [site.id]);
+
+  useEffect(() => {
+    setTitle(site.title || '');
+  }, [site.id, site.title]);
+
+  useEffect(() => {
+    setState({ saving: false, error: '', notice: '' });
+  }, [site.id]);
+
+  const saveTitle = async (event) => {
+    event.preventDefault();
+    if (!canEdit || state.saving || !dirty) return;
+    const request = titleRequestGuardRef.current.begin(site.id);
+    if (!request) return;
+    setState({ saving: true, error: '', notice: '' });
+    try {
+      const data = await siteApi.updateMetadata(site.id, normalizeSiteTitleMetadataPayload(title));
+      if (!titleRequestGuardRef.current.isCurrent(request)) return;
+      if (data?.site) onSiteUpdate?.({ title: data.site.title });
+      setState({ saving: false, error: '', notice: payload.title ? '名称已保存' : '名称已清空，将显示站点 URL' });
+    } catch (error) {
+      if (!titleRequestGuardRef.current.isCurrent(request)) return;
+      setState({ saving: false, error: getSiteMetadataErrorMessage(error), notice: '' });
+    }
+  };
+
+  return (
+    <form className="info-list site-metadata-card" onSubmit={saveTitle}>
+      <div className="panel-head">
+        <div>
+          <p>显示信息</p>
+          <h2>名称</h2>
+        </div>
+        <button className="primary-button" type="submit" disabled={!canEdit || state.saving || !dirty}>
+          <Save size={16} />
+          {state.saving ? '保存中' : '保存名称'}
+        </button>
+      </div>
+      <div className="site-metadata-form-body">
+        <label className="field">
+          <span>名称</span>
+          <input
+            aria-label="站点名称"
+            value={title}
+            disabled={!canEdit || state.saving}
+            onChange={(event) => {
+              setTitle(event.target.value);
+              setState((current) => ({ ...current, error: '', notice: '' }));
+            }}
+            placeholder={site.slug || '站点名称'}
+          />
+        </label>
+        <p className="field-help">最多 80 个字符。留空并保存可清除名称，界面将回退显示站点 URL。</p>
+        {!canEdit ? <div className="form-note">仅站点 owner 或团队 publisher/admin 可修改名称。</div> : null}
+        {state.notice ? <div className="form-note success" aria-live="polite">{state.notice}</div> : null}
+        {state.error ? <div className="form-error" role="alert">{state.error}</div> : null}
+      </div>
+    </form>
+  );
+}
+
+function SiteSlugSettings({ site, siteApi, canEdit, onSiteUpdate }) {
+  const [slug, setSlug] = useState(site.slug || '');
+  const [state, setState] = useState({ saving: false, error: '', notice: '' });
+  const payload = normalizeSiteSlugMetadataPayload(slug);
+  const dirty = payload.slug !== site.slug;
+  const nextHostname = siteHostnameForSlug(site, slug);
+  const siteSlugKey = `${site.id}:${site.slug}`;
+  const pollRequestGuardRef = useRef(null);
+  if (!pollRequestGuardRef.current) {
+    pollRequestGuardRef.current = createResourceRequestGuard(siteSlugKey);
+  }
+
+  useLayoutEffect(() => {
+    pollRequestGuardRef.current.activate(siteSlugKey);
+    return () => pollRequestGuardRef.current.activate(null);
+  }, [siteSlugKey]);
+
+  useEffect(() => {
+    setSlug(site.slug || '');
+  }, [site.id, site.slug]);
+
+  useEffect(() => {
+    setState({ saving: false, error: '', notice: '' });
+  }, [site.id]);
+
+  useEffect(() => {
+    if (site.routingStatus !== 'pending' || state.saving) return undefined;
+    let active = true;
+    let timer = null;
+
+    const poll = async () => {
+      const request = pollRequestGuardRef.current.begin(siteSlugKey);
+      if (!request) return;
+      try {
+        const data = await siteApi.getSite(site.id);
+        if (!active || !pollRequestGuardRef.current.isCurrent(request)) return;
+        if (data?.site) {
+          onSiteUpdate?.({
+            slug: data.site.slug,
+            hostname: data.site.hostname,
+            routingStatus: data.site.routingStatus,
+          });
+        }
+        if (data?.site?.routingStatus === 'ready') {
+          setState((current) => ({ ...current, error: '', notice: '站点 URL 已生效' }));
+          return;
+        }
+      } catch {
+        // Reconciliation remains server-owned; retry while this view is open.
+      }
+      if (active && pollRequestGuardRef.current.isCurrent(request)) timer = setTimeout(poll, 2000);
+    };
+
+    timer = setTimeout(poll, 1500);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [onSiteUpdate, site.id, site.routingStatus, site.slug, siteApi, siteSlugKey, state.saving]);
+
+  const saveSlug = async (event) => {
+    event.preventDefault();
+    if (!canEdit || state.saving || !dirty) return;
+    const previousSiteSlugKey = siteSlugKey;
+    const nextSiteSlugKey = `${site.id}:${payload.slug}`;
+    pollRequestGuardRef.current.activate(nextSiteSlugKey);
+    const request = pollRequestGuardRef.current.begin(nextSiteSlugKey);
+    setState({ saving: true, error: '', notice: '' });
+    try {
+      const data = await siteApi.updateMetadata(site.id, normalizeSiteSlugMetadataPayload(slug));
+      if (!pollRequestGuardRef.current.isCurrent(request)) return;
+      if (data?.site) {
+        pollRequestGuardRef.current.activate(`${site.id}:${data.site.slug}`);
+        onSiteUpdate?.({
+          slug: data.site.slug,
+          hostname: data.site.hostname,
+          routingStatus: data.site.routingStatus,
+        });
+      } else {
+        pollRequestGuardRef.current.activate(previousSiteSlugKey);
+      }
+      const pending = data?.warning?.code === 'SITE_METADATA_ROUTING_PENDING' || data?.site?.routingStatus === 'pending';
+      setState({
+        saving: false,
+        error: '',
+        notice: pending ? '设置已保存，地址正在生效' : '站点 URL 已保存',
+      });
+    } catch (error) {
+      if (!pollRequestGuardRef.current.isCurrent(request)) return;
+      pollRequestGuardRef.current.activate(previousSiteSlugKey);
+      setState({ saving: false, error: getSiteMetadataErrorMessage(error), notice: '' });
+    }
+  };
+
+  return (
+    <form className="info-list site-metadata-card" onSubmit={saveSlug}>
+      <div className="panel-head">
+        <div>
+          <p>访问地址</p>
+          <h2>站点 URL</h2>
+        </div>
+        <button className="primary-button" type="submit" disabled={!canEdit || state.saving || !dirty || !payload.slug}>
+          <Save size={16} />
+          {state.saving ? '保存中' : '保存 URL'}
+        </button>
+      </div>
+      <div className="site-metadata-form-body">
+        <label className="field">
+          <span>Slug</span>
+          <input
+            aria-label="站点 URL slug"
+            value={slug}
+            disabled={!canEdit || state.saving}
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            onChange={(event) => {
+              setSlug(event.target.value);
+              setState((current) => ({ ...current, error: '', notice: '' }));
+            }}
+          />
+        </label>
+        <p className="site-url-preview" title={nextHostname}>https://{nextHostname || '-'}</p>
+        <div className="form-note">
+          旧地址将停止访问，并在安全期后释放给其他站点使用；请同步更新本地 <code>xd-cell.config.json</code> 的 <code>name</code>。
+        </div>
+        {!canEdit ? <div className="form-note">仅站点 owner 或团队 publisher/admin 可修改站点 URL。</div> : null}
+        {site.routingStatus === 'pending' ? <div className="form-note">地址正在同步，页面会自动刷新状态。</div> : null}
+        {state.notice ? <div className="form-note success" aria-live="polite">{state.notice}</div> : null}
+        {state.error ? <div className="form-error" role="alert">{state.error}</div> : null}
+      </div>
+    </form>
   );
 }
 

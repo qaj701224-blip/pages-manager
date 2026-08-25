@@ -4,10 +4,38 @@ import test from 'node:test';
 import {
   buildSiteOwnerSettingsForm,
   filterSiteOwnerCandidates,
+  getSiteMetadataErrorMessage,
+  normalizeSiteSlugMetadataPayload,
+  normalizeSiteTitleMetadataPayload,
   normalizeSiteOwnerSettingsPayload,
+  siteHostnameForSlug,
   siteOwnerCandidateLabel,
   siteOwnerCandidateMeta,
 } from './site-settings-model.js';
+
+test('site metadata payloads keep title and slug mutations independent', () => {
+  assert.deepEqual(normalizeSiteTitleMetadataPayload('  产品文档  '), { title: '产品文档' });
+  assert.deepEqual(normalizeSiteTitleMetadataPayload('   '), { title: null });
+  assert.deepEqual(normalizeSiteSlugMetadataPayload('  Product-Docs  '), { slug: 'product-docs' });
+});
+
+test('site slug hostname preview preserves the environment suffix', () => {
+  assert.equal(
+    siteHostnameForSlug({ slug: 'guide', hostname: 'guide.workers.xd.team' }, 'product-docs'),
+    'product-docs.workers.xd.team'
+  );
+  assert.equal(
+    siteHostnameForSlug({ slug: 'guide', hostname: 'guide-staging.workers.xd.team' }, 'product-docs'),
+    'product-docs-staging.workers.xd.team'
+  );
+  assert.equal(siteHostnameForSlug({ slug: 'guide', hostname: 'guideline.workers.xd.team' }, 'product-docs'), 'product-docs');
+});
+
+test('site metadata errors provide field-specific actionable messages', () => {
+  assert.match(getSiteMetadataErrorMessage({ code: 'SITE_TITLE_INVALID' }), /1–80/);
+  assert.match(getSiteMetadataErrorMessage({ code: 'SITE_SLUG_CONFLICT' }), /已被占用/);
+  assert.match(getSiteMetadataErrorMessage({ code: 'SITE_METADATA_CONFLICT' }), /刷新/);
+});
 
 test('site owner settings form starts from current owner', () => {
   assert.deepEqual(buildSiteOwnerSettingsForm({ owner: { type: 'team', id: 'team_1' } }), {

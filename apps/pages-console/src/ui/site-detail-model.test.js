@@ -4,12 +4,16 @@ import test from 'node:test';
 import {
   aclSubjectPlaceholder,
   aclSubjectTypeLabel,
+  applyResourceUpdateForKey,
   appendAclEntry,
   canViewRuntimeConfig,
+  createResourceRequestGuard,
   formatSiteActionError,
   getSiteCapabilities,
   normalizeAclEntriesForForm,
   parseAclEntriesInput,
+  patchSiteStateForId,
+  pickSiteOwnershipPatch,
   removeAclEntryAt,
   siteAccessEffectLabel,
   siteAccessOptionLabel,
@@ -18,6 +22,149 @@ import {
   siteExposureAuditWarning,
   toAclUpdatePayload,
 } from './site-detail-model.js';
+
+function createDeferred() {
+  let resolve;
+  const promise = new Promise((nextResolve) => {
+    resolve = nextResolve;
+  });
+  return { promise, resolve };
+}
+
+test('resource request guard rejects stale responses after tab changes and newer requests', () => {
+  const guard = createResourceRequestGuard('site_1:config');
+  const configRequest = guard.begin('site_1:config');
+
+  assert.equal(guard.isActive('site_1:config'), true);
+
+  guard.activate('site_1:deployments');
+  const deploymentRequest = guard.begin('site_1:deployments');
+
+  assert.equal(guard.isActive('site_1:config'), false);
+  assert.equal(guard.isActive('site_1:deployments'), true);
+  assert.equal(guard.isCurrent(configRequest), false);
+  assert.equal(guard.isCurrent(deploymentRequest), true);
+  assert.equal(guard.begin('site_1:config'), null);
+  assert.equal(guard.isCurrent(deploymentRequest), true);
+
+  const newerDeploymentRequest = guard.begin('site_1:deployments');
+  assert.equal(guard.isCurrent(deploymentRequest), false);
+  assert.equal(guard.isCurrent(newerDeploymentRequest), true);
+});
+
+test('resource request guard rejects an old lifecycle after the same key is activated again', () => {
+  const guard = createResourceRequestGuard('site_1:access');
+  const previousVisit = guard.begin('site_1:access');
+
+  guard.activate(null);
+  guard.activate('site_1:access');
+  const currentVisit = guard.begin('site_1:access');
+
+  assert.equal(guard.isCurrent(previousVisit), false);
+  assert.equal(guard.isCurrent(currentVisit), true);
+});
+
+test('delayed slug polling cannot overwrite a later slug mutation', async () => {
+  const guard = createResourceRequestGuard('site_1:first-slug');
+  const delayedPoll = createDeferred();
+  let visibleSlug = 'first-slug';
+  const pollRequest = guard.begin('site_1:first-slug');
+  const poll = delayedPoll.promise.then((data) => {
+    if (guard.isCurrent(pollRequest)) visibleSlug = data.slug;
+  });
+
+  guard.activate('site_1:second-slug');
+  const mutationRequest = guard.begin('site_1:second-slug');
+  visibleSlug = 'second-slug';
+  delayedPoll.resolve({ slug: 'first-slug' });
+  await poll;
+
+  assert.equal(guard.isCurrent(mutationRequest), true);
+  assert.equal(visibleSlug, 'second-slug');
+});
+
+test('deferred resource mutation cannot overwrite the resource loaded after navigation', async () => {
+  const guard = createResourceRequestGuard('site_1:access');
+  const deferred = createDeferred();
+  let state = { status: 'ready', data: { access: { visibility: 'org' } }, error: null };
+  const mutation = deferred.promise.then((data) => {
+    state = applyResourceUpdateForKey(guard, 'site_1:access', state, data);
+  });
+
+  guard.activate('site_1:deployments');
+  const deploymentsState = { status: 'ready', data: { deployments: [{ id: 'dep_1' }] }, error: null };
+  state = deploymentsState;
+  deferred.resolve({ access: { visibility: 'acl' } });
+  await mutation;
+
+  assert.strictEqual(state, deploymentsState);
+});
+
+test('resource mutation updates the matching active resource', () => {
+  const guard = createResourceRequestGuard('site_1:access');
+  const currentState = { status: 'loading', data: null, error: null };
+  const data = { access: { visibility: 'acl' } };
+
+  assert.deepEqual(applyResourceUpdateForKey(guard, 'site_1:access', currentState, data), {
+    status: 'ready',
+    data,
+    error: null,
+  });
+});
+
+test('deferred site mutation cannot patch a different site or clear its error', async () => {
+  const deferred = createDeferred();
+  let state = { status: 'ready', site: { id: 'site_1', title: null, slug: 'one' }, error: null };
+  const mutation = deferred.promise.then((patch) => {
+    state = patchSiteStateForId(state, 'site_1', patch);
+  });
+
+  const currentError = new Error('current site refresh failed');
+  const currentState = {
+    status: 'ready',
+    site: { id: 'site_2', title: 'Two', slug: 'two', displayName: 'Two' },
+    error: currentError,
+  };
+  state = currentState;
+  deferred.resolve({ title: 'Stale title' });
+  await mutation;
+
+  assert.strictEqual(state, currentState);
+  assert.strictEqual(state.error, currentError);
+});
+
+test('site mutation patches the matching site and refreshes its display name', () => {
+  const currentState = {
+    status: 'ready',
+    site: { id: 'site_1', title: null, slug: 'one', displayName: 'one' },
+    error: new Error('stale refresh error'),
+  };
+
+  assert.deepEqual(patchSiteStateForId(currentState, 'site_1', { title: 'One' }), {
+    status: 'ready',
+    site: { id: 'site_1', title: 'One', slug: 'one', displayName: 'One' },
+    error: null,
+  });
+});
+
+test('site ownership patches do not overwrite independently mutable metadata', () => {
+  assert.deepEqual(
+    pickSiteOwnershipPatch({
+      id: 'site_1',
+      title: 'stale title',
+      slug: 'stale-slug',
+      hostname: 'stale-slug.workers.xd.team',
+      routingStatus: 'ready',
+      owner: { type: 'team', id: 'team_1' },
+      permissions: { role: 'publisher', canManage: true, canManageAccess: false },
+      updatedAt: '2026-08-25T00:00:00.000Z',
+    }),
+    {
+      owner: { type: 'team', id: 'team_1' },
+      permissions: { role: 'publisher', canManage: true, canManageAccess: false },
+    }
+  );
+});
 
 test('runtime config visibility follows effective role while preserving platform admin access', () => {
   assert.equal(canViewRuntimeConfig({ permissions: { role: 'admin', canManage: true } }), true);

@@ -1,4 +1,5 @@
 import { createRollbackLeaseAcquisition } from '../../application/deployments/acquire-rollback-lease.js';
+import { createAuthorizeDeploymentCommit } from '../../application/deployments/authorize-commit.js';
 import { createRollbackRouteCutover } from '../../application/deployments/activate-rollback-route.js';
 import { createDeploymentRouteActivation } from '../../application/deployments/activate-route.js';
 import { createDeploymentRouteCutover } from '../../application/deployments/activate-route-cutover.js';
@@ -18,6 +19,7 @@ import { createDeploymentVersionsPort } from '../../application/ports/deployment
 import { createRollbackLeasePort } from '../../application/ports/rollback-lease.js';
 import { createRollbackOfficeNetVersionsPort } from '../../application/ports/rollback-office-net-versions.js';
 import { createRollbackRouteStatePort } from '../../application/ports/rollback-route-state.js';
+import { createSiteOwnershipPort } from '../../application/ports/site-ownership.js';
 import { runtimeSecretSnapshotRecords } from '../../deployment-runtime-config.js';
 import { finishDeploymentStage, recordDeploymentStage, startDeploymentStage } from '../../deployment-trace.js';
 import { createDeploymentProvider } from '../../execution-provider.js';
@@ -167,6 +169,13 @@ export function createDeploymentRouteActivationPreparationApplication(store, env
     routeSnapshots: {
       assertConverged: ({ route, environment }) => assertRouteSnapshotConverged(env, store, route, environment),
     },
+  });
+}
+
+export function createDeploymentCommitAuthorizationApplication(store, env) {
+  return createAuthorizeDeploymentCommit({
+    sites: createSiteOwnershipPort(store),
+    clock: { now: () => readNow(env) },
   });
 }
 

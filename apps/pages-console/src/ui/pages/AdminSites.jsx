@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { listAdminSites } from '../api.js';
 import {
   adminSiteOwnerView,
   filterAdminSites,
+  patchSiteSummaryForId,
   siteDeploymentShapeLabel,
   siteExposureLabel,
   sitePublicUrl,
@@ -42,6 +43,12 @@ export function AdminSites({ siteId, subpage }) {
     if (!siteId) return null;
     return state.sites.find((site) => site.id === siteId) || null;
   }, [siteId, state.sites]);
+  const patchListedSite = useCallback((updatedSiteId, patch) => {
+    setState((current) => ({
+      ...current,
+      sites: patchSiteSummaryForId(current.sites, updatedSiteId, patch),
+    }));
+  }, []);
 
   if (state.status === 'loading') return <div className="placeholder">加载中</div>;
   if (state.status === 'error') return <AdminError title="站点列表加载失败" error={state.error} />;
@@ -58,6 +65,7 @@ export function AdminSites({ siteId, subpage }) {
         basePath={`/admin/sites/${encodeURIComponent(siteId)}`}
         backTo="/admin/sites"
         backLabel="返回站点管理"
+        onSiteChange={patchListedSite}
       />
     );
   }
@@ -68,7 +76,7 @@ export function AdminSites({ siteId, subpage }) {
       <div className="list-toolbar admin-list-toolbar" aria-label="站点管理筛选">
         <label className="list-search">
           <span>搜索站点</span>
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索 slug、域名、Owner" />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称、slug、域名、Owner" />
         </label>
         <div className="segmented compact-segmented" role="tablist" aria-label="Owner 类型">
           {[
@@ -152,7 +160,7 @@ function AdminSiteRow({ site }) {
   return (
     <tr>
       <td data-label="站点">
-        <strong>{site.slug}</strong>
+        <strong>{site.displayName || site.title || site.slug}</strong>
         {url && isSafeExternalUrl(url) ? (
           <a href={url} target="_blank" rel="noopener noreferrer">
             {url}

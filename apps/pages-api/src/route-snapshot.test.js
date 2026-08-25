@@ -15,7 +15,14 @@ import {
 
 test('builds immutable route snapshot from authority records', () => {
   const snapshot = buildRouteSnapshot({
-    site: { id: 'site_1', slug: 'docs', siteUuid: 'uuid_1', ownerUserId: 'usr_owner', requiredSessionVersion: 4 },
+    site: {
+      id: 'site_1',
+      slug: 'docs',
+      dataNamespace: 'legacy-docs',
+      siteUuid: 'uuid_1',
+      ownerUserId: 'usr_owner',
+      requiredSessionVersion: 4,
+    },
     route: {
       id: 'route_1',
       hostname: 'docs.pages.xd.team',
@@ -42,13 +49,15 @@ test('builds immutable route snapshot from authority records', () => {
   });
 
   assert.deepEqual(snapshot, {
-    schemaVersion: 3,
+    schemaVersion: 4,
+    kind: 'serve',
     routeId: 'route_1',
     hostname: 'docs.pages.xd.team',
     environment: 'production',
     siteId: 'site_1',
     siteUuid: 'uuid_1',
     slug: 'docs',
+    dataNamespace: 'legacy-docs',
     ownerUserId: 'usr_owner',
     requiredSessionVersion: 4,
     runtime: 'worker',
@@ -173,6 +182,41 @@ test('repairs a missing or lower pointer without changing the snapshot policy ve
   assert.deepEqual((await readRouteSnapshotState(target, snapshot)).state, 'exact');
 });
 
+test('does not repair an active pointer whose snapshot belongs to a different site', async () => {
+  const writes = new Map();
+  const target = {
+    get: async (key) => (writes.has(key) ? JSON.stringify(writes.get(key)) : null),
+    put: async (key, value) => writes.set(key, JSON.parse(value)),
+  };
+  const route = {
+    id: 'route_new',
+    hostname: 'docs.pages.xd.team',
+    environment: 'production',
+    runtime: 'wfp',
+    workerName: 'pages-v2-docs-new',
+    activeVersionId: 'ver_new',
+    visibility: 'org',
+    policyVersion: 1,
+    routeGeneration: 1,
+    routeStatus: 'active',
+    cacheTier: 'fast',
+  };
+  const previous = buildRouteSnapshot({
+    site: { id: 'site_previous', slug: 'docs', siteUuid: 'uuid_previous' },
+    route: { ...route, id: 'route_previous', workerName: 'pages-v2-docs-previous', activeVersionId: 'ver_previous' },
+    version: { id: 'ver_previous', contentHash: 'sha256:previous', ...workerOnlyDecision() },
+  });
+  const current = buildRouteSnapshot({
+    site: { id: 'site_current', slug: 'docs', siteUuid: 'uuid_current' },
+    route,
+    version: { id: 'ver_new', contentHash: 'sha256:current', ...workerOnlyDecision() },
+  });
+  await writeRouteSnapshot(target, previous);
+
+  await assert.rejects(() => repairRouteSnapshot(target, current), /ROUTE_POINTER_OWNER_CHANGED/);
+  assert.equal(writes.get('production:route_pointer:docs.pages.xd.team').snapshotKey.includes('site_previous'), true);
+});
+
 test('does not overwrite a pointer that is ahead of the authority snapshot', async () => {
   const writes = new Map([
     [
@@ -246,14 +290,56 @@ test('writes immutable snapshot and pointer records', async () => {
     snapshot
   );
 
-  assert.equal(writes.get('production:route_snapshot:docs.pages.xd.team:2:1').activeVersionId, 'ver_1');
+  assert.equal(writes.get('production:route_snapshot:docs.pages.xd.team:site_1:2:1').activeVersionId, 'ver_1');
   assert.deepEqual(writes.get('production:route_pointer:docs.pages.xd.team'), {
     hostname: 'docs.pages.xd.team',
     environment: 'production',
     routeGeneration: 2,
     policyVersion: 1,
-    snapshotKey: 'production:route_snapshot:docs.pages.xd.team:2:1',
+    snapshotKey: 'production:route_snapshot:docs.pages.xd.team:site_1:2:1',
   });
+});
+
+test('keeps v4 snapshots immutable when a hostname is reused with the same route tuple', async () => {
+  const writes = new Map();
+  const target = {
+    get: async (key) => (writes.has(key) ? JSON.stringify(writes.get(key)) : null),
+    put: async (key, value) => writes.set(key, JSON.parse(value)),
+  };
+  const previous = buildRouteSnapshot({
+    site: { id: 'site_previous', slug: 'docs', siteUuid: 'uuid_previous' },
+    route: {
+      id: 'route_previous',
+      hostname: 'docs.pages.xd.team',
+      environment: 'production',
+      runtime: 'wfp',
+      workerName: 'pages-v2-docs-previous',
+      activeVersionId: 'ver_previous',
+      visibility: 'org',
+      policyVersion: 1,
+      routeGeneration: 2,
+      routeStatus: 'active',
+      cacheTier: 'fast',
+    },
+    version: { id: 'ver_previous', contentHash: 'sha256:previous', ...workerOnlyDecision() },
+  });
+  const replacement = {
+    ...previous,
+    siteId: 'site_replacement',
+    siteUuid: 'uuid_replacement',
+    routeId: 'route_replacement',
+    workerName: 'pages-v2-docs-replacement',
+    activeVersionId: 'ver_replacement',
+    contentHash: 'sha256:replacement',
+  };
+
+  const previousWrite = await writeRouteSnapshot(target, previous);
+  writes.delete('production:route_pointer:docs.pages.xd.team');
+  const replacementWrite = await writeRouteSnapshot(target, replacement);
+
+  assert.notEqual(previousWrite.snapshotKey, replacementWrite.snapshotKey);
+  assert.equal(writes.get(previousWrite.snapshotKey).siteId, 'site_previous');
+  assert.equal(writes.get(replacementWrite.snapshotKey).siteId, 'site_replacement');
 });
 
 test('does not overwrite a newer route pointer with a stale snapshot', async () => {
@@ -407,6 +493,68 @@ test('RoutePointerDO treats KV pointer write as the route commit point', async (
   assert.equal(writes.get(body.pointer.snapshotKey).activeVersionId, 'ver_1');
 });
 
+test('route repair confirms durable pointer state before reporting the route ready', async () => {
+  const writes = new Map();
+  const durableRecords = new Map();
+  let remainingPutFailures = 1;
+  const state = {
+    storage: {
+      async get(key) {
+        return durableRecords.get(key);
+      },
+      async put(key, value) {
+        if (remainingPutFailures > 0) {
+          remainingPutFailures -= 1;
+          throw new Error('durable state write failed');
+        }
+        durableRecords.set(key, value);
+      },
+    },
+  };
+  const routeSnapshots = {
+    get: async (key) => (writes.has(key) ? JSON.stringify(writes.get(key)) : null),
+    put: async (key, value) => writes.set(key, JSON.parse(value)),
+  };
+  const durableObject = new RoutePointerDO(state, { ROUTE_SNAPSHOTS: routeSnapshots });
+  const target = {
+    ROUTE_SNAPSHOTS: routeSnapshots,
+    ROUTE_POINTER_LOCKS: {
+      idFromName: (name) => name,
+      get: () => ({ fetch: (request) => durableObject.fetch(request) }),
+    },
+  };
+  const snapshot = buildRouteSnapshot({
+    site: { id: 'site_1', slug: 'docs', siteUuid: 'uuid_1' },
+    route: {
+      id: 'route_1',
+      hostname: 'docs.pages.xd.team',
+      environment: 'production',
+      runtime: 'wfp',
+      workerName: 'pages-v2-docs-ver-1',
+      activeVersionId: 'ver_1',
+      visibility: 'org',
+      policyVersion: 1,
+      routeGeneration: 2,
+      routeStatus: 'active',
+      cacheTier: 'fast',
+    },
+    version: { id: 'ver_1', contentHash: 'sha256:abc', ...workerOnlyDecision() },
+  });
+
+  const pending = await repairRouteSnapshot(target, snapshot);
+
+  assert.equal(pending.state, 'exact');
+  assert.equal(pending.pointerConfirmed, false);
+  assert.equal(durableRecords.has('pointer'), false);
+
+  const ready = await repairRouteSnapshot(target, snapshot);
+
+  assert.equal(ready.state, 'exact');
+  assert.equal(ready.pointerConfirmed, true);
+  assert.equal(durableRecords.get('pointer').siteId, 'site_1');
+  assert.equal(durableRecords.get('pointer').routeId, 'route_1');
+});
+
 test('RoutePointerDO conditionally clears the current pointer without deleting a newer writer result', async () => {
   const pointerKey = 'production:route_pointer:docs.pages.xd.team';
   const writes = new Map([
@@ -467,6 +615,246 @@ test('RoutePointerDO conditionally clears the current pointer without deleting a
   assert.equal(writes.get(pointerKey).policyVersion, 4);
 });
 
+test('RoutePointerDO finishes pointer cleanup before publishing a replacement owner', async () => {
+  const pointerKey = 'production:route_pointer:old-docs.pages.xd.team';
+  const writes = new Map();
+  let signalDeleteStarted;
+  let releaseDelete;
+  const deleteStarted = new Promise((resolve) => {
+    signalDeleteStarted = resolve;
+  });
+  const deleteCanFinish = new Promise((resolve) => {
+    releaseDelete = resolve;
+  });
+  let blockPointerDelete = false;
+  const routeSnapshots = {
+    get: async (key) => (writes.has(key) ? JSON.stringify(writes.get(key)) : null),
+    put: async (key, value) => writes.set(key, JSON.parse(value)),
+    delete: async (key) => {
+      if (blockPointerDelete && key === pointerKey) {
+        signalDeleteStarted();
+        await deleteCanFinish;
+      }
+      writes.delete(key);
+    },
+  };
+  const durableObject = new RoutePointerDO(createDoState(), { ROUTE_SNAPSHOTS: routeSnapshots });
+  const oldSnapshot = {
+    schemaVersion: 4,
+    kind: 'serve',
+    hostname: 'old-docs.pages.xd.team',
+    environment: 'production',
+    siteId: 'site_old',
+    routeId: 'route_old',
+    routeGeneration: 2,
+    policyVersion: 1,
+    routeStatus: 'active',
+    runtime: 'wfp',
+  };
+  const replacementSnapshot = {
+    ...oldSnapshot,
+    siteId: 'site_new',
+    routeId: 'route_new',
+    routeGeneration: 1,
+  };
+
+  assert.equal((await durableObject.fetch(writeRequest(oldSnapshot))).status, 200);
+  blockPointerDelete = true;
+  const clearPromise = durableObject.fetch(
+    writeClearRequest({
+      hostname: oldSnapshot.hostname,
+      environment: oldSnapshot.environment,
+      siteId: oldSnapshot.siteId,
+      routeId: oldSnapshot.routeId,
+      routeGeneration: 3,
+      policyVersion: oldSnapshot.policyVersion,
+      snapshotKey: 'production:route_snapshot:old-docs.pages.xd.team:site_old:3:1',
+    }),
+  );
+  await deleteStarted;
+
+  let replacementSettled = false;
+  const replacementPromise = durableObject.fetch(writeRequest(replacementSnapshot)).then((response) => {
+    replacementSettled = true;
+    return response;
+  });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(replacementSettled, false);
+  } finally {
+    releaseDelete();
+  }
+
+  assert.equal((await clearPromise).status, 200);
+  assert.equal((await replacementPromise).status, 200);
+  assert.equal(writes.get(pointerKey).snapshotKey, 'production:route_snapshot:old-docs.pages.xd.team:site_new:1:1');
+});
+
+test('RoutePointerDO clears retired hostnames only for the expected site and route', async () => {
+  const pointerKey = 'production:route_pointer:old-docs.pages.xd.team';
+  const snapshotKey = 'production:route_snapshot:old-docs.pages.xd.team:2:3';
+  const pointer = {
+    hostname: 'old-docs.pages.xd.team',
+    environment: 'production',
+    routeGeneration: 2,
+    policyVersion: 3,
+    snapshotKey,
+  };
+  const snapshot = {
+    schemaVersion: 3,
+    hostname: pointer.hostname,
+    environment: pointer.environment,
+    siteId: 'site_old',
+    routeId: 'route_old',
+    routeGeneration: pointer.routeGeneration,
+    policyVersion: pointer.policyVersion,
+  };
+  const writes = new Map([
+    [pointerKey, pointer],
+    [snapshotKey, snapshot],
+  ]);
+  const routeSnapshots = {
+    get: async (key) => (writes.has(key) ? JSON.stringify(writes.get(key)) : null),
+    delete: async (key) => writes.delete(key),
+  };
+  const durableObject = new RoutePointerDO(createDoState(), { ROUTE_SNAPSHOTS: routeSnapshots });
+  const target = {
+    ROUTE_SNAPSHOTS: routeSnapshots,
+    ROUTE_POINTER_LOCKS: {
+      idFromName: () => 'old-docs-pointer',
+      get: () => ({ fetch: (request) => durableObject.fetch(request) }),
+    },
+  };
+  const expected = {
+    ...pointer,
+    routeGeneration: 3,
+    siteId: 'site_expected',
+    routeId: 'route_old',
+  };
+
+  assert.equal(await clearRoutePointerIfCurrent(target, expected), false);
+  assert.equal(writes.has(pointerKey), true);
+
+  assert.equal(await clearRoutePointerIfCurrent(target, { ...expected, siteId: 'site_old' }), true);
+  assert.equal(writes.has(pointerKey), false);
+  assert.equal(await clearRoutePointerIfCurrent(target, { ...expected, siteId: 'site_old' }), true);
+});
+
+test('RoutePointerDO fences delayed writes from a cleared route identity', async () => {
+  const pointerKey = 'production:route_pointer:old-docs.pages.xd.team';
+  const writes = new Map();
+  const durableObject = new RoutePointerDO(createDoState(), {
+    ROUTE_SNAPSHOTS: {
+      get: async (key) => (writes.has(key) ? JSON.stringify(writes.get(key)) : null),
+      put: async (key, value) => writes.set(key, JSON.parse(value)),
+      delete: async (key) => writes.delete(key),
+    },
+  });
+  const oldSnapshot = {
+    schemaVersion: 4,
+    kind: 'serve',
+    hostname: 'old-docs.pages.xd.team',
+    environment: 'production',
+    siteId: 'site_old',
+    routeId: 'route_old',
+    routeGeneration: 2,
+    policyVersion: 1,
+  };
+
+  assert.equal((await durableObject.fetch(writeRequest(oldSnapshot))).status, 200);
+  assert.equal(
+    (
+      await durableObject.fetch(
+        writeClearRequest({
+          hostname: oldSnapshot.hostname,
+          environment: oldSnapshot.environment,
+          siteId: oldSnapshot.siteId,
+          routeId: oldSnapshot.routeId,
+          routeGeneration: 3,
+          policyVersion: 1,
+          snapshotKey: 'production:route_snapshot:old-docs.pages.xd.team:3:1',
+        }),
+      )
+    ).status,
+    200,
+  );
+  assert.equal(writes.has(pointerKey), false);
+
+  assert.equal((await durableObject.fetch(writeRequest(oldSnapshot))).status, 409);
+  assert.equal(writes.has(pointerKey), false);
+
+  const replacementSnapshot = {
+    ...oldSnapshot,
+    siteId: 'site_new',
+    routeId: 'route_new',
+    routeGeneration: 1,
+  };
+  assert.equal((await durableObject.fetch(writeRequest(replacementSnapshot))).status, 200);
+  assert.equal(writes.get(pointerKey).snapshotKey, 'production:route_snapshot:old-docs.pages.xd.team:site_new:1:1');
+
+  assert.equal(
+    (
+      await durableObject.fetch(
+        writeRequest({ ...oldSnapshot, routeGeneration: 4 }),
+      )
+    ).status,
+    409,
+  );
+  assert.equal(writes.get(pointerKey).snapshotKey, 'production:route_snapshot:old-docs.pages.xd.team:site_new:1:1');
+});
+
+test('RoutePointerDO does not clear a missing KV pointer after durable ownership changed', async () => {
+  const pointerKey = 'production:route_pointer:old-docs.pages.xd.team';
+  const writes = new Map();
+  const durableObject = new RoutePointerDO(createDoState(), {
+    ROUTE_SNAPSHOTS: {
+      get: async (key) => (writes.has(key) ? JSON.stringify(writes.get(key)) : null),
+      put: async (key, value) => writes.set(key, JSON.parse(value)),
+      delete: async (key) => writes.delete(key),
+    },
+  });
+  const deletedSnapshot = {
+    schemaVersion: 4,
+    kind: 'serve',
+    hostname: 'old-docs.pages.xd.team',
+    environment: 'production',
+    siteId: 'site_old',
+    routeId: 'route_old',
+    routeGeneration: 3,
+    policyVersion: 1,
+    routeStatus: 'deleted',
+    runtime: 'disabled',
+  };
+  const replacementSnapshot = {
+    ...deletedSnapshot,
+    siteId: 'site_new',
+    routeId: 'route_new',
+    routeGeneration: 1,
+    routeStatus: 'active',
+    runtime: 'wfp',
+  };
+
+  assert.equal((await durableObject.fetch(writeRequest(deletedSnapshot))).status, 200);
+  assert.equal((await durableObject.fetch(writeRequest(replacementSnapshot))).status, 200);
+  writes.delete(pointerKey);
+
+  const clearResponse = await durableObject.fetch(
+    writeClearRequest({
+      hostname: deletedSnapshot.hostname,
+      environment: deletedSnapshot.environment,
+      siteId: deletedSnapshot.siteId,
+      routeId: deletedSnapshot.routeId,
+      routeGeneration: deletedSnapshot.routeGeneration,
+      policyVersion: deletedSnapshot.policyVersion,
+      snapshotKey: 'production:route_snapshot:old-docs.pages.xd.team:site_old:3:1',
+    }),
+  );
+
+  assert.equal(clearResponse.status, 409);
+  assert.deepEqual(await clearResponse.json(), { cleared: false, reason: 'POINTER_STATE_CHANGED' });
+  assert.equal((await durableObject.fetch(writeRequest({ ...deletedSnapshot, routeGeneration: 4 }))).status, 409);
+});
+
 test('RoutePointerDO force-clears an ahead public pointer but preserves an ahead internal pointer', async () => {
   const pointerKey = 'production:route_pointer:docs.pages.xd.team';
   const aheadPointer = {
@@ -510,51 +898,339 @@ test('RoutePointerDO force-clears an ahead public pointer but preserves an ahead
   assert.deepEqual(writes.get(pointerKey), aheadPointer);
 });
 
-test('RoutePointerDO reports durable pointer cleanup failure after KV pointer removal', async () => {
+test('RoutePointerDO keeps the route tombstone when KV pointer cleanup must be retried', async () => {
   const pointerKey = 'production:route_pointer:docs.pages.xd.team';
+  const snapshotKey = 'production:route_snapshot:docs.pages.xd.team:2:3';
   const pointer = {
     hostname: 'docs.pages.xd.team',
     environment: 'production',
     routeGeneration: 2,
     policyVersion: 3,
-    snapshotKey: 'production:route_snapshot:docs.pages.xd.team:2:3',
+    snapshotKey,
   };
-  const writes = new Map([[pointerKey, pointer]]);
+  const snapshot = {
+    schemaVersion: 4,
+    kind: 'serve',
+    ...pointer,
+    siteId: 'site_1',
+    routeId: 'route_1',
+  };
+  const writes = new Map([
+    [pointerKey, pointer],
+    [snapshotKey, snapshot],
+  ]);
+  let pointerDeleteFails = true;
+  const routeSnapshots = {
+    get: async (key) => (writes.has(key) ? JSON.stringify(writes.get(key)) : null),
+    put: async (key, value) => writes.set(key, JSON.parse(value)),
+    delete: async (key) => {
+      if (pointerDeleteFails) throw new Error('route snapshot KV unavailable');
+      writes.delete(key);
+    },
+  };
+  const durableObject = new RoutePointerDO(createDoState(), { ROUTE_SNAPSHOTS: routeSnapshots });
+  const expectedPointer = { ...pointer, siteId: snapshot.siteId, routeId: snapshot.routeId };
+  const response = await durableObject.fetch(
+    writeClearRequest(expectedPointer)
+  );
+
+  assert.equal(response.status, 409);
+  assert.equal(writes.has(pointerKey), true);
+  assert.equal((await durableObject.fetch(writeRequest(snapshot))).status, 409);
+
+  pointerDeleteFails = false;
+  assert.equal((await durableObject.fetch(writeClearRequest(expectedPointer))).status, 200);
+  assert.equal(writes.has(pointerKey), false);
+});
+
+test('RoutePointerDO allows a new owner to replace a deleted snapshot when pointer cleanup never reached the DO', async () => {
+  const pointerKey = 'production:route_pointer:docs.pages.xd.team';
+  const writes = new Map();
+  const durableObject = new RoutePointerDO(createDoState(), {
+    ROUTE_SNAPSHOTS: {
+      get: async (key) => (writes.has(key) ? JSON.stringify(writes.get(key)) : null),
+      put: async (key, value) => writes.set(key, JSON.parse(value)),
+      delete: async (key) => writes.delete(key),
+    },
+  });
+  const activeSnapshot = {
+    schemaVersion: 4,
+    kind: 'serve',
+    hostname: 'docs.pages.xd.team',
+    environment: 'production',
+    siteId: 'site_old',
+    routeId: 'route_old',
+    routeGeneration: 2,
+    policyVersion: 1,
+    routeStatus: 'active',
+    runtime: 'wfp',
+  };
+  const deletedSnapshot = {
+    ...activeSnapshot,
+    routeGeneration: 3,
+    routeStatus: 'deleted',
+    runtime: 'disabled',
+  };
+  const replacementSnapshot = {
+    ...activeSnapshot,
+    siteId: 'site_new',
+    routeId: 'route_new',
+    routeGeneration: 1,
+  };
+
+  assert.equal((await durableObject.fetch(writeRequest(activeSnapshot))).status, 200);
+  assert.equal((await durableObject.fetch(writeRequest({ ...replacementSnapshot, routeGeneration: 4 }))).status, 409);
+  assert.equal((await durableObject.fetch(writeRequest(deletedSnapshot))).status, 200);
+
+  assert.equal((await durableObject.fetch(writeRequest(replacementSnapshot))).status, 200);
+  assert.equal(writes.get(pointerKey).snapshotKey, 'production:route_snapshot:docs.pages.xd.team:site_new:1:1');
+  assert.equal((await durableObject.fetch(writeRequest({ ...deletedSnapshot, routeGeneration: 4 }))).status, 409);
+});
+
+test('RoutePointerDO persists a new owner fence before publishing its KV pointer', async () => {
+  const pointerKey = 'production:route_pointer:docs.pages.xd.team';
+  const writes = new Map();
+  const durableRecords = new Map();
+  let failNextDurablePut = false;
+  const state = {
+    storage: {
+      async get(key) {
+        return durableRecords.get(key);
+      },
+      async put(key, value) {
+        if (failNextDurablePut) {
+          failNextDurablePut = false;
+          throw new Error('durable state write failed');
+        }
+        durableRecords.set(key, value);
+      },
+    },
+  };
+  const routeSnapshots = {
+    get: async (key) => (writes.has(key) ? JSON.stringify(writes.get(key)) : null),
+    put: async (key, value) => writes.set(key, JSON.parse(value)),
+  };
+  const durableObject = new RoutePointerDO(state, { ROUTE_SNAPSHOTS: routeSnapshots });
+  const deletedSnapshot = {
+    schemaVersion: 4,
+    kind: 'serve',
+    hostname: 'docs.pages.xd.team',
+    environment: 'production',
+    siteId: 'site_old',
+    routeId: 'route_old',
+    routeGeneration: 3,
+    policyVersion: 1,
+    routeStatus: 'deleted',
+    runtime: 'disabled',
+  };
+  const replacementSnapshot = {
+    ...deletedSnapshot,
+    siteId: 'site_new',
+    routeId: 'route_new',
+    routeGeneration: 1,
+    routeStatus: 'active',
+    runtime: 'wfp',
+  };
+
+  assert.equal((await durableObject.fetch(writeRequest(deletedSnapshot))).status, 200);
+  const oldPointer = writes.get(pointerKey);
+
+  failNextDurablePut = true;
+  const failedReplacement = await durableObject.fetch(writeRequest(replacementSnapshot));
+
+  assert.equal(failedReplacement.status, 409);
+  assert.deepEqual(writes.get(pointerKey), oldPointer);
+  assert.equal(durableRecords.get('pointer').siteId, 'site_old');
+
+  assert.equal((await durableObject.fetch(writeRequest(replacementSnapshot))).status, 200);
+  assert.equal(durableRecords.get('pointer').siteId, 'site_new');
+  assert.equal(writes.get(pointerKey).snapshotKey, 'production:route_snapshot:docs.pages.xd.team:site_new:1:1');
+  assert.equal((await durableObject.fetch(writeRequest({ ...deletedSnapshot, routeGeneration: 4 }))).status, 409);
+});
+
+test('RoutePointerDO retries a fenced owner replacement after its KV write fails', async () => {
+  const pointerKey = 'production:route_pointer:docs.pages.xd.team';
+  const writes = new Map();
+  const durableRecords = new Map();
+  let failReplacementSnapshotPut = false;
+  const state = {
+    storage: {
+      async get(key) {
+        return durableRecords.get(key);
+      },
+      async put(key, value) {
+        durableRecords.set(key, value);
+      },
+    },
+  };
+  const routeSnapshots = {
+    get: async (key) => (writes.has(key) ? JSON.stringify(writes.get(key)) : null),
+    put: async (key, value) => {
+      if (failReplacementSnapshotPut && key.includes(':site_new:')) {
+        failReplacementSnapshotPut = false;
+        throw new Error('route snapshot KV unavailable');
+      }
+      writes.set(key, JSON.parse(value));
+    },
+  };
+  const durableObject = new RoutePointerDO(state, { ROUTE_SNAPSHOTS: routeSnapshots });
+  const deletedSnapshot = {
+    schemaVersion: 4,
+    kind: 'serve',
+    hostname: 'docs.pages.xd.team',
+    environment: 'production',
+    siteId: 'site_old',
+    routeId: 'route_old',
+    routeGeneration: 3,
+    policyVersion: 1,
+    routeStatus: 'deleted',
+    runtime: 'disabled',
+  };
+  const replacementSnapshot = {
+    ...deletedSnapshot,
+    siteId: 'site_new',
+    routeId: 'route_new',
+    routeGeneration: 2,
+    routeStatus: 'active',
+    runtime: 'wfp',
+  };
+
+  assert.equal((await durableObject.fetch(writeRequest(deletedSnapshot))).status, 200);
+  const deletedPointer = writes.get(pointerKey);
+
+  failReplacementSnapshotPut = true;
+  assert.equal((await durableObject.fetch(writeRequest(replacementSnapshot))).status, 409);
+  assert.equal(durableRecords.get('pointer').siteId, 'site_new');
+  assert.deepEqual(writes.get(pointerKey), deletedPointer);
+
+  const staleReplacement = await durableObject.fetch(
+    writeRequest({ ...replacementSnapshot, routeGeneration: 1 }),
+  );
+  assert.equal(staleReplacement.status, 409);
+  assert.deepEqual(writes.get(pointerKey), deletedPointer);
+
+  assert.equal((await durableObject.fetch(writeRequest(replacementSnapshot))).status, 200);
+  assert.equal(writes.get(pointerKey).snapshotKey, 'production:route_snapshot:docs.pages.xd.team:site_new:2:1');
+  assert.equal((await durableObject.fetch(writeRequest({ ...deletedSnapshot, routeGeneration: 4 }))).status, 409);
+});
+
+test('route repair lets a new owner replace an ahead deleted pointer after the reuse hold', async () => {
+  const pointerKey = 'production:route_pointer:docs.pages.xd.team';
+  const writes = new Map();
+  const durableObject = new RoutePointerDO(createDoState(), {
+    ROUTE_SNAPSHOTS: {
+      get: async (key) => (writes.has(key) ? JSON.stringify(writes.get(key)) : null),
+      put: async (key, value) => writes.set(key, JSON.parse(value)),
+      delete: async (key) => writes.delete(key),
+    },
+  });
+  const target = {
+    ROUTE_SNAPSHOTS: durableObject.env.ROUTE_SNAPSHOTS,
+    ROUTE_POINTER_LOCKS: {
+      idFromName: () => 'docs-pointer',
+      get: () => ({ fetch: (request) => durableObject.fetch(request) }),
+    },
+  };
+  const deletedSnapshot = {
+    schemaVersion: 4,
+    kind: 'serve',
+    hostname: 'docs.pages.xd.team',
+    environment: 'production',
+    siteId: 'site_old',
+    routeId: 'route_old',
+    routeGeneration: 3,
+    policyVersion: 1,
+    routeStatus: 'deleted',
+    runtime: 'disabled',
+  };
+  const replacementSnapshot = {
+    ...deletedSnapshot,
+    siteId: 'site_new',
+    routeId: 'route_new',
+    routeGeneration: 1,
+    routeStatus: 'active',
+    runtime: 'wfp',
+  };
+
+  assert.equal((await durableObject.fetch(writeRequest(deletedSnapshot))).status, 200);
+  const repaired = await repairRouteSnapshot(target, replacementSnapshot);
+
+  assert.equal(repaired.pointerConfirmed, true);
+  assert.equal(repaired.repaired, true);
+  assert.equal(writes.get(pointerKey).snapshotKey, 'production:route_snapshot:docs.pages.xd.team:site_new:1:1');
+  assert.equal((await durableObject.fetch(writeRequest({ ...deletedSnapshot, routeGeneration: 4 }))).status, 409);
+});
+
+test('route repair heals a historical replacement pointer without letting the old owner reclaim KV', async () => {
+  const writes = new Map();
+  const durableRecords = new Map();
+  const state = {
+    storage: {
+      async get(key) {
+        return durableRecords.get(key);
+      },
+      async put(key, value) {
+        durableRecords.set(key, value);
+      },
+    },
+  };
   const routeSnapshots = {
     get: async (key) => (writes.has(key) ? JSON.stringify(writes.get(key)) : null),
     put: async (key, value) => writes.set(key, JSON.parse(value)),
     delete: async (key) => writes.delete(key),
   };
-  const durableObject = new RoutePointerDO(createDoState({ failDelete: true }), { ROUTE_SNAPSHOTS: routeSnapshots });
-  const response = await durableObject.fetch(
-    writeClearRequest(pointer)
-  );
-  const body = await response.json();
-
-  assert.equal(response.status, 200);
-  assert.equal(body.cleared, true);
-  assert.equal(body.pointerState, 'durable_state_delete_failed_after_kv_commit');
-  assert.equal(writes.has(pointerKey), false);
-
-  const repairSnapshot = buildRouteSnapshot({
-    site: { id: 'site_1', slug: 'docs', siteUuid: 'uuid_1' },
-    route: {
-      id: 'route_1',
-      hostname: 'docs.pages.xd.team',
-      environment: 'production',
-      runtime: 'wfp',
-      workerName: 'pages-v2-docs-ver-2',
-      activeVersionId: 'ver_2',
-      visibility: 'org',
-      policyVersion: 4,
-      routeGeneration: 2,
-      routeStatus: 'active',
-      cacheTier: 'fast',
+  const durableObject = new RoutePointerDO(state, { ROUTE_SNAPSHOTS: routeSnapshots });
+  const target = {
+    ROUTE_SNAPSHOTS: routeSnapshots,
+    ROUTE_POINTER_LOCKS: {
+      idFromName: () => 'docs-pointer',
+      get: () => ({ fetch: (request) => durableObject.fetch(request) }),
     },
-    version: { id: 'ver_2', contentHash: 'sha256:def', ...workerOnlyDecision() },
+  };
+  const deletedSnapshot = {
+    schemaVersion: 4,
+    kind: 'serve',
+    hostname: 'docs.pages.xd.team',
+    environment: 'production',
+    siteId: 'site_old',
+    routeId: 'route_old',
+    routeGeneration: 3,
+    policyVersion: 1,
+    routeStatus: 'deleted',
+    runtime: 'disabled',
+  };
+  const replacementSnapshot = {
+    ...deletedSnapshot,
+    siteId: 'site_new',
+    routeId: 'route_new',
+    routeGeneration: 1,
+    routeStatus: 'active',
+    runtime: 'wfp',
+  };
+
+  assert.equal((await durableObject.fetch(writeRequest(deletedSnapshot))).status, 200);
+  const replacementKey = 'production:route_snapshot:docs.pages.xd.team:site_new:1:1';
+  writes.set(replacementKey, replacementSnapshot);
+  writes.set('production:route_pointer:docs.pages.xd.team', {
+    hostname: replacementSnapshot.hostname,
+    environment: replacementSnapshot.environment,
+    routeGeneration: replacementSnapshot.routeGeneration,
+    policyVersion: replacementSnapshot.policyVersion,
+    snapshotKey: replacementKey,
   });
-  const repairResponse = await durableObject.fetch(writeRequest(repairSnapshot));
-  assert.equal(repairResponse.status, 200);
+  assert.equal(durableRecords.get('pointer').siteId, 'site_old');
+
+  const delayedOldWrite = await durableObject.fetch(writeRequest({ ...deletedSnapshot, routeGeneration: 4 }));
+
+  assert.equal(delayedOldWrite.status, 409);
+  assert.equal(writes.get('production:route_pointer:docs.pages.xd.team').snapshotKey, replacementKey);
+
+  const repaired = await repairRouteSnapshot(target, replacementSnapshot);
+
+  assert.equal(repaired.pointerConfirmed, true);
+  assert.equal(durableRecords.get('pointer').siteId, 'site_new');
+  assert.equal(durableRecords.get('pointer').routeId, 'route_new');
+  assert.equal((await durableObject.fetch(writeRequest({ ...deletedSnapshot, routeGeneration: 4 }))).status, 409);
 });
 
 test('RoutePointerDO stores deployment failure recovery records independently from route snapshot KV', async () => {
@@ -599,7 +1275,7 @@ function writeClearRequest(pointer) {
   });
 }
 
-function createDoState({ failPut = false, failDelete = false } = {}) {
+function createDoState({ failPut = false } = {}) {
   const records = new Map();
   return {
     storage: {
@@ -611,7 +1287,6 @@ function createDoState({ failPut = false, failDelete = false } = {}) {
         records.set(key, value);
       },
       async delete(key) {
-        if (failDelete) throw new Error('durable state delete failed');
         return records.delete(key);
       },
       async list({ prefix = '' } = {}) {

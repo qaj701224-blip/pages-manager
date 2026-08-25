@@ -69,7 +69,11 @@ users
 ```sql
 sites
   id                  -- site_xxx
-  slug                -- 用户可见站点名
+  slug                -- 可变的 canonical URL 名
+  title               -- 可选展示名称；null 时回退显示 slug
+  data_namespace      -- runtime data/KV 的不可变 namespace
+  slug_revision       -- canonical slug 变更代数
+  slug_routing_synced_revision / slug_routing_reconcile_attempted_at -- 收敛代数 / 公平轮转时间；不改变业务 updated_at
   owner_user_id
   default_visibility  -- internal / org / acl / owner / disabled
   default_exposure    -- internal / public；默认 internal，仅平台管理员可改变
@@ -81,7 +85,7 @@ sites
   deleted_at
 ```
 
-`slug` 可变或可复用，不能作为数据隔离锚点；`site_uuid` 用于 KV/R2/D1 等站点数据隔离。
+`slug` 可变或可复用，不能直接作为可变的数据隔离锚点；`data_namespace` 在建站时取初始 slug 并永久保持，`site_uuid` 继续作为站点身份隔离锚点。改名后的旧 hostname 不建立 alias：对应 claim 以 `site_slug_renamed_pending_cleanup` 状态在旧 pointer 删除前保持无限期 hold，删除确认后进入 5 分钟 reuse hold，到期后可重新获取。
 
 #### site_routes
 
@@ -503,22 +507,25 @@ KV key 必须带环境前缀，避免 staging/prod 串环境：
 
 ```text
 {env}:route_pointer:{hostname}
-{env}:route_snapshot:{hostname}:{route_generation}:{policy_version}
+{env}:route_snapshot:{hostname}:{site_id}:{route_generation}:{policy_version}  # schema v4 writers
+{env}:route_snapshot:{hostname}:{route_generation}:{policy_version}           # v2/v3 compatibility
 {env}:policy_snapshot:{site_id}:{policy_version}
 {env}:jwks:{kid}
 ```
 
 #### route snapshot
 
-迁移期间仍会读取旧的 `schemaVersion": 2` snapshot，但它只能按 `exposure=internal` 安全降级，不能绕过 Router IP 门禁；新写入 snapshot 使用 schema v3。
+迁移期间继续读取旧的 schema v2/v3 serve snapshot；v2 只能按 `exposure=internal` 安全降级，不能绕过 Router IP 门禁。新写入 snapshot 使用 schema v4，且只允许 `kind=serve`。
 
 ```json
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
+  "kind": "serve",
   "hostname": "foo.workers.xd.team",
-  "siteId": "site_123",
-  "siteUuid": "su_123",
+  "siteId": "site_0123456789abcdef0123456789abcdef",
+  "siteUuid": "0123456789abcdef0123456789abcdef",
   "slug": "foo",
+  "dataNamespace": "foo-original",
   "routeId": "route_123",
   "environment": "production",
   "runtime": "worker",
@@ -556,7 +563,7 @@ WFP 模式的 route snapshot 只替换执行面 dispatch 信息，其它鉴权�
 
 ```json
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "runtime": "worker",
   "executionProvider": "wfp",
   "workerName": "foo_v42",
@@ -570,16 +577,17 @@ WFP 模式的 route snapshot 只替换执行面 dispatch 信息，其它鉴权�
 }
 ```
 
-staging snapshot 必须使用 staging hostname 和 `environment=staging`，例如 `foo-staging.workers.xd.team`；存量 v2 staging host 也可能是 `foo-staging.pages.xd.team`。router 发现 hostname 后缀与 snapshot environment 不一致时必须拒绝。
+staging snapshot 必须使用 staging hostname 和 `environment=staging`，例如 `foo-staging.workers.xd.team`；存量 v2 staging host 也可能是 `foo-staging.pages.xd.team`。Router 遇到 schema v4 `redirect` 或其它非 `serve` kind 必须拒绝；slug 改名通过删除旧 hostname pointer 实现，不保留跳转 snapshot。
 
 为了让发布 / 回滚的 generation 可比较，route snapshot 采用两层 key：
 
 ```text
 {env}:route_pointer:{hostname} -> { routeId, routeGeneration, policyVersion, snapshotKey, updatedAt }
-{env}:route_snapshot:{hostname}:{routeGeneration}:{policyVersion} -> immutable snapshot body
+{env}:route_snapshot:{hostname}:{siteId}:{routeGeneration}:{policyVersion} -> schema v4 immutable snapshot body
+{env}:route_snapshot:{hostname}:{routeGeneration}:{policyVersion} -> legacy v2/v3 immutable snapshot body
 ```
 
-router 的 L1 cache 必须缓存 pointer 和 snapshot。当前实现以 D1 `site_routes` 为权威：发布 / 回滚先用 D1 CAS 切换 active route，再写 immutable snapshot 和 route pointer；如果 snapshot / pointer 写入失败且 KV pointer 尚未提交，API 立即恢复 previous route 并让操作失败。KV route pointer 是 router 可见的提交点；一旦 pointer 已写入，后续 DO state 写入失败不能再让控制面回滚 D1，只能由 reconciliation 修复 DO state 或重建 pointer。写 route pointer 前必须读取现有 pointer 做单调版本保护，禁止较低 `routeGeneration` 或同 generation 较低 `policyVersion` 覆盖更新的 pointer。ACL、access mode 和 exposure 这类 policy-only 变更不应冒充发布 generation，但必须 bump `policyVersion` 并生成新的 immutable snapshot key。Admin exposure 更新还会写后读回确认 exposure/accessMode/visibility；确认失败时条件补偿回旧 exposure，无法确认则返回 repair-required 并 fail closed。schema v2 snapshot 固定按 internal exposure 读取；schema v3 accessMode 非法或 visibility 投影不一致时拒绝。
+router 的 L1 cache 必须缓存 pointer 和 snapshot。schema v4 snapshot key 加入不可变 `siteId`，避免 hostname 释放给新站点且 generation/policy tuple 重复时覆盖旧 snapshot；pointer key 仍按 hostname 保持不变。当前实现以 D1 `site_routes` 为权威：发布 / 回滚先用 D1 CAS 切换 active route，再写 immutable snapshot 和 route pointer；如果 snapshot / pointer 写入失败且 KV pointer 尚未提交，API 立即恢复 previous route 并让操作失败。KV route pointer 是 router 可见的提交点；一旦 pointer 已写入，后续 DO state 写入失败不能再让控制面回滚 D1，只能由 reconciliation 修复 DO state 或重建 pointer。写 route pointer 前必须读取现有 pointer 做单调版本保护，禁止较低 `routeGeneration` 或同 generation 较低 `policyVersion` 覆盖更新的 pointer。ACL、access mode 和 exposure 这类 policy-only 变更不应冒充发布 generation，但必须 bump `policyVersion` 并生成新的 immutable snapshot key。Admin exposure 更新还会写后读回确认 exposure/accessMode/visibility；确认失败时条件补偿回旧 exposure，无法确认则返回 repair-required 并 fail closed。schema v2 snapshot 固定按 internal exposure 读取；schema v3/v4 serve snapshot 的 accessMode 非法或 visibility 投影不一致时拒绝。
 
 #### policy snapshot
 
@@ -688,4 +696,4 @@ JWT 验证清单：
 
 `auth_session` 由 `pages-auth` 签发，`site_session` 和 `internal_worker_jwt` 由 `pages-router` 签发。三者可以共享 key registry 结构，但必须通过 `iss`、`aud`、`kid` 和环境绑定区分用途，不能让某类 token 被另一类 token 的校验逻辑接受。
 
-internal exposure 站点受平台 IP Check 保护；只有可信 schema v3 snapshot 显式声明 public 才绕过该网络门禁。对于通过站点访问策略的已登录请求，`internal_worker_jwt.user` 默认包含稳定用户 ID、email、accountId、name、完整部门路径数组和 employeeStatus；匿名请求的 `user` 为 `null`。这些字段只作为业务上下文，不能替代 router 的 ACL、owner 或员工状态门禁，也不得写入日志。
+internal exposure 站点受平台 IP Check 保护；只有可信 schema v3/v4 serve snapshot 显式声明 public 才绕过该网络门禁。对于通过站点访问策略的已登录请求，`internal_worker_jwt.user` 默认包含稳定用户 ID、email、accountId、name、完整部门路径数组和 employeeStatus；匿名请求的 `user` 为 `null`。这些字段只作为业务上下文，不能替代 router 的 ACL、owner 或员工状态门禁，也不得写入日志。

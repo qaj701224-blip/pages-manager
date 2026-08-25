@@ -18,6 +18,7 @@ export function createDeploymentRouteSnapshotRecoveryAdapter({ store, routeSnaps
     async clearCurrent(route) {
       if (!route || typeof routePointers?.clearIfCurrent !== 'function') return false;
       try {
+        const identity = route.siteId && route.id ? { siteId: route.siteId, routeId: route.id } : {};
         return await routePointers.clearIfCurrent({
           hostname: route.hostname,
           environment: route.environment,
@@ -27,8 +28,10 @@ export function createDeploymentRouteSnapshotRecoveryAdapter({ store, routeSnaps
             route.environment,
             route.hostname,
             Number(route.routeGeneration || 0),
-            Number(route.policyVersion || 0)
+            Number(route.policyVersion || 0),
+            identity.siteId
           ),
+          ...identity,
         });
       } catch {
         return false;

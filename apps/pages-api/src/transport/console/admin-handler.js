@@ -11,6 +11,7 @@ import {
   putSiteSecret,
   putSiteVar,
   readSiteConfig,
+  updateConsoleSiteMetadata,
   updateSiteAccess,
 } from './site-mutations.js';
 import { formatAclEntry } from './site-projections.js';
@@ -240,6 +241,22 @@ export async function handleConsoleAdminApi(request, env, config, store, ctx) {
     return readSiteConfig(env, config, store, site);
   }
 
+  const adminSiteMetadataMatch = url.pathname.match(
+    /^\/\.xd-pages\/api\/console\/admin\/sites\/([^/]+)\/metadata$/,
+  );
+  if (adminSiteMetadataMatch) {
+    const site = await getAdminSite(config, store, decodeURIComponent(adminSiteMetadataMatch[1]));
+    if (site instanceof Response) return site;
+    if (request.method !== 'PATCH') return methodNotAllowed();
+    return updateConsoleSiteMetadata(request, env, config, store, session, site.id, {
+      site,
+      source: 'console-admin',
+      capability: 'platform_admin',
+      ctx,
+      projectSite: formatAdminSiteDetail,
+    });
+  }
+
   const adminSiteSettingsMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/admin\/sites\/([^/]+)\/settings$/);
   if (adminSiteSettingsMatch) {
     const site = await getAdminSite(config, store, decodeURIComponent(adminSiteSettingsMatch[1]));
@@ -253,7 +270,14 @@ export async function handleConsoleAdminApi(request, env, config, store, ctx) {
     const site = await getAdminSite(config, store, decodeURIComponent(adminSiteMatch[1]));
     if (site instanceof Response) return site;
     if (request.method === 'GET') return jsonOk({ site: formatAdminSiteDetail(site) });
-    if (request.method === 'DELETE') return deleteConsoleSite(env, config, store, site, { force: true, actor: session, ctx });
+    if (request.method === 'DELETE') {
+      return deleteConsoleSite(env, config, store, site, {
+        force: true,
+        actor: session,
+        capability: 'platform_admin',
+        ctx,
+      });
+    }
     return methodNotAllowed();
   }
 

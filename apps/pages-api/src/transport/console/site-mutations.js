@@ -10,16 +10,72 @@ import {
   runtimeConfigSyncErrorResponse,
 } from '../shared/runtime-config-application.js';
 import { createSiteLifecycleApplication, siteDeleteErrorResponse } from '../shared/site-lifecycle-application.js';
+import { createSiteMetadataApplication, runSiteMetadataRoutingReconciliation } from '../shared/site-metadata-application.js';
 import { mutateUserSiteAccessPolicy } from '../shared/site-policy-application.js';
 import { normalizeSiteAclInput, rejectUserExposureMutation } from '../shared/site-input.js';
 import {
   formatAclEntry,
   formatDeletedSiteVarMutation,
   formatSiteSecret,
+  formatSiteDetail,
   formatSiteVar,
   formatSiteVarMutation,
   formatWorkspaceSite,
 } from './site-projections.js';
+
+export async function updateConsoleSiteMetadata(request, env, config, store, session, siteId, options = {}) {
+  if (env.SITE_METADATA_MUTATIONS_ENABLED !== 'true') {
+    return jsonError(
+      'SITE_METADATA_MUTATIONS_DISABLED',
+      'Site metadata mutations are temporarily disabled.',
+      503,
+      'Retry after the feature is enabled.'
+    );
+  }
+  const site = options.site || (await requireConsoleSiteRole(store, config, session, siteId, 'publisher'));
+  if (site instanceof Response) return site;
+
+  let patch;
+  try {
+    patch = await readJsonBody(request, { maxBytes: 32 * 1024 });
+  } catch {
+    return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
+  }
+
+  let mutation;
+  try {
+    mutation = await createSiteMetadataApplication({ store, env, config })({
+      environment: config.environment,
+      siteId: site.id,
+      actor: consoleActor(session),
+      capability: options.capability,
+      source: options.source || 'console',
+      patch,
+    });
+  } catch (error) {
+    return siteMetadataErrorResponse(error);
+  }
+
+  const projectSite = options.projectSite || formatSiteDetail;
+  const responseSite = projectSite({ ...site, ...mutation.site, route: mutation.route });
+  if (hasOwnSlug(patch) && mutation.routingStatus === 'pending') {
+    if (typeof options.ctx?.waitUntil === 'function') {
+      options.ctx.waitUntil(runSiteMetadataRoutingReconciliation(env, config, store, { limit: 50 }).catch(() => {}));
+    }
+    return jsonOk(
+      {
+        site: responseSite,
+        warning: {
+          code: 'SITE_METADATA_ROUTING_PENDING',
+          message: 'Site metadata was saved and routing is still being synchronized.',
+          action: 'Retry this request or wait for routing reconciliation.',
+        },
+      },
+      202
+    );
+  }
+  return jsonOk({ site: responseSite });
+}
 
 export async function deleteConsoleSite(env, config, store, site, options = {}) {
   if (!options.force && !viewerCanPublishSite(site)) {
@@ -38,6 +94,7 @@ export async function deleteConsoleSite(env, config, store, site, options = {}) 
       environment: config.environment,
       site,
       actor: options.actor,
+      capability: options.capability,
       compensateSnapshotFailure: false,
     });
     deleted = result.site;
@@ -501,4 +558,42 @@ function isRuntimeConfigConflict(error) {
 
 function consoleActor(session) {
   return { type: 'user', userId: session.userId };
+}
+
+function hasOwnSlug(value) {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value) && Object.hasOwn(value, 'slug'));
+}
+
+function siteMetadataErrorResponse(error) {
+  const code = error?.code || error?.message;
+  if (code === 'SITE_METADATA_INVALID') {
+    return jsonError('SITE_METADATA_INVALID', 'Site metadata is invalid.', 400, 'Send title, slug, or both.');
+  }
+  if (code === 'SITE_TITLE_INVALID') {
+    return jsonError(
+      'SITE_TITLE_INVALID',
+      'Site title is invalid.',
+      400,
+      'Use 1-80 visible Unicode characters, or null to clear the title.'
+    );
+  }
+  if (code === 'SITE_SLUG_INVALID') {
+    return jsonError(
+      'SITE_SLUG_INVALID',
+      'Site slug is invalid.',
+      400,
+      'Use 2-50 lowercase letters, numbers, and hyphens; the first and last characters must be alphanumeric.'
+    );
+  }
+  if (code === 'SITE_SLUG_RESERVED') {
+    return jsonError('SITE_SLUG_RESERVED', 'Site slug is reserved.', 400, 'Choose a different site slug.');
+  }
+  if (code === 'SITE_SLUG_CONFLICT') {
+    return jsonError('SITE_SLUG_CONFLICT', 'Site slug already exists.', 409, 'Choose a different site slug.');
+  }
+  if (code === 'SITE_METADATA_CONFLICT') {
+    return jsonError('SITE_METADATA_CONFLICT', 'Site metadata changed concurrently.', 409, 'Refresh the site and retry.');
+  }
+  if (code === 'SITE_NOT_FOUND') return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
+  return jsonError('SITE_METADATA_UPDATE_FAILED', 'Site metadata could not be updated.', 500, 'Retry the update.');
 }

@@ -1554,7 +1554,7 @@ test('site lookup suggests the closest slug when a name is mistyped', async () =
       }),
     {
       code: 'SITE_NOT_FOUND',
-      action: '未找到 xtq-html-test。你是不是想查看 xtq-hml-test？',
+      action: '未找到 xtq-html-test。你是不是想查看 xtq-hml-test？站点也可能已改名，请运行 xd-cell sites list 查看当前站点名。',
     }
   );
 });

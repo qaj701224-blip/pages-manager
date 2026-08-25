@@ -1,13 +1,11 @@
 export function createDeploymentRecoveryPort(store) {
   return {
+    ...(typeof store?.restoreDeploymentActivationIfCurrent === 'function'
+      ? { restoreWithOwner: store.restoreDeploymentActivationIfCurrent.bind(store) }
+      : {}),
     restore(command) {
       if (typeof store?.restoreSiteRouteIfCurrent === 'function') {
-        return store.restoreSiteRouteIfCurrent(
-          command.siteId,
-          command.previousRoute,
-          command.expectedRoute,
-          command.environment
-        );
+        return store.restoreSiteRouteIfCurrent(command.siteId, command.previousRoute, command.expectedRoute, command.environment);
       }
       return store.restoreSiteRoute(command.siteId, command.previousRoute, command.environment);
     },

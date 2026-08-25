@@ -56,6 +56,7 @@ const dropS2sGuardsMigration = readFileSync(
   'utf8'
 );
 const accessPolicyMigrationPath = join(repoRoot, 'apps/pages-api/migrations/0019_site_access_policy.sql');
+const siteMetadataMigrationPath = join(repoRoot, 'apps/pages-api/migrations/0021_site_metadata.sql');
 
 test('pages v2 D1 migration covers authority schema tables and indexes', () => {
   const schema = createSchemaSql().join('\n');
@@ -240,6 +241,24 @@ test('site access policy migration adds exposure, access mode, and the site poli
   assert.match(accessPolicyMigration, /CREATE TABLE IF NOT EXISTS site_policy_locks/);
   assert.match(accessPolicyMigration, /PRIMARY KEY \(environment, site_id\)/);
   assert.doesNotMatch(accessPolicyMigration, /DROP TABLE|DROP COLUMN|DELETE FROM/i);
+});
+
+test('site metadata migration adds titles, immutable data namespaces, and routing revisions', () => {
+  assert.equal(existsSync(siteMetadataMigrationPath), true);
+  const siteMetadataMigration = readFileSync(siteMetadataMigrationPath, 'utf8');
+
+  assert.match(siteMetadataMigration, /ALTER TABLE sites ADD COLUMN title TEXT/);
+  assert.match(siteMetadataMigration, /ALTER TABLE sites ADD COLUMN data_namespace TEXT/);
+  assert.match(siteMetadataMigration, /ALTER TABLE sites ADD COLUMN slug_revision INTEGER NOT NULL DEFAULT 1/);
+  assert.match(
+    siteMetadataMigration,
+    /ALTER TABLE sites ADD COLUMN slug_routing_synced_revision INTEGER NOT NULL DEFAULT 1/,
+  );
+  assert.match(siteMetadataMigration, /ALTER TABLE sites ADD COLUMN slug_routing_reconcile_attempted_at TEXT/);
+  assert.match(siteMetadataMigration, /CREATE INDEX IF NOT EXISTS idx_sites_slug_routing_reconciliation/);
+  assert.match(siteMetadataMigration, /UPDATE sites SET data_namespace = slug WHERE data_namespace IS NULL/);
+  assert.doesNotMatch(siteMetadataMigration, /site_slug_aliases/);
+  assert.doesNotMatch(siteMetadataMigration, /DROP TABLE|DROP COLUMN|DELETE FROM/i);
 });
 
 function tableDefinition(sql, tableName) {

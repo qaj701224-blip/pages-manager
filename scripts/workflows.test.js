@@ -578,6 +578,39 @@ test('pages v2 deploy workflows expose only v2 component choices', () => {
   }
 });
 
+test('pages v2 all deploys publish route protocol consumers before the pages-api producer', () => {
+  for (const [name, path] of pagesV2DeployWorkflows) {
+    const workflow = readWorkflow(path);
+    const gatewayIndex = workflow.indexOf('      - name: Deploy Pages KV Gateway');
+    const routerIndex = workflow.indexOf('      - name: Deploy Pages Router');
+    const apiIndex = workflow.indexOf('      - name: Deploy Pages API');
+
+    assert.notEqual(gatewayIndex, -1, `${name} deploys the KV Gateway`);
+    assert.notEqual(routerIndex, -1, `${name} deploys the Router`);
+    assert.notEqual(apiIndex, -1, `${name} deploys the Pages API`);
+    assert.ok(gatewayIndex < routerIndex, `${name} deploys the capability consumer before the Router`);
+    assert.ok(routerIndex < apiIndex, `${name} deploys route snapshot consumers before the writer`);
+
+    for (const stepName of [
+      'Generate Pages KV Gateway Wrangler config',
+      'Validate Pages KV Gateway secrets',
+      'Deploy Pages KV Gateway',
+      'Inject Pages KV Gateway secrets',
+      'Validate Pages Router secrets',
+      'Compute legacy normal worker bindings',
+      'Generate Pages Router Wrangler config',
+      'Deploy Pages Router',
+      'Inject Pages Router secrets',
+    ]) {
+      assert.match(
+        readWorkflowStep(workflow, stepName),
+        /if: .*DEPLOY_COMPONENT == 'pages-api'/,
+        `${name} pages-api-only deploy also rolls forward ${stepName}`,
+      );
+    }
+  }
+});
+
 test('pages v2 deploy workflows use explicit v2 templates and secret injection', () => {
   for (const [name, path, environment] of pagesV2DeployWorkflows) {
     const workflow = readWorkflow(path);

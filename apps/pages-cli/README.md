@@ -79,6 +79,8 @@ XD_CELL_API_TOKEN=<token> xd-cell sites list --json
 
 `xd-cell deploy` 可以读取项目中的 `xd-cell.config.json`，仅保存非敏感发布配置，例如站点名、Worker 入口、assets、vars 和 visibility。凭证和 secret 不应写入配置文件。
 
+配置里的 `name` 是站点 URL slug，不是 Console 展示名称。站点 URL 改名后，旧 slug 不再定位原站点；安全期内会因 hostname claim 冲突而拒绝发布，安全期结束后可被其它站点使用。CLI 不自动改写项目文件，请同步更新本地 `name`。当前 CLI 不提供名称或 URL 编辑命令，这两项通过 Console 或认证 Public API 管理。
+
 ## 开发
 
 ```bash

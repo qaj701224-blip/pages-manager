@@ -36,6 +36,27 @@ test('docs/api-boundary.md documents API boundary without duplicating CLI guide'
   assert.doesNotMatch(api, /api\.workers\.xd\.team/);
 });
 
+test('API boundary documents the current site name and URL contract without thumbnail scope', () => {
+  const api = readDoc('docs/api-boundary.md');
+
+  assert.match(api, /`PATCH \/\.xd-pages\/api\/sites\/\{id\}\/metadata`/);
+  assert.match(api, /`title: null`/);
+  assert.match(api, /`displayName`/);
+  assert.match(api, /部署 multipart metadata[^。\n]*显式传 `title`/);
+  assert.match(api, /省略时不修改既有站点名称/);
+  assert.match(api, /当前 `xd-cell` CLI 不发送 `title`/);
+  assert.match(api, /旧 URL 不跳转/);
+  assert.match(api, /5 分钟安全期/);
+  assert.match(api, /Public API mutation[^。\n]*`deploy:site`[^。\n]*`404 SITE_NOT_FOUND`/);
+  assert.match(api, /Workspace Console[^。\n]*publisher\/admin[^。\n]*`403 SITE_PUBLISHER_REQUIRED`/);
+  assert.match(api, /Admin Console[^。\n]*platform admin[^。\n]*不要求站点成员关系/);
+  assert.match(api, /含 `slug` 的 mutation[^。\n]*`202`[^。\n]*`routingStatus: pending`/);
+  assert.match(api, /title-only[^。\n]*`200`[^。\n]*`routingStatus: pending`/);
+  assert.match(api, /`SITE_METADATA_MUTATIONS_ENABLED`/);
+  assert.match(api, /缩略图上传与托管延期/);
+  assert.match(api, /不为该能力新增 R2 binding/);
+});
+
 test('public docs recommend xd-cell CLI instead of legacy deploy curl', () => {
   const docs = [readDoc('README.md'), readDoc('pages-deploy.skill.md')].join('\n');
 
@@ -70,11 +91,7 @@ test('public docs describe config discovery without platform internals', () => {
     assert.match(doc, /xd-cell\.config\.json/, `${name} mentions the standard config file`);
     assert.doesNotMatch(doc, /pages\.config\.json/, `${name} does not mention the old config file`);
     assert.doesNotMatch(doc, /不自动发现/, `${name} does not contradict config auto-discovery`);
-    assert.doesNotMatch(
-      doc,
-      /--access-key|--env|xd-cell env|"environment"/,
-      `${name} keeps hidden options out of user docs`
-    );
+    assert.doesNotMatch(doc, /--access-key|--env|xd-cell env|"environment"/, `${name} keeps hidden options out of user docs`);
     assert.doesNotMatch(
       doc,
       /artifactKind|--artifact-kind|--preset|\bpreset\b/,

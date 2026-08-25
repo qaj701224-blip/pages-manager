@@ -48,6 +48,8 @@ node tools/xd-cell-cli/main.js help login
 
 `--config <file>` 是一次性输入，只能包含 CLI help 允许的非敏感发布模板字段。默认模板名是 `xd-cell.config.json`。
 
+配置中的 `name` 始终表示站点 URL slug，不是展示名称。站点 URL 在 Console 或认证 API 中改名后，旧 slug 不再定位原站点；安全期内会因 hostname claim 冲突而拒绝发布，安全期结束后可被其它站点使用。CLI 不会自动修改配置文件；继续发布前应先告知用户并同步本地 `name`。CLI 当前不提供名称、URL 或缩略图编辑命令。
+
 `vars` 只能保存非敏感 Worker runtime 配置。它是站点级当前 runtime config，由 Worker deploy 同步；配置省略 `vars` 时沿用站点当前值，显式 `{}` 会在下一次 Worker deploy 清空。secret value 使用 `xd-cell secrets put/delete`，不要写入配置文件，也不要枚举远端 runtime 配置。
 
 不要创建隐藏项目绑定文件。不要在配置里保存凭证。

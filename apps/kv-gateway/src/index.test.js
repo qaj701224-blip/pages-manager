@@ -6,6 +6,7 @@ import { createHs256Jwt } from './auth.js';
 
 const siteId = 'q2-report';
 const siteUuid = '4b4c8e8361ef4b47b64f5c20a7db7c47';
+const stableSiteId = 'site_4b4c8e8361ef4b47b64f5c20a7db7c47';
 const otherUuid = '11111111111111111111111111111111';
 
 class MemoryKv {
@@ -94,6 +95,15 @@ function dataClaims(dataScope, overrides = {}) {
       dataScope === 'user'
         ? ['data:user:get', 'data:user:set', 'data:user:delete']
         : ['data:site:get', 'data:site:set', 'data:site:delete'],
+    ...overrides,
+  });
+}
+
+function namespaceV2Claims(dataScope = 'site', overrides = {}) {
+  return dataClaims(dataScope, {
+    namespaceVersion: 2,
+    siteId: stableSiteId,
+    dataNamespace: siteId,
     ...overrides,
   });
 }
@@ -310,6 +320,30 @@ test('set stores text and ttl metadata under prefixed key', async () => {
     },
   });
   assert.match(gatewayEnv.SITE_DATA.puts[0].options.metadata.__xd_pages.updatedAt, /^\d{4}-\d{2}-\d{2}T/);
+});
+
+test('namespace v2 capabilities keep storage keys stable while recording the real site id', async () => {
+  const gatewayEnv = env();
+
+  const response = await worker.fetch(
+    await request(
+      '/v1/data/site/set',
+      { key: 'app/config', value: { renamed: true } },
+      { authorization: await authHeader(namespaceV2Claims('site')) },
+    ),
+    gatewayEnv,
+  );
+
+  const storageKey = buildStorageKey({ siteSlug: siteId, siteUuid, userKey: 'app/config' });
+  assert.equal(response.status, 200);
+  assert.equal(gatewayEnv.SITE_DATA.puts[0].key, storageKey);
+  assert.deepEqual(gatewayEnv.SITE_DATA.puts[0].options.metadata.__xd_pages, {
+    schemaVersion: 2,
+    siteId: stableSiteId,
+    dataNamespace: siteId,
+    type: 'json',
+    updatedAt: gatewayEnv.SITE_DATA.puts[0].options.metadata.__xd_pages.updatedAt,
+  });
 });
 
 test('set stores user metadata and absolute expiration without exposing platform metadata', async () => {
@@ -610,6 +644,55 @@ test('list wraps provider cursors and binds them to list context', async () => {
   );
   assert.equal(mismatched.status, 400);
   assert.deepEqual((await json(mismatched)).error, { code: 'INVALID_CURSOR', message: 'Invalid data list cursor' });
+});
+
+test('a legacy list cursor remains valid with a namespace v2 capability after a slug rename', async () => {
+  const gatewayEnv = env();
+  const seenProviderCursors = [];
+  gatewayEnv.SITE_DATA.list = async (options = {}) => {
+    seenProviderCursors.push(options.cursor ?? null);
+    return options.cursor
+      ? { keys: [], list_complete: true }
+      : {
+          keys: [{ name: buildStorageKey({ siteSlug: siteId, siteUuid, userKey: 'app/first' }) }],
+          list_complete: false,
+          cursor: 'legacy-provider-cursor',
+        };
+  };
+
+  const first = await worker.fetch(
+    await request(
+      '/v1/kv/list',
+      { prefix: 'app/', limit: 1 },
+      { authorization: await authHeader(claims({ scope: ['kv:list'] })) },
+    ),
+    gatewayEnv,
+  );
+  const legacyCursor = (await json(first)).cursor;
+  assert.match(legacyCursor, /^v1\./);
+
+  const resumed = await worker.fetch(
+    await request(
+      '/v1/kv/list',
+      { prefix: 'app/', limit: 1, cursor: legacyCursor },
+      { authorization: await authHeader(namespaceV2Claims('site', { scope: ['kv:list'] })) },
+    ),
+    gatewayEnv,
+  );
+
+  assert.equal(resumed.status, 200);
+  assert.deepEqual(seenProviderCursors, [null, 'legacy-provider-cursor']);
+
+  const mismatchedEnvelope = await worker.fetch(
+    await request(
+      '/v1/kv/list',
+      { prefix: 'app/', limit: 1, cursor: legacyCursor.replace(/^v1\./, 'v2.') },
+      { authorization: await authHeader(namespaceV2Claims('site', { scope: ['kv:list'] })) },
+    ),
+    gatewayEnv,
+  );
+  assert.equal(mismatchedEnvelope.status, 400);
+  assert.equal((await json(mismatchedEnvelope)).error.code, 'INVALID_CURSOR');
 });
 
 test('set validates final wrapped metadata size before provider write', async () => {
