@@ -49,6 +49,7 @@ import {
   aclSubjectPlaceholder,
   aclSubjectTypeLabel,
   appendAclEntry,
+  canViewRuntimeConfig,
   formatSiteActionError,
   getSiteCapabilities,
   normalizeAclEntriesForForm,
@@ -143,11 +144,13 @@ export function SiteDetail({
   const resolvedBackLabel = backLabel || siteApi.backLabel;
   const [state, setState] = useState({ status: 'loading', site: null, error: null });
   const [resourceState, setResourceState] = useState({ status: 'idle', data: null, error: null });
+  const canViewConfig =
+    state.status === 'ready' && state.site?.id === siteId && canViewRuntimeConfig(state.site, scope);
 
   const fetchActiveResource = useCallback(() => siteApi.getResource(siteId, activeTab), [activeTab, siteApi, siteId]);
 
   const reloadResource = useCallback(async () => {
-    if (!RESOURCE_TABS.has(activeTab)) return null;
+    if (!RESOURCE_TABS.has(activeTab) || (activeTab === 'config' && !canViewConfig)) return null;
     setResourceState({ status: 'loading', data: null, error: null });
     try {
       const data = await fetchActiveResource();
@@ -157,7 +160,7 @@ export function SiteDetail({
       setResourceState({ status: 'error', data: null, error });
       throw error;
     }
-  }, [activeTab, fetchActiveResource]);
+  }, [activeTab, canViewConfig, fetchActiveResource]);
 
   useEffect(() => {
     let active = true;
@@ -176,7 +179,7 @@ export function SiteDetail({
   }, [siteApi, siteId]);
 
   useEffect(() => {
-    if (!RESOURCE_TABS.has(activeTab)) {
+    if (!RESOURCE_TABS.has(activeTab) || (activeTab === 'config' && !canViewConfig)) {
       setResourceState({ status: 'idle', data: null, error: null });
       return undefined;
     }
@@ -193,7 +196,7 @@ export function SiteDetail({
     return () => {
       active = false;
     };
-  }, [activeTab, fetchActiveResource]);
+  }, [activeTab, canViewConfig, fetchActiveResource]);
 
   const title = state.site?.slug || siteId;
 
@@ -205,7 +208,7 @@ export function SiteDetail({
             {resolvedBackLabel}
           </Link>
           <PageHeading title={title} meta="站点详情" />
-          <SiteDetailTabs activeTab={activeTab} basePath={resolvedBasePath} />
+          <SiteDetailTabs activeTab={activeTab} basePath={resolvedBasePath} canViewConfig={canViewConfig} />
         </div>
       ) : (
         <PageHeading title={title} meta="站点" />
@@ -216,6 +219,7 @@ export function SiteDetail({
         <SiteTabContent
           site={state.site}
           scope={scope}
+          canViewConfig={canViewConfig}
           siteApi={siteApi}
           tab={activeTab}
           resourceState={resourceState}
@@ -239,6 +243,7 @@ export function SiteDetail({
         backLabel={resolvedBackLabel}
         backTo={resolvedBackTo}
         basePath={resolvedBasePath}
+        canViewConfig={canViewConfig}
         sessionState={sessionState}
       />
       <main className="page workspace-page">{content}</main>
@@ -246,7 +251,7 @@ export function SiteDetail({
   );
 }
 
-function SiteContextSidebar({ activeTab, backLabel, backTo, basePath, sessionState }) {
+function SiteContextSidebar({ activeTab, backLabel, backTo, basePath, canViewConfig, sessionState }) {
   return (
     <Sidebar active="personal" sessionState={sessionState}>
       <Link className="back-link" to={backTo}>
@@ -267,26 +272,28 @@ function SiteContextSidebar({ activeTab, backLabel, backTo, basePath, sessionSta
           icon={<LockKeyhole size={17} />}
           label="访问控制"
         />
-        <ContextLink
-          href={`${basePath}/config`}
-          active={activeTab === 'config'}
-          icon={<SlidersHorizontal size={17} />}
-          label="运行配置"
-        />
+        {canViewConfig ? (
+          <ContextLink
+            href={`${basePath}/config`}
+            active={activeTab === 'config'}
+            icon={<SlidersHorizontal size={17} />}
+            label="运行配置"
+          />
+        ) : null}
         <ContextLink href={`${basePath}/settings`} active={activeTab === 'settings'} icon={<Settings size={17} />} label="设置" />
       </nav>
     </Sidebar>
   );
 }
 
-function SiteDetailTabs({ activeTab, basePath }) {
+function SiteDetailTabs({ activeTab, basePath, canViewConfig }) {
   return (
     <nav className="detail-tabs" aria-label="站点详情导航">
       {[
         ['overview', '概览', basePath],
         ['deployments', '部署记录', `${basePath}/deployments`],
         ['access', '访问控制', `${basePath}/access`],
-        ['config', '运行配置', `${basePath}/config`],
+        ...(canViewConfig ? [['config', '运行配置', `${basePath}/config`]] : []),
         ['settings', '设置', `${basePath}/settings`],
       ].map(([id, label, href]) => (
         <Link className={activeTab === id ? 'active' : ''} key={id} to={href}>
@@ -309,6 +316,7 @@ function ContextLink({ href, active, icon, label }) {
 function SiteTabContent({
   site,
   scope,
+  canViewConfig,
   siteApi,
   tab,
   resourceState,
@@ -333,6 +341,7 @@ function SiteTabContent({
     );
   }
   if (tab === 'config') {
+    if (!canViewConfig) return <div className="placeholder">当前角色无权查看运行配置</div>;
     return <ConfigPanel site={site} siteApi={siteApi} state={resourceState} onResourceReload={onResourceReload} />;
   }
   if (tab === 'settings')
@@ -926,7 +935,6 @@ function ConfigPanel({ site, siteApi, state, onResourceReload }) {
 
   return (
     <section className="detail-stack">
-      {!capabilities.canEditVars ? <div className="placeholder">当前角色只能查看运行配置</div> : null}
       <RuntimeVarList
         vars={config.vars || []}
         canEdit={capabilities.canEditVars}

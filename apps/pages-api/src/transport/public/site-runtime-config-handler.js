@@ -8,11 +8,42 @@ import {
 import { logRuntimeConfigFailure, readRuntimeConfigErrorDiagnostic } from '../../runtime-config-diagnostics.js';
 import {
   createRuntimeConfigApplication,
+  createRuntimeConfigReadApplication,
   runtimeConfigSyncErrorResponse,
 } from '../shared/runtime-config-application.js';
 import { normalizeSiteSlug, validateSiteSlugInput } from '../shared/site-input.js';
 
 const MAX_RUNTIME_VAR_BODY_BYTES = 64 * 1024;
+
+export async function listSiteVars(env, config, store, actor, siteSlug) {
+  const site = await getRuntimeManageableSiteBySlug(store, actor, siteSlug, config.environment);
+  if (site instanceof Response) return site;
+
+  try {
+    const vars = await createRuntimeConfigReadApplication({ store }).listVars({
+      environment: config.environment,
+      siteId: site.id,
+    });
+    return jsonOk({ vars: vars.map(formatReadableVar) });
+  } catch (error) {
+    return runtimeConfigReadFailureResponse(error, { env, config, site, operation: 'var_list' });
+  }
+}
+
+export async function listSiteSecretMetadata(env, config, store, actor, siteSlug) {
+  const site = await getRuntimeManageableSiteBySlug(store, actor, siteSlug, config.environment);
+  if (site instanceof Response) return site;
+
+  try {
+    const secrets = await createRuntimeConfigReadApplication({ store }).listSecretMetadata({
+      environment: config.environment,
+      siteId: site.id,
+    });
+    return jsonOk({ secrets: secrets.map(formatReadableSecret) });
+  } catch (error) {
+    return runtimeConfigReadFailureResponse(error, { env, config, site, operation: 'secret_list' });
+  }
+}
 
 export async function putSiteVar(request, env, config, store, actor, siteSlug) {
   const site = await getRuntimeManageableSiteBySlug(store, actor, siteSlug, config.environment);
@@ -232,6 +263,21 @@ function runtimeVarFailureResponse(error, { env, config, site, operation }) {
   return response;
 }
 
+function runtimeConfigReadFailureResponse(error, { env, config, site, operation }) {
+  const diagnostic = readRuntimeConfigErrorDiagnostic(error, {
+    stage: error?.message === 'RUNTIME_CONFIG_UNSUPPORTED' ? 'capability_check' : 'read',
+    reason: error?.message === 'RUNTIME_CONFIG_UNSUPPORTED' ? 'capability_unavailable' : 'store_operation_failed',
+  });
+  logRuntimeConfigFailure(env, {
+    operation,
+    environment: config.environment,
+    siteId: site.id,
+    ...diagnostic,
+    errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+  });
+  return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime config store is unavailable.', 503, 'Retry later.');
+}
+
 function runtimeSecretFailureResponse(error, { env, config, site, operation, deleting }) {
   const syncResponse = runtimeConfigSyncErrorResponse(error, { env, config, site, kind: 'secret' });
   if (syncResponse) return syncResponse;
@@ -297,6 +343,23 @@ function formatVar(siteSlug, record, { deleted, appliesTo }) {
     ...(!deleted && record.revision ? { revision: Number(record.revision) } : {}),
     ...(deleted ? { deleted: true } : { updated: true }),
     appliesTo,
+  };
+}
+
+function formatReadableVar(record) {
+  return {
+    name: record.name,
+    value: record.value,
+    revision: Number(record.revision || 0),
+    updatedAt: record.updatedAt,
+  };
+}
+
+function formatReadableSecret(record) {
+  return {
+    name: record.name,
+    revision: Number(record.revision || 0),
+    updatedAt: record.updatedAt,
   };
 }
 

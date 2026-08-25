@@ -160,7 +160,15 @@ export async function handleConsoleApi(request, env, config, store, ctx) {
       });
     }
     if (subresource === 'config') {
-      return jsonOk({ config: await readSiteConfig(store, config.environment, site.id) });
+      if (!viewerCanPublishSite(site)) {
+        return jsonError(
+          'SITE_PUBLISHER_REQUIRED',
+          'Site publisher role required.',
+          403,
+          'Ask a site or team publisher.'
+        );
+      }
+      return readSiteConfig(env, config, store, site);
     }
     return null;
   }

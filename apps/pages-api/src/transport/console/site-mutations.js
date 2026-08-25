@@ -6,6 +6,7 @@ import { MAX_SITE_SECRET_VALUE_BYTES, normalizeRuntimeSecretName, normalizeRunti
 import { logRuntimeConfigFailure, readRuntimeConfigErrorDiagnostic } from '../../runtime-config-diagnostics.js';
 import {
   createRuntimeConfigApplication,
+  createRuntimeConfigReadApplication,
   runtimeConfigSyncErrorResponse,
 } from '../shared/runtime-config-application.js';
 import { createSiteLifecycleApplication, siteDeleteErrorResponse } from '../shared/site-lifecycle-application.js';
@@ -350,14 +351,30 @@ export async function deleteSiteSecret(env, config, store, session, siteId, name
   }
 }
 
-export async function readSiteConfig(store, environment, siteId) {
-  const vars = typeof store.listEnabledSiteVars === 'function' ? await store.listEnabledSiteVars(environment, siteId) : [];
-  const secrets =
-    typeof store.listEnabledSiteSecrets === 'function' ? await store.listEnabledSiteSecrets(environment, siteId) : [];
-  return {
-    vars: vars.map(formatSiteVar),
-    secrets: secrets.map(formatSiteSecret),
-  };
+export async function readSiteConfig(env, config, store, site) {
+  try {
+    const reader = createRuntimeConfigReadApplication({ store });
+    const vars = await reader.listVars({ environment: config.environment, siteId: site.id });
+    const secrets = await reader.listSecretMetadata({ environment: config.environment, siteId: site.id });
+    return jsonOk({
+      config: {
+        vars: vars.map(formatSiteVar),
+        secrets: secrets.map(formatSiteSecret),
+      },
+    });
+  } catch (error) {
+    logRuntimeConfigFailure(env, {
+      operation: 'config_list',
+      environment: config.environment,
+      siteId: site.id,
+      ...readRuntimeConfigErrorDiagnostic(error, {
+        stage: error?.message === 'RUNTIME_CONFIG_UNSUPPORTED' ? 'capability_check' : 'read',
+        reason: error?.message === 'RUNTIME_CONFIG_UNSUPPORTED' ? 'capability_unavailable' : 'store_operation_failed',
+      }),
+      errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+    });
+    return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime config store is unavailable.', 503, 'Retry later.');
+  }
 }
 
 export function teamOwnerVisibilityUnsupported() {

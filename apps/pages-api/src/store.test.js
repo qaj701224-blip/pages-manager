@@ -1186,6 +1186,80 @@ test('D1 store encrypts site secrets at rest and decrypts enabled secrets for de
   assert.doesNotMatch(JSON.stringify(auditRows), /super-secret-value/);
 });
 
+test('D1 store lists enabled site secret metadata without selecting or decrypting ciphertext', async () => {
+  const rows = new Map([
+    [
+      'production:site_1:Z_TOKEN:sec_z',
+      {
+        id: 'sec_z',
+        environment: 'production',
+        site_id: 'site_1',
+        name: 'Z_TOKEN',
+        encrypted_value: 'not-decryptable-z',
+        revision: 2,
+        created_by: 'usr_1',
+        created_at: '2026-06-15T00:00:00.000Z',
+        updated_at: '2026-06-15T00:02:00.000Z',
+        deleted_at: null,
+      },
+    ],
+    [
+      'production:site_1:API_TOKEN:sec_a',
+      {
+        id: 'sec_a',
+        environment: 'production',
+        site_id: 'site_1',
+        name: 'API_TOKEN',
+        encrypted_value: 'not-decryptable-a',
+        revision: 3,
+        created_by: 'usr_1',
+        created_at: '2026-06-15T00:00:00.000Z',
+        updated_at: '2026-06-15T00:03:00.000Z',
+        deleted_at: null,
+      },
+    ],
+    [
+      'production:site_1:DELETED_TOKEN:sec_deleted',
+      {
+        id: 'sec_deleted',
+        environment: 'production',
+        site_id: 'site_1',
+        name: 'DELETED_TOKEN',
+        encrypted_value: 'not-decryptable-deleted',
+        revision: 1,
+        created_by: 'usr_1',
+        created_at: '2026-06-15T00:00:00.000Z',
+        updated_at: '2026-06-15T00:04:00.000Z',
+        deleted_at: '2026-06-15T00:05:00.000Z',
+      },
+    ],
+  ]);
+  const baseDb = fakeSiteSecretsDb(rows);
+  let preparedSql = '';
+  const store = new D1PagesStore({
+    ...baseDb,
+    prepare(sql) {
+      preparedSql = sql;
+      return baseDb.prepare(sql);
+    },
+  });
+
+  assert.deepEqual(await store.listEnabledSiteSecretMetadata('production', 'site_1'), [
+    {
+      name: 'API_TOKEN',
+      revision: 3,
+      updatedAt: '2026-06-15T00:03:00.000Z',
+    },
+    {
+      name: 'Z_TOKEN',
+      revision: 2,
+      updatedAt: '2026-06-15T00:02:00.000Z',
+    },
+  ]);
+  assert.match(preparedSql, /SELECT name, revision, updated_at/);
+  assert.doesNotMatch(preparedSql, /encrypted_value|SELECT \*/);
+});
+
 test('D1 store replaces site vars as site-level runtime config and bumps generation only on changes', async () => {
   const rows = new Map();
   const auditRows = [];

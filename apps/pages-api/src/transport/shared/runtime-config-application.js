@@ -1,5 +1,6 @@
-import { createRuntimeConfigMutationPort } from '../../application/ports/runtime-config.js';
+import { createRuntimeConfigMutationPort, createRuntimeConfigReadPort } from '../../application/ports/runtime-config.js';
 import { createRuntimeConfigMutations } from '../../application/runtime-config/mutations.js';
+import { createRuntimeConfigReads } from '../../application/runtime-config/reads.js';
 import { jsonError } from '../../http.js';
 import { nextId } from '../../id.js';
 import { createRuntimeConfigSync } from '../../infrastructure/providers/runtime-config-sync.js';
@@ -17,6 +18,10 @@ export function createRuntimeConfigApplication({ store, env, config }) {
     clock: { now: () => readNow(env) },
     ids: { next: (prefix) => nextId(env, prefix) },
   });
+}
+
+export function createRuntimeConfigReadApplication({ store }) {
+  return createRuntimeConfigReads({ repository: createRuntimeConfigReadPort(store) });
 }
 
 export async function syncActiveWfpSecret(store, env, config, site, input) {
