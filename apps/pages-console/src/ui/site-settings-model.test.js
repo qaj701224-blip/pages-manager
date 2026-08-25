@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  buildSiteOwnershipReauthHref,
   buildSiteOwnershipTransferForm,
   filterSiteOwnerCandidates,
   getSiteOwnershipTransferErrorMessage,
@@ -113,13 +112,7 @@ test('site ownership model rejects the current owner and predicts post-transfer 
   assert.equal(shouldLeaveSiteAfterOwnershipTransfer('admin', { permissions: { canManage: false } }), false);
 });
 
-test('site ownership model builds a bounded reauthentication URL and readable owner view', () => {
-  const href = buildSiteOwnershipReauthHref('site/unsafe', 'workspace');
-  const url = new URL(href, 'https://console.example.test');
-  assert.equal(url.pathname, '/api/console/auth/login');
-  assert.equal(url.searchParams.get('reauth'), '1');
-  assert.equal(url.searchParams.get('returnTo'), '/workspace/sites/site%2Funsafe/settings');
-  assert.equal(url.searchParams.has('ownerId'), false);
+test('site ownership model builds a readable owner view', () => {
   assert.deepEqual(siteOwnerView({ type: 'user', id: 'usr_1', displayName: '目标用户', email: 'target@example.com' }), {
     typeLabel: '个人',
     label: '目标用户',
@@ -128,7 +121,6 @@ test('site ownership model builds a bounded reauthentication URL and readable ow
 });
 
 test('site ownership errors provide actionable transfer guidance', () => {
-  assert.match(getSiteOwnershipTransferErrorMessage({ code: 'CONSOLE_RECENT_LOGIN_REQUIRED' }), /重新验证身份/);
   assert.match(getSiteOwnershipTransferErrorMessage({ code: 'SITE_ADMIN_REQUIRED' }), /团队 admin/);
   assert.match(getSiteOwnershipTransferErrorMessage({ code: 'SITE_VISIBILITY_INVALID' }), /访问模式/);
   assert.match(getSiteOwnershipTransferErrorMessage({ code: 'ROUTE_POLICY_REPAIR_REQUIRED' }), /刷新确认/);

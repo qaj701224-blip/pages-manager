@@ -25,16 +25,16 @@ JWT Cookie:
 
 选择原则：
 
-| 数据类型                           | 权威存储                       | 快路径                 | 说明                              |
-| ---------------------------------- | ------------------------------ | ---------------------- | --------------------------------- |
-| 用户、站点、版本、成员、ACL        | D1                             | KV snapshot + L1 cache | 关系型数据，需要查询和审计        |
-| 路由表、active version、access policy | D1                          | route snapshot         | exposure/access mode 属权限边界，KV 只做缓存 |
-| 普通 Worker slot 池状态            | D1                             | route snapshot         | 扩容与分配必须强一致              |
-| OAuth state、一次性 code           | Durable Objects                | 无                     | 必须防重放、单次消费              |
-| CLI login polling                  | Durable Objects                | 无                     | 同一 login transaction 需要强一致 |
-| auth/session 刷新与吊销            | Durable Objects + D1 index     | JWT 本地验签           | DO 协调，D1 记录索引和审计        |
-| JWKS / public signing keys         | D1 或配置                      | KV / Cache             | 可缓存，靠 `kid` 轮换             |
-| 审计事件                           | D1 index + 后续 analytics sink | 可异步批量写           | 禁止写入 secret 和 token          |
+| 数据类型                              | 权威存储                       | 快路径                 | 说明                                         |
+| ------------------------------------- | ------------------------------ | ---------------------- | -------------------------------------------- |
+| 用户、站点、版本、成员、ACL           | D1                             | KV snapshot + L1 cache | 关系型数据，需要查询和审计                   |
+| 路由表、active version、access policy | D1                             | route snapshot         | exposure/access mode 属权限边界，KV 只做缓存 |
+| 普通 Worker slot 池状态               | D1                             | route snapshot         | 扩容与分配必须强一致                         |
+| OAuth state、一次性 code              | Durable Objects                | 无                     | 必须防重放、单次消费                         |
+| CLI login polling                     | Durable Objects                | 无                     | 同一 login transaction 需要强一致            |
+| auth/session 刷新与吊销               | Durable Objects + D1 index     | JWT 本地验签           | DO 协调，D1 记录索引和审计                   |
+| JWKS / public signing keys            | D1 或配置                      | KV / Cache             | 可缓存，靠 `kid` 轮换                        |
+| 审计事件                              | D1 index + 后续 analytics sink | 可异步批量写           | 禁止写入 secret 和 token                     |
 
 ### D1 权威表
 
@@ -254,7 +254,7 @@ site_members
   created_at
 ```
 
-`owner` 至少保留一名。删除 owner 或转移 owner 属于高风险操作，需要 recent login。
+`owner` 至少保留一名。删除 owner 或转移 owner 属于高风险操作；当前归属转移使用有效 Console session、服务端权限复核和显式二次确认，不要求 recent login。recent login 保留为其它高风险操作的未来增强能力。
 
 #### site_acl_entries
 
@@ -472,7 +472,7 @@ user_session:{user_id}
 
 - 协调 `auth_session` 刷新。
 - 用户被禁用或管理员踢下线时 bump `sessionVersion`。
-- 判断高风险操作是否满足 recent login。
+- 为未来需要强化身份验证的高风险操作提供 recent-login 判断能力；当前站点归属转移不依赖该字段。
 
 #### SitePolicyDO
 

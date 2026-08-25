@@ -2,7 +2,6 @@ import {
   consoleRequiresPlatformAdmin,
   isConsoleBffRequest,
   readOptionalConsoleUserSession,
-  requireRecentConsoleLogin,
   requireConsoleUserSession,
 } from './console-auth.js';
 import { departmentTeamDisplayName } from './department-path.js';
@@ -250,8 +249,6 @@ async function updateConsoleSiteSettings(request, env, config, store, session, s
   if (typeof store.transferSiteOwner !== 'function') {
     return jsonError('SITE_TRANSFER_UNSUPPORTED', 'Site transfer is unavailable.', 503, 'Retry later.');
   }
-  const recentLoginError = requireRecentConsoleLogin(session, env);
-  if (recentLoginError) return recentLoginError;
 
   const site = await store.getConsoleSiteDetail({
     environment: config.environment,

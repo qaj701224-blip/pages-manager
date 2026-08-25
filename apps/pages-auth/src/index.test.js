@@ -326,7 +326,6 @@ test('OAuth callback redirects console login code to console worker callback', a
       assert.equal(input.stateId, 'ost_console');
       assert.equal(input.user.userId, 'usr_123');
       assert.equal(input.user.email, 'user@example.com');
-      assert.equal(input.user.authTime, 1_800_000_000);
       return { consoleCode: 'ost_console.console-secret' };
     },
   };
@@ -417,31 +416,19 @@ test('internal endpoint creates console login authorize URL', async () => {
   assert.equal(body.authorizeUrl, 'https://auth.pages.xd.team/.xd-pages/auth/authorize?console=1&return_to=%2Fworkspace');
 });
 
-test('internal console login forwards reauth without accepting an unsafe return path', async () => {
+test('internal console login rejects an unsafe return path', async () => {
   const bindings = {
     ...testJwtEnv(),
     SSO_AUTHORIZATION_URL: 'https://sso.example.test/oauth/authorize',
     SSO_CLIENT_ID: 'xd_pages_test',
   };
-  const response = await worker.fetch(
-    jsonRequest('https://pages-auth.internal/.xd-pages/internal/console/login-code', {
-      returnTo: '/admin/sites/site_1/settings',
-      reauth: true,
-    }),
-    bindings
-  );
   const unsafeResponse = await worker.fetch(
     jsonRequest('https://pages-auth.internal/.xd-pages/internal/console/login-code', {
       returnTo: 'https://evil.example/workspace',
-      reauth: true,
     }),
     bindings
   );
 
-  assert.equal(response.status, 200, await response.clone().text());
-  const authorizeUrl = new URL((await response.json()).authorizeUrl);
-  assert.equal(authorizeUrl.searchParams.get('reauth'), '1');
-  assert.equal(authorizeUrl.searchParams.get('return_to'), '/admin/sites/site_1/settings');
   assert.equal(unsafeResponse.status, 400);
 });
 
@@ -460,7 +447,6 @@ test('internal endpoint exchanges console login code once', async () => {
           email: 'user@example.com',
           employeeStatus: 'active',
           sessionVersion: 2,
-          authTime: 1_799_999_900,
         },
       };
     },
@@ -483,7 +469,6 @@ test('internal endpoint exchanges console login code once', async () => {
     email: 'user@example.com',
     employeeStatus: 'active',
     sessionVersion: 2,
-    authTime: 1_799_999_900,
     environment: 'production',
     returnTo: '/workspace',
   });
@@ -507,7 +492,6 @@ test('internal console exchange does not require session JWT signing config', as
           email: 'user@example.com',
           employeeStatus: 'active',
           sessionVersion: 2,
-          authTime: 1_799_999_900,
         },
       }),
       isPlatformAdmin: async () => {
@@ -522,31 +506,9 @@ test('internal console exchange does not require session JWT signing config', as
     email: 'user@example.com',
     employeeStatus: 'active',
     sessionVersion: 2,
-    authTime: 1_799_999_900,
     environment: 'production',
     returnTo: '/workspace',
   });
-});
-
-test('internal console exchange rejects missing or invalid auth time', async () => {
-  for (const authTime of [undefined, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, '1800000000']) {
-    const response = await worker.fetch(
-      jsonRequest('https://pages-auth.internal/.xd-pages/internal/console/exchange', {
-        code: 'ost_console.console-secret',
-      }),
-      {
-        ...testJwtEnv(),
-        consumeConsoleLoginCodeRecord: async () => ({
-          environment: 'production',
-          returnTo: '/workspace',
-          user: { userId: 'usr_1', employeeStatus: 'active', authTime },
-        }),
-      }
-    );
-
-    assert.equal(response.status, 400);
-    assert.equal((await response.json()).error.code, 'CONSOLE_LOGIN_INVALID');
-  }
 });
 
 test('public auth host cannot call internal endpoints', async () => {
@@ -688,7 +650,6 @@ test('OAuthStateDO creates and consumes console login code without leaking secre
         email: 'user@example.com',
         employeeStatus: 'active',
         sessionVersion: 2,
-        authTime: 1_799_999_900,
       },
       now: 1_800_000_002,
       ttlSeconds: 60,
@@ -730,7 +691,6 @@ test('OAuthStateDO creates and consumes console login code without leaking secre
           email: 'user@example.com',
           employeeStatus: 'active',
           sessionVersion: 2,
-          authTime: 1_799_999_900,
         },
         issuedAt: 1_800_000_002,
         expiresAt: 1_800_000_062,
@@ -744,7 +704,6 @@ test('OAuthStateDO creates and consumes console login code without leaking secre
       email: 'user@example.com',
       employeeStatus: 'active',
       sessionVersion: 2,
-      authTime: 1_799_999_900,
     },
   });
 });

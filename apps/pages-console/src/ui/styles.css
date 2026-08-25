@@ -3281,12 +3281,6 @@ button {
   white-space: nowrap;
 }
 
-.dialog-error {
-  display: grid;
-  justify-items: start;
-  gap: 10px;
-}
-
 .admin-user-action-summary span {
   display: grid;
   gap: 2px;

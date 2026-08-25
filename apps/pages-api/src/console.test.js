@@ -2332,7 +2332,7 @@ test('console missing and repeated deletes do not emit site.deleted', async () =
   assert.equal(requests.length, 1);
 });
 
-test('personal site owner can transfer site ownership from console settings to an active user', async () => {
+test('personal site owner can transfer site ownership without recent-login metadata', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   await seedSite(store, {
     id: 'site_mine',
@@ -2368,43 +2368,6 @@ test('personal site owner can transfer site ownership from console settings to a
   assert.equal(site.ownerType, 'user');
   assert.equal(site.ownerId, 'usr_target');
   assert.equal(site.ownerUserId, 'usr_target');
-});
-
-test('console ownership transfer requires a recent login without creating side effects', async (t) => {
-  for (const scenario of [
-    { name: 'missing auth time', authTime: null },
-    { name: 'malformed auth time', authTime: 'not-a-time' },
-    { name: 'stale auth time', authTime: 1781480699 },
-    { name: 'future auth time', authTime: 1781481631 },
-  ]) {
-    await t.test(scenario.name, async () => {
-      const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
-      await seedSite(store, {
-        id: 'site_mine',
-        slug: 'mine',
-        ownerUserId: 'usr_me',
-        visibility: 'org',
-      });
-      await seedConsoleUser(store, 'usr_target');
-      const routeBefore = await store.getRouteBySiteId('site_mine', 'production');
-
-      const response = await worker.fetch(
-        internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/settings', {
-          userId: 'usr_me',
-          authTime: scenario.authTime,
-          method: 'PATCH',
-          body: { ownerType: 'user', ownerId: 'usr_target' },
-        }),
-        env(store)
-      );
-
-      assert.equal(response.status, 401, await response.clone().text());
-      assert.equal((await response.json()).error.code, 'CONSOLE_RECENT_LOGIN_REQUIRED');
-      assert.equal((await store.getSite('site_mine')).ownerId, 'usr_me');
-      assert.equal((await store.getRouteBySiteId('site_mine', 'production')).policyVersion, routeBefore.policyVersion);
-      assert.equal((await store.listAuditEvents()).filter((event) => event.eventType === 'site.owner.transfer').length, 0);
-    });
-  }
 });
 
 test('console rejects transferring a site to its current owner without side effects', async () => {
@@ -3158,7 +3121,7 @@ function envWithSequencedIds(store, overrides = {}) {
 
 function internalConsoleRequest(
   path,
-  { userId, email = 'user@example.com', admin = false, sessionVersion, authTime = 1781481600, method = 'GET' } = {}
+  { userId, email = 'user@example.com', admin = false, sessionVersion, method = 'GET' } = {}
 ) {
   const headers = {
     Host: 'pages-api.internal',
@@ -3169,16 +3132,12 @@ function internalConsoleRequest(
     headers['X-Console-Email'] = email;
     headers['X-Console-Admin'] = admin ? 'true' : 'false';
     if (sessionVersion !== undefined) headers['X-Console-Session-Version'] = String(sessionVersion);
-    if (authTime !== null) headers['X-Console-Auth-Time'] = String(authTime);
   }
   return new Request(`https://pages-api.internal${path}`, { method, headers });
 }
 
-function internalConsoleJsonRequest(
-  path,
-  { userId, email = 'user@example.com', admin = false, authTime = 1781481600, method = 'POST', body } = {}
-) {
-  const request = internalConsoleRequest(path, { userId, email, admin, authTime, method });
+function internalConsoleJsonRequest(path, { userId, email = 'user@example.com', admin = false, method = 'POST', body } = {}) {
+  const request = internalConsoleRequest(path, { userId, email, admin, method });
   const headers = Object.fromEntries(request.headers.entries());
   headers['Content-Type'] = 'application/json';
   return new Request(request.url, {

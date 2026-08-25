@@ -4302,7 +4302,7 @@ test('platform admin can edit admin-scope site settings without asset membership
   assert.equal(site.ownerUserId, 'usr_target');
 });
 
-test('platform admin site ownership transfer requires a recent login without side effects', async () => {
+test('platform admin can transfer site ownership without recent-login metadata', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
   await seedPlatformAdmin(store);
   await seedConsoleUser(store, 'usr_owner');
@@ -4325,18 +4325,17 @@ test('platform admin site ownership transfer requires a recent login without sid
     internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_personal/settings', {
       userId: 'usr_root',
       admin: true,
-      authTime: null,
       method: 'PATCH',
       body: { ownerType: 'user', ownerId: 'usr_target' },
     }),
     env(store)
   );
 
-  assert.equal(response.status, 401, await response.clone().text());
-  assert.equal((await response.json()).error.code, 'CONSOLE_RECENT_LOGIN_REQUIRED');
-  assert.equal((await store.getSite('site_personal')).ownerId, 'usr_owner');
-  assert.equal((await store.getRouteBySiteId('site_personal', 'production')).policyVersion, routeBefore.policyVersion);
-  assert.equal((await store.listAuditEvents()).filter((event) => event.eventType === 'site.owner.transfer').length, 0);
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.equal((await response.json()).site.owner.id, 'usr_target');
+  assert.equal((await store.getSite('site_personal')).ownerId, 'usr_target');
+  assert.equal((await store.getRouteBySiteId('site_personal', 'production')).policyVersion, routeBefore.policyVersion + 1);
+  assert.equal((await store.listAuditEvents()).filter((event) => event.eventType === 'site.owner.transfer').length, 1);
 });
 
 test('platform admin can update site name and URL without site membership', async () => {
@@ -4952,7 +4951,7 @@ function env(store, overrides = {}) {
 
 function internalConsoleRequest(
   path,
-  { userId, email = 'user@example.com', admin = false, sessionVersion, authTime = 1782950400, method = 'GET', body } = {}
+  { userId, email = 'user@example.com', admin = false, sessionVersion, method = 'GET', body } = {}
 ) {
   const headers = {
     Host: 'pages-api.internal',
@@ -4963,7 +4962,6 @@ function internalConsoleRequest(
     headers['X-Console-Email'] = email;
     headers['X-Console-Admin'] = admin ? 'true' : 'false';
     if (sessionVersion !== undefined) headers['X-Console-Session-Version'] = String(sessionVersion);
-    if (authTime !== null) headers['X-Console-Auth-Time'] = String(authTime);
   }
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   return new Request(`https://pages-api.internal${path}`, {

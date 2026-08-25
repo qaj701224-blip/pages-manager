@@ -154,7 +154,7 @@ Console 鉴权分两层：
 - `部署记录`。
 - `访问控制`。
 - `运行配置`：非敏感 Vars 和 Secrets metadata；secret value 不回显。
-- `设置`：名称与站点 URL 使用两个独立表单和错误状态；名称可清空，URL 改名的 `202 pending` 会自动轮询至 ready，旧地址停止访问并在安全期后释放，同时提示同步本地 `xd-cell.config.json.name`。Owner 使用独立“站点归属”卡片和二次确认，不重复展示名称、Slug 或 Hostname；个人 Owner 或源团队 `admin` 可发起转移，提交前要求最近 15 分钟内重新经过 SSO 验证。运行配置保存或替换后保留现有列表并后台刷新，弹窗开关不应造成页面横向位移。删除站点必须二次确认。
+- `设置`：名称与站点 URL 使用两个独立表单和错误状态；名称可清空，URL 改名的 `202 pending` 会自动轮询至 ready，旧地址停止访问并在安全期后释放，同时提示同步本地 `xd-cell.config.json.name`。Owner 使用独立“站点归属”卡片和二次确认，不重复展示名称、Slug 或 Hostname；个人 Owner 或源团队 `admin` 可发起转移，使用有效 Console session，不额外要求 recent login。运行配置保存或替换后保留现有列表并后台刷新，弹窗开关不应造成页面横向位移。删除站点必须二次确认。
 
 ## 团队与权限
 

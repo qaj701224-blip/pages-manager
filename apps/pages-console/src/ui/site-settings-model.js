@@ -82,13 +82,6 @@ export function shouldLeaveSiteAfterOwnershipTransfer(scope, site = {}) {
   return scope !== 'admin' && site.permissions?.canManage !== true;
 }
 
-export function buildSiteOwnershipReauthHref(siteId, scope = 'workspace') {
-  const encodedSiteId = encodeURIComponent(String(siteId || ''));
-  const returnTo = scope === 'admin' ? `/admin/sites/${encodedSiteId}/settings` : `/workspace/sites/${encodedSiteId}/settings`;
-  const search = new URLSearchParams({ reauth: '1', returnTo });
-  return `/api/console/auth/login?${search.toString()}`;
-}
-
 export function siteOwnerView(owner = {}) {
   const ownerType = owner.type === 'team' ? 'team' : 'user';
   const typeLabel = ownerType === 'team' ? '团队' : '个人';
@@ -118,7 +111,6 @@ export function getSiteOwnershipTransferErrorMessage(error) {
   if (!error) return '';
   if (error.code === 'USER_REQUIRED') return '请选择用户。';
   if (error.code === 'TEAM_REQUIRED') return '请选择团队。';
-  if (error.code === 'CONSOLE_RECENT_LOGIN_REQUIRED') return '请重新验证身份后再转移站点归属。';
   if (error.code === 'SITE_ADMIN_REQUIRED') return '仅当前个人 Owner 或源团队 admin 可转移站点归属。';
   if (error.code === 'PLATFORM_ADMIN_REQUIRED') return '需要平台管理员权限才能转移站点归属。';
   if (error.code === 'SITE_TRANSFER_FORBIDDEN') return '目标用户或团队不可用，或你没有目标团队的 publisher/admin 权限。';

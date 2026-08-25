@@ -31,7 +31,7 @@
 - Public API 转给个人时仍只能转给已认证 actor 自己；转给团队时，actor 必须是目标团队的 `publisher` 或 `admin`。Team access token（TAT）不能改变 Owner；部署自身团队的既有站点不视为归属转移。
 - `xd-cell deploy --team <teamId>` 创建团队站点时仍接受目标团队 `publisher/admin`。若既有站点需要随部署转移，个人源站点要求当前 Owner，团队源站点要求源团队 `admin`，并在 route activation 的 D1 事务内再次复核。
 - 与当前 Owner 相同的 transfer 请求返回 `400 SITE_TRANSFER_INVALID`，不会递增 `policyVersion`、刷新 route snapshot 或写入 `site.owner.transfer` 审计。
-- Workspace Console 的归属转移要求个人 Owner 或源团队 `admin`，Admin Console 要求 platform admin；两者还要求最近 15 分钟内完成 SSO 验证，允许最多 30 秒未来时钟偏差。缺失、过期或异常的 `authTime` 返回 `401 CONSOLE_RECENT_LOGIN_REQUIRED`，旧 session 的其它只读和普通管理能力不受影响。
+- Workspace Console 的归属转移要求个人 Owner 或源团队 `admin`，Admin Console 要求 platform admin；两者使用有效 Console session、可信 BFF 身份、CSRF 校验和显式二次确认，不额外要求 recent login，也不依赖 `authTime` 或 `reauth=1`。
 
 ## 真相源
 

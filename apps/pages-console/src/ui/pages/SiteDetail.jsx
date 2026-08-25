@@ -68,7 +68,6 @@ import {
   toAclUpdatePayload,
 } from '../site-detail-model.js';
 import {
-  buildSiteOwnershipReauthHref,
   buildSiteOwnershipTransferForm,
   filterSiteOwnerCandidates,
   getSiteMetadataErrorMessage,
@@ -1661,13 +1660,6 @@ function SiteSettingsPanel({ site, scope, currentUserId, siteApi, onSiteDeleted,
         confirmLabel={transferState.transferring ? '转移中' : '确认转移'}
         confirming={transferState.transferring}
         error={transferState.error ? getSiteOwnershipTransferErrorMessage(transferState.error) : ''}
-        errorAction={
-          transferState.error?.code === 'CONSOLE_RECENT_LOGIN_REQUIRED' ? (
-            <a className="secondary-button" href={buildSiteOwnershipReauthHref(site.id, scope)}>
-              重新验证身份
-            </a>
-          ) : null
-        }
         icon={<AlertTriangle size={16} />}
         onCancel={() => {
           if (transferState.transferring) return;

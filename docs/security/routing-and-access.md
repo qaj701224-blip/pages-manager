@@ -185,7 +185,7 @@ v2 CLI 只使用 `/.xd-pages/api/*`。开发期 API 合约源码位于 `apps/pag
 | `auth-flow`    | `/.xd-pages/auth/*`、`/.xd-pages/cli/login/*`           | SSO state / auth_session / login secret | redirect allowlist、CSRF state、一次性 code、poll/consume 限流                 |
 | `user-api`     | `/.xd-pages/api/sites`、`/.xd-pages/api/access-keys`    | CLI token、access key 或 api_session    | scope + owner/collaborator 校验                                                |
 | `deploy-api`   | `/.xd-pages/api/deployments`、`/.xd-pages/api/versions` | CLI token 或 access key                 | scope、site 权限、payload 限制、idempotency、审计                              |
-| `admin-api`    | `/.xd-pages/api/admin/*`、`/.xd-pages/api/audit/*`      | admin session                           | recent login、管理员角色、强审计                                               |
+| `admin-api`    | `/.xd-pages/api/admin/*`、`/.xd-pages/api/audit/*`      | admin session                           | 管理员角色、强审计；recent login 按高风险操作单独启用，当前 Owner 转移不要求   |
 | `internal-api` | service binding only                                    | service binding 或内部签名              | 不暴露公网路由                                                                 |
 
 `public-docs` 端点必须根据请求 host 动态生成环境相关地址。`api-staging.pages.xd.team/skill.md` 和 `/readme.md` 只能返回 staging API、auth 和子站域名示例；production 端点只能返回 production 地址。

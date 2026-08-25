@@ -105,33 +105,20 @@ absolute TTL: 30 天
 用途: 证明用户已通过心动 SSO 登录 pages 平台
 ```
 
-该 cookie 不下发到子站域名，也不下发到 `api.pages.xd.team`。`auth_session` 可以做得相对长，减少用户重新扫码或重新认证的频率；但它不应是完全不可吊销的纯 stateless JWT。推荐由 Durable Object 协调发行、刷新和吊销，并在 D1 保存可查询索引。session 记录至少包含 `sid`、`userId`、`issuedAt`、`lastSeenAt`、`expiresAt`、`absoluteExpiresAt`、`revokedAt` 和 `authTime`。
+该 cookie 不下发到子站域名，也不下发到 `api.pages.xd.team`。`auth_session` 可以做得相对长，减少用户重新扫码或重新认证的频率；但它不应是完全不可吊销的纯 stateless JWT。推荐由 Durable Object 协调发行、刷新和吊销，并在 D1 保存可查询索引。session 记录至少包含 `sid`、`userId`、`issuedAt`、`lastSeenAt`、`expiresAt`、`absoluteExpiresAt` 和 `revokedAt`；`authTime` 可作为未来高风险操作的增强字段，但不能成为普通 Console 登录或站点归属转移的兼容性前提。
 
 如果需要浏览器态管理 API，必须单独签发 `api.pages.xd.team` host-only `api_session`，不能把 `auth_session` 改成父域 cookie。
 
-高风险操作仍应要求 recent login，例如：
+未来若为高风险操作增加 recent login，应按操作单独设计、验证和灰度，不能把缺少 `authTime` 的有效 Console session 整体判为无效。候选操作包括：
 
 - 删除站点。
 - 创建或查看 access key。
-- 修改 owner、collaborators 或 ACL。
+- 修改 collaborators 或 ACL。
 - 将站点 access mode 改为匿名，或修改高风险网络 exposure。当前 Admin exposure 操作要求平台管理员、理由和确认，但暂不强制 recent login。
 
-站点归属转移已经落实 recent login，并以 `AuthSessionDO.authTime` 作为唯一权威验证时间。该时间沿可信链路传递：
+站点归属转移当前不要求 recent login，不使用 `authTime`、`X-Console-Auth-Time`、`reauth=1` 或 `CONSOLE_RECENT_LOGIN_REQUIRED`。它依赖有效的 host-only Console session、CSRF 校验、公司网络门禁、服务端源/目标权限复核、site commit lease、审计和 UI 二次确认。此边界允许 pages-auth、pages-console 与 pages-api 独立滚动部署；旧登录会话和旧 exchange 响应缺少 `authTime` 时，普通 Console 登录及归属转移不能因此失败。
 
-```text
-AuthSessionDO.authTime
-  -> Console one-time code
-  -> internal console exchange
-  -> host-only console_session JWT
-  -> pages-console BFF X-Console-Auth-Time
-  -> pages-api validated console session
-```
-
-`pages-api` 要求 `authTime` 距当前时间不超过 900 秒，并只容忍最多 30 秒的未来时钟偏差；缺失、非整数、过期或超出未来偏差都返回 `401 CONSOLE_RECENT_LOGIN_REQUIRED`。旧 Console cookie 仍可读取普通页面，但不能执行归属转移。校验不得用 Console JWT `iat`、one-time code `issuedAt` 或 session `lastSeenAt` 代替 `authTime`。
-
-Console 收到该错误后，引导浏览器访问 `/api/console/auth/login?reauth=1&returnTo=<当前设置页>`。`reauth=1` 会让 `pages-auth` 跳过本地 `auth_session` 快捷授权，并向上游 SSO authorize 传递 `prompt=login`；只有重新完成 SSO callback 后才生成新的 `authTime`。回跳参数只允许受控的 Workspace/Admin 相对路径，且不携带待转移目标；用户需要重新选择并确认，避免重认证前的意图被静默执行。
-
-Cindy(原 XDMaker)插件 `xd-sites` 的请求不走换证：Cindy Desktop 宿主为每个 `/.xd-pages/api/*` 请求携带短时效 connection 断言(RS256 JWT,`typ=connection`,TTL 30 分钟),`pages-api` 逐请求经 Cindy JWKS 验签并按 `sub`(membershipId)映射/落库用户。断言 actor 只持有 `deploy:site`、`read:site`、`rollback:site` scope,不能创建或查看 access key;Console 创建/查看 key 的 recent-login 语义不因此改变。详见 `docs/api-boundary.md` 的「Cindy Connections 断言鉴权」。
+Cindy(原 XDMaker)插件 `xd-sites` 的请求不走换证：Cindy Desktop 宿主为每个 `/.xd-pages/api/*` 请求携带短时效 connection 断言(RS256 JWT,`typ=connection`,TTL 30 分钟),`pages-api` 逐请求经 Cindy JWKS 验签并按 `sub`(membershipId)映射/落库用户。断言 actor 只持有 `deploy:site`、`read:site`、`rollback:site` scope,不能创建或查看 access key；未来若为 Console 创建/查看 key 增加 recent-login 门禁，应作为独立能力设计，不受 Cindy connection 断言影响。详见 `docs/api-boundary.md` 的「Cindy Connections 断言鉴权」。
 
 ### site_session
 
