@@ -33,7 +33,7 @@ export function serializeConsoleSessionCookie(token) {
 export async function signConsoleSession(session, env = {}, audience) {
   const userId = session?.userId ? String(session.userId) : '';
   if (!userId) throw new Error('Console session user id is missing');
-  const authTime = normalizeAuthTime(session.authTime);
+  const authTime = normalizeOptionalAuthTime(session.authTime);
   return signSessionJwt(
     {
       purpose: 'console_session',
@@ -45,7 +45,7 @@ export async function signConsoleSession(session, env = {}, audience) {
         email: typeof session.email === 'string' ? session.email : '',
         employeeStatus: typeof session.employeeStatus === 'string' ? session.employeeStatus : '',
         sessionVersion: session.sessionVersion || 1,
-        authTime,
+        ...(authTime === undefined ? {} : { authTime }),
       },
     },
     env

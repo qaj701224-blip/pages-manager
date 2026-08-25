@@ -1,7 +1,7 @@
 import { createSiteOwnershipPort } from '../../application/ports/site-ownership.js';
 import { createTransferSiteOwner } from '../../application/sites/transfer-owner.js';
 import { jsonError } from '../../http.js';
-import { createSiteRouteSnapshotAdapter, routeSnapshotErrorResponse } from './site-route-snapshots.js';
+import { createSiteRouteSnapshotAdapter } from './site-route-snapshots.js';
 
 export function createSiteOwnershipApplication({ store, env }) {
   return createTransferSiteOwner({
@@ -16,6 +16,14 @@ export function siteTransferErrorResponse(error) {
   if (code === 'SITE_TRANSFER_UNSUPPORTED') {
     return jsonError('SITE_TRANSFER_UNSUPPORTED', 'Site transfer is unavailable.', 503, 'Retry later.');
   }
+  if (code === 'SITE_TRANSFER_INVALID') {
+    return jsonError(
+      'SITE_TRANSFER_INVALID',
+      'Site transfer target is invalid.',
+      400,
+      'Choose an owner different from the current owner.'
+    );
+  }
   if (code === 'SITE_NOT_FOUND') return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
   if (code === 'SITE_POLICY_LOCKED' || code === 'SITE_POLICY_CONFLICT' || code === 'SITE_COMMIT_TIMEOUT') {
     return jsonError('SITE_POLICY_CONFLICT', 'Site changed concurrently.', 409, 'Refresh the site and retry.');
@@ -27,9 +35,6 @@ export function siteTransferErrorResponse(error) {
       503,
       'Repair the route snapshot before retrying.'
     );
-  }
-  if (code === 'ROUTE_VERSION_NOT_FOUND' || code === 'ROUTE_SNAPSHOT_WRITE_FAILED') {
-    return routeSnapshotErrorResponse(error);
   }
   throw error;
 }

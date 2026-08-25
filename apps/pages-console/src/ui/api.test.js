@@ -56,11 +56,11 @@ import {
   putAdminSiteRuntimeVar,
   updateSiteAccess,
   updateSiteMetadata,
-  updateSiteSettings,
+  transferSiteOwnership,
   updateAdminSiteAccess,
   updateAdminSiteExposure,
   updateAdminSiteMetadata,
-  updateAdminSiteSettings,
+  transferAdminSiteOwnership,
   updateAdminWebhook,
   updateAdminTeamMember,
   updateAdminTeamSettings,
@@ -409,7 +409,7 @@ test('site management API helpers use site access and runtime config endpoints',
   assert.deepEqual(JSON.parse(calls[3].init.body), { value: 'secret-value' });
 });
 
-test('site settings API helpers update owner under workspace and admin scopes', async () => {
+test('site ownership transfer helpers use the compatible workspace and admin endpoints', async () => {
   const calls = [];
   const fetchImpl = async (url, init) => {
     calls.push({ url, init });
@@ -417,8 +417,8 @@ test('site settings API helpers update owner under workspace and admin scopes', 
   };
 
   await listTeams({ fetchImpl });
-  await updateSiteSettings('site_1', { ownerType: 'team', teamId: 'team_1' }, { fetchImpl, csrfToken: 'csrf-1' });
-  await updateAdminSiteSettings('site_1', { ownerType: 'user', ownerId: 'usr_1' }, { fetchImpl, csrfToken: 'csrf-2' });
+  await transferSiteOwnership('site_1', { ownerType: 'team', teamId: 'team_1' }, { fetchImpl, csrfToken: 'csrf-1' });
+  await transferAdminSiteOwnership('site_1', { ownerType: 'user', ownerId: 'usr_1' }, { fetchImpl, csrfToken: 'csrf-2' });
 
   assert.deepEqual(
     calls.map((call) => [call.url, call.init.method, call.init.headers['X-CSRF-Token'] || '']),

@@ -84,6 +84,23 @@ test('legacy console_session JWT without auth time remains readable', async () =
   assert.equal(session.authTime, undefined);
 });
 
+test('console_session signer preserves compatibility when auth time is missing', async () => {
+  const token = await signConsoleSession(
+    { userId: 'user-1' },
+    env({ PAGES_SESSION_JWT_ACTIVE_KID: 'kid-test' }),
+    'workers.xd.team'
+  );
+  const session = await readConsoleSession(
+    new Request('https://workers.xd.team/workspace', {
+      headers: { Cookie: serializeConsoleSessionCookie(token).split(';')[0] },
+    }),
+    env()
+  );
+
+  assert.equal(session.userId, 'user-1');
+  assert.equal(session.authTime, undefined);
+});
+
 test('console_session rejects invalid auth time claims', async () => {
   const header = serializeConsoleSessionCookie(await signedConsoleSessionToken({ authTime: '1800000000' }));
   const session = await readConsoleSession(
@@ -94,7 +111,6 @@ test('console_session rejects invalid auth time claims', async () => {
   );
 
   assert.equal(session, null);
-  await assert.rejects(() => signConsoleSession({ userId: 'user-1' }, env(), 'workers.xd.team'), /auth time/i);
   await assert.rejects(() => signConsoleSession({ userId: 'user-1', authTime: -1 }, env(), 'workers.xd.team'), /auth time/i);
 });
 

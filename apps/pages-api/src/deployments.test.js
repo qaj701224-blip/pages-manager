@@ -5138,7 +5138,7 @@ test('requested team id transfers an existing personal site when the actor can m
   assert.equal((await store.getRouteBySiteId('site_1')).visibility, 'internal');
 });
 
-test('requested team id transfers an existing team site when the actor can manage both teams', async () => {
+test('requested team id transfers an existing team site when the actor is source admin and target publisher', async () => {
   const store = await createSeededStore();
   const teamA = await store.createTeam({
     id: 'team_a',
@@ -5157,7 +5157,7 @@ test('requested team id transfers an existing team site when the actor can manag
   await store.addTeamMember({
     teamId: teamA.id,
     userId: 'usr_1',
-    role: 'publisher',
+    role: 'admin',
     membershipSource: 'manual',
   });
   await store.addTeamMember({
@@ -5195,6 +5195,202 @@ test('requested team id transfers an existing team site when the actor can manag
   assert.equal(site.ownerType, 'team');
   assert.equal(site.ownerId, teamB.id);
   assert.equal(site.ownerUserId, 'usr_1');
+});
+
+test('team publisher cannot transfer an existing team site during deploy', async () => {
+  const store = await createSeededStore();
+  await store.createUser({
+    userId: 'usr_creator',
+    email: 'creator@example.com',
+    employeeStatus: 'active',
+  });
+  const teamA = await store.createTeam({
+    id: 'team_a',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team A',
+    createdByUserId: 'usr_creator',
+  });
+  const teamB = await store.createTeam({
+    id: 'team_b',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team B',
+    createdByUserId: 'usr_creator',
+  });
+  await store.addTeamMember({
+    teamId: teamA.id,
+    userId: 'usr_1',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  await store.addTeamMember({
+    teamId: teamB.id,
+    userId: 'usr_1',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  await store.createSite({
+    id: 'site_team_a',
+    slug: 'team-guide',
+    ownerUserId: 'usr_creator',
+    ownerType: 'team',
+    ownerId: teamA.id,
+    siteUuid: 'uuid_team_a',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_team_a',
+    hostname: 'team-guide.pages.xd.team',
+  });
+
+  const response = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ siteId: undefined, siteSlug: 'team-guide', teamId: teamB.id }),
+      { 'Idempotency-Key': 'team_publisher_transfer_denied' }
+    ),
+    testEnv(store, createSnapshotStore())
+  );
+
+  assert.equal(response.status, 403, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'DEPLOY_FORBIDDEN');
+  assert.equal((await store.getSite('site_team_a')).ownerId, teamA.id);
+  assert.equal((await store.listAuditEvents()).filter((event) => event.eventType === 'site.owner.transfer').length, 0);
+});
+
+test('team access token can deploy its own team site but cannot transfer it to another team', async () => {
+  const store = await createSeededStore();
+  const sourceTeam = await store.createTeam({
+    id: 'team_tat_source',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'TAT Source Team',
+    createdByUserId: 'usr_1',
+  });
+  const targetTeam = await store.createTeam({
+    id: 'team_tat_target',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'TAT Target Team',
+    createdByUserId: 'usr_1',
+  });
+  await store.createSite({
+    id: 'site_tat_source',
+    slug: 'tat-team-guide',
+    ownerUserId: 'usr_1',
+    ownerType: 'team',
+    ownerId: sourceTeam.id,
+    siteUuid: 'uuid_tat_source',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_tat_source',
+    hostname: 'tat-team-guide.pages.xd.team',
+  });
+  const teamAccessToken = await seedAccessKey(store, 'ak_tat_deploy_matrix', ['deploy:site'], null, {
+    ownerType: 'team',
+    ownerId: sourceTeam.id,
+    ownerUserId: 'usr_1',
+    createdByUserId: 'usr_1',
+  });
+  const snapshots = createSnapshotStore();
+  const environment = testEnv(store, snapshots);
+
+  const sameTeam = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ siteId: undefined, siteSlug: 'tat-team-guide', teamId: sourceTeam.id }),
+      { 'Idempotency-Key': 'tat_same_team_deploy', Authorization: `Bearer ${teamAccessToken}` }
+    ),
+    environment
+  );
+  assert.equal(sameTeam.status, 201, await sameTeam.clone().text());
+  assert.equal((await sameTeam.json()).deployment.siteId, 'site_tat_source');
+  assert.equal((await store.getSite('site_tat_source')).ownerId, sourceTeam.id);
+
+  const crossTeam = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({
+        siteId: undefined,
+        siteSlug: 'tat-team-guide',
+        teamId: targetTeam.id,
+        moduleContent: 'export default { fetch() { return new Response("cross-team"); } };',
+      }),
+      { 'Idempotency-Key': 'tat_cross_team_deploy', Authorization: `Bearer ${teamAccessToken}` }
+    ),
+    environment
+  );
+  assert.equal(crossTeam.status, 403, await crossTeam.clone().text());
+  assert.equal((await crossTeam.json()).error.code, 'DEPLOY_FORBIDDEN');
+  assert.equal((await store.getSite('site_tat_source')).ownerId, sourceTeam.id);
+  assert.equal((await store.listAuditEvents()).filter((event) => event.eventType === 'site.owner.transfer').length, 0);
+});
+
+test('deploy ownership transfer D1 guard rejects a source admin downgraded after locked authorization', async () => {
+  const store = await createSeededStore();
+  await store.createUser({
+    userId: 'usr_creator',
+    email: 'creator@example.com',
+    employeeStatus: 'active',
+  });
+  const teamA = await store.createTeam({
+    id: 'team_a',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team A',
+    createdByUserId: 'usr_1',
+  });
+  const teamB = await store.createTeam({
+    id: 'team_b',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team B',
+    createdByUserId: 'usr_creator',
+  });
+  await store.addTeamMember({
+    teamId: teamB.id,
+    userId: 'usr_1',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  await store.createSite({
+    id: 'site_team_a',
+    slug: 'team-guide',
+    ownerUserId: 'usr_1',
+    ownerType: 'team',
+    ownerId: teamA.id,
+    siteUuid: 'uuid_team_a',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_team_a',
+    hostname: 'team-guide.pages.xd.team',
+  });
+  const commitDeploymentActivation = store.commitDeploymentActivation.bind(store);
+  store.commitDeploymentActivation = async (input) => {
+    await store.addTeamMember({
+      teamId: teamA.id,
+      userId: 'usr_1',
+      role: 'publisher',
+      membershipSource: 'manual',
+      actorUserId: 'usr_creator',
+    });
+    return commitDeploymentActivation(input);
+  };
+
+  const response = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ siteId: undefined, siteSlug: 'team-guide', teamId: teamB.id }),
+      { 'Idempotency-Key': 'team_source_admin_downgraded' }
+    ),
+    testEnv(store, createSnapshotStore())
+  );
+
+  assert.equal(response.status, 404, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'SITE_NOT_FOUND');
+  assert.equal((await store.getSite('site_team_a')).ownerId, teamA.id);
+  assert.equal((await store.getRouteBySiteId('site_team_a', 'production')).activeVersionId, null);
+  assert.equal((await store.listAuditEvents()).filter((event) => event.eventType === 'site.owner.transfer').length, 0);
 });
 
 test('uses bounded WFP worker names for valid long slugs', async () => {

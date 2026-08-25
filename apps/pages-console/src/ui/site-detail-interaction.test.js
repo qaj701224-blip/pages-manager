@@ -29,8 +29,7 @@ test('shared app dialogs ignore pointer interactions outside the dialog', () => 
 test('account basic section shows SSO sync as secondary description', () => {
   const ssoDescriptionPattern =
     /<h2>\{t\('basicInfo'\)\}<\/h2>[\s\S]*?<p className="settings-card-description">\{profile\.ssoSource\}<\/p>/;
-  const oldInlineNotePattern =
-    /ProfileRow label=\{t\('name'\)\} value=\{profile\.displayName\} note=\{profile\.ssoSource\}/;
+  const oldInlineNotePattern = /ProfileRow label=\{t\('name'\)\} value=\{profile\.displayName\} note=\{profile\.ssoSource\}/;
 
   assert.match(accountSource, ssoDescriptionPattern);
   assert.doesNotMatch(accountSource, oldInlineNotePattern);
@@ -82,7 +81,7 @@ test('site settings edit name and URL independently and explain old URL release'
 
   assert.match(
     siteDetailSource,
-    /const title = state\.site\?\.displayName \|\| state\.site\?\.title \|\| state\.site\?\.slug \|\| siteId;/,
+    /const title = state\.site\?\.displayName \|\| state\.site\?\.title \|\| state\.site\?\.slug \|\| siteId;/
   );
   assert.match(settingsSource, /<SiteTitleSettings/);
   assert.match(settingsSource, /<SiteSlugSettings/);
@@ -101,14 +100,33 @@ test('site settings edit name and URL independently and explain old URL release'
   assert.match(slugSettingsSource, /return \(\) => pollRequestGuardRef\.current\.activate\(null\)/);
 });
 
+test('site ownership is isolated from repeated metadata and requires explicit confirmation', () => {
+  const ownershipSource = siteDetailSource.slice(
+    siteDetailSource.indexOf('<form className="info-list site-ownership-card"'),
+    siteDetailSource.indexOf('<section className="info-list danger-zone">')
+  );
+
+  assert.match(ownershipSource, /<h2>站点归属<\/h2>/);
+  assert.match(ownershipSource, />\s*转移归属\s*</);
+  assert.match(ownershipSource, />\s*继续\s*</);
+  assert.doesNotMatch(ownershipSource, /<dt>Slug<\/dt>/);
+  assert.doesNotMatch(ownershipSource, /<dt>Hostname<\/dt>/);
+  assert.doesNotMatch(ownershipSource, /site\.displayName \|\| site\.title/);
+  assert.match(siteDetailSource, /title="确认转移站点归属"/);
+  assert.match(siteDetailSource, /confirmLabel=\{transferState\.transferring \? '转移中' : '确认转移'\}/);
+  assert.match(siteDetailSource, /siteApi\.transferOwnership\(site\.id, confirmTarget\.payload\)/);
+  assert.match(siteDetailSource, /canTransferOwnership = Boolean\(site\.permissions\?\.canTransferOwnership\)/);
+  assert.doesNotMatch(ownershipSource, /canManage[^A-Za-z].*转移归属/);
+});
+
 test('runtime config refresh preserves rendered data and reserves the page scrollbar', () => {
   const reloadSource = siteDetailSource.slice(
     siteDetailSource.indexOf('const reloadResource = useCallback'),
-    siteDetailSource.indexOf('useEffect(() =>', siteDetailSource.indexOf('const reloadResource = useCallback')),
+    siteDetailSource.indexOf('useEffect(() =>', siteDetailSource.indexOf('const reloadResource = useCallback'))
   );
   const configSource = siteDetailSource.slice(
     siteDetailSource.indexOf('function ConfigPanel'),
-    siteDetailSource.indexOf('function SiteSettingsPanel'),
+    siteDetailSource.indexOf('function SiteSettingsPanel')
   );
 
   assert.match(reloadSource, /status: current\.data \? 'refreshing' : 'loading'/);
@@ -125,15 +143,15 @@ test('runtime config refresh preserves rendered data and reserves the page scrol
 test('site mutation callbacks stay keyed to the resource tab and site that started them', () => {
   const detailSource = siteDetailSource.slice(
     siteDetailSource.indexOf('export function SiteDetail'),
-    siteDetailSource.indexOf('function SiteContextSidebar'),
+    siteDetailSource.indexOf('function SiteContextSidebar')
   );
   const sitePatchSource = detailSource.slice(
     detailSource.indexOf('const patchActiveSite'),
-    detailSource.indexOf('const updateActiveResource'),
+    detailSource.indexOf('const updateActiveResource')
   );
   const resourceUpdateSource = detailSource.slice(
     detailSource.indexOf('const updateActiveResource'),
-    detailSource.indexOf('const fetchActiveResource'),
+    detailSource.indexOf('const fetchActiveResource')
   );
 
   assert.match(sitePatchSource, /patchSiteStateForId\(current, siteId, patch\)/);
@@ -149,11 +167,11 @@ test('site mutation callbacks stay keyed to the resource tab and site that start
 test('access mutations cannot update a remounted tab after their original form unmounts', () => {
   const accessPolicySource = siteDetailSource.slice(
     siteDetailSource.indexOf('function AccessPolicyForm'),
-    siteDetailSource.indexOf('function AdminExposurePanel'),
+    siteDetailSource.indexOf('function AdminExposurePanel')
   );
   const exposureSource = siteDetailSource.slice(
     siteDetailSource.indexOf('function AdminExposurePanel'),
-    siteDetailSource.indexOf('function AclEntryDialog'),
+    siteDetailSource.indexOf('function AclEntryDialog')
   );
 
   for (const mutationSource of [accessPolicySource, exposureSource]) {
@@ -167,16 +185,17 @@ test('access mutations cannot update a remounted tab after their original form u
 test('site settings ignore mutations completed after navigation and keep metadata patches independent', () => {
   const settingsSource = siteDetailSource.slice(
     siteDetailSource.indexOf('function SiteSettingsPanel'),
-    siteDetailSource.indexOf('function SiteOwnerEditor'),
+    siteDetailSource.indexOf('function SiteOwnerEditor')
   );
   const titleSettingsSource = settingsSource.slice(
     settingsSource.indexOf('function SiteTitleSettings'),
-    settingsSource.indexOf('function SiteSlugSettings'),
+    settingsSource.indexOf('function SiteSlugSettings')
   );
 
-  assert.match(settingsSource, /settingsRequestGuardRef\.current\.activate\(site\.id\)/);
+  assert.match(settingsSource, /settingsRequestGuardRef\.current\.activate\(ownershipKey\)/);
   assert.match(settingsSource, /return \(\) => settingsRequestGuardRef\.current\.activate\(null\)/);
   assert.match(settingsSource, /settingsRequestGuardRef\.current\.isCurrent\(request\)/);
+  assert.match(settingsSource, /settingsRequestGuardRef\.current\.begin\(ownershipKey\)/);
   assert.match(settingsSource, /onSiteUpdate\?\.\(pickSiteOwnershipPatch\(data\.site\)\)/);
   assert.doesNotMatch(settingsSource, /onSiteUpdate\?\.\(data\.site\)/);
   assert.match(titleSettingsSource, /titleRequestGuardRef\.current\.activate\(site\.id\)/);
@@ -238,8 +257,7 @@ test('site access cards keep network range and access requirements in consistent
   assert.doesNotMatch(exposurePanelSource, /网络范围与 Visibility/);
   const mobileExposureSummaryPattern =
     /@media \(max-width: 640px\)[\s\S]*?\.exposure-policy-summary\s*\{[\s\S]*?flex-direction:\s*column;/;
-  const mobileExposureActionsPattern =
-    /\.exposure-policy-summary > button\s*\{[\s\S]*?align-self:\s*flex-start;/;
+  const mobileExposureActionsPattern = /\.exposure-policy-summary > button\s*\{[\s\S]*?align-self:\s*flex-start;/;
   const mobileCardHeadPattern =
     /@media \(max-width: 640px\)[\s\S]*?\.access-control-card__head,[\s\S]*?flex-direction:\s*column;/;
   assert.match(stylesSource, mobileExposureSummaryPattern);

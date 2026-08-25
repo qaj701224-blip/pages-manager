@@ -1,4 +1,5 @@
 import { teamOwnerSupportsVisibility } from '../../domain/sites/access-policy.js';
+import { actorCanTransferSiteOwnership } from '../../domain/sites/authorization.js';
 import { authorizeSiteMutation } from './authorize-site-mutation.js';
 
 export function createTransferSiteOwner({ siteOwnership, routeSnapshots, clock }) {
@@ -41,6 +42,12 @@ export function createTransferSiteOwner({ siteOwnership, routeSnapshots, clock }
         if (expectedOwner.ownerType !== currentOwner.ownerType || expectedOwner.ownerId !== currentOwner.ownerId) {
           throw applicationError('SITE_POLICY_CONFLICT');
         }
+        if (command.target.ownerType === currentOwner.ownerType && command.target.ownerId === currentOwner.ownerId) {
+          throw applicationError('SITE_TRANSFER_INVALID');
+        }
+        if (command.capability !== 'platform_admin' && !actorCanTransferSiteOwnership(authorization.actor, currentSite)) {
+          throw applicationError('SITE_NOT_FOUND');
+        }
 
         const route = await siteOwnership.getRouteBySiteId(currentSite.id, command.environment);
         if (!route) throw applicationError('SITE_NOT_FOUND');
@@ -59,7 +66,7 @@ export function createTransferSiteOwner({ siteOwnership, routeSnapshots, clock }
             expected: currentOwner,
             expectedRoute: routeAuthority(route),
             bumpPolicyVersion: true,
-            authorization: authorization.authorization,
+            authorization: ownershipTransferAuthorization(authorization.authorization),
             targetUserMustMatchActor: command.targetUserMustMatchActor,
             lease,
             ...(command.buildAuditEvent
@@ -88,24 +95,32 @@ export function createTransferSiteOwner({ siteOwnership, routeSnapshots, clock }
           await routeSnapshots.refreshActive({ site: updated, route: committedRoute, environment: command.environment });
         } catch (error) {
           if (command.compensateSnapshotFailure) {
-            await compensateSnapshotFailure({
-              siteOwnership,
-              routeSnapshots,
-              previousSite: currentSite,
-              updatedSite: updated,
-              committedRoute,
-              updatedAt,
-              environment: command.environment,
-              lease,
-            });
+            try {
+              await compensateSnapshotFailure({
+                siteOwnership,
+                routeSnapshots,
+                previousSite: currentSite,
+                updatedSite: updated,
+                committedRoute,
+                updatedAt,
+                environment: command.environment,
+                lease,
+              });
+            } catch (compensationError) {
+              throw applicationError('ROUTE_POLICY_REPAIR_REQUIRED', compensationError);
+            }
           }
-          throw error;
+          throw applicationError('ROUTE_POLICY_REPAIR_REQUIRED', error);
         }
         return { site: updated, route: committedRoute };
       },
       { bestEffortRelease: true }
     );
   };
+}
+
+function ownershipTransferAuthorization(authorization) {
+  return { ...authorization, operation: 'site_owner_transfer' };
 }
 
 export async function authorizeSiteTransferTarget(siteOwnership, command, actor) {
@@ -228,8 +243,9 @@ function routeAfterOwnerTransfer(route) {
   };
 }
 
-function applicationError(code) {
+function applicationError(code, cause) {
   const error = new Error(code);
   error.code = code;
+  if (cause) error.cause = cause;
   return error;
 }

@@ -31,7 +31,12 @@ export function formatWorkspaceSite(site) {
 export function formatSiteDetail(site) {
   return {
     ...formatWorkspaceSite(site),
-    owner: formatOwner(site, { includeDisplayName: true, includeId: true, includeEmail: true }),
+    owner: formatOwner(site, {
+      includeDisplayName: true,
+      includeId: true,
+      includeEmail: true,
+      includeDepartmentPath: true,
+    }),
     access: {
       visibility: site.route?.visibility || site.defaultVisibility,
     },
@@ -39,6 +44,7 @@ export function formatSiteDetail(site) {
       role: site.managementRole || (site.ownerUserId === site.currentUserId ? 'admin' : 'viewer'),
       canManage: canManageSite(site.managementRole) || site.ownerUserId === site.currentUserId,
       canManageAccess: canManageSite(site.managementRole) || site.ownerUserId === site.currentUserId,
+      canTransferOwnership: site.ownerType === 'team' ? site.managementRole === 'admin' : site.ownerUserId === site.currentUserId,
     },
   };
 }
@@ -97,11 +103,14 @@ export function formatSiteSecret(record) {
   };
 }
 
-function formatOwner(site, { includeDisplayName, includeId = false, includeEmail = false }) {
+function formatOwner(site, { includeDisplayName, includeId = false, includeEmail = false, includeDepartmentPath = false }) {
   const type = site.ownerType || 'user';
   const owner = { type };
   if (includeId) owner.id = site.ownerId || site.ownerUserId || null;
   if (includeEmail && type === 'user' && site.ownerEmail) owner.email = site.ownerEmail;
+  if (includeDepartmentPath && type === 'team' && site.ownerDepartmentPath) {
+    owner.departmentPath = site.ownerDepartmentPath;
+  }
   if (includeDisplayName && site.ownerDisplayName) owner.displayName = site.ownerDisplayName;
   if (type === 'team' && site.ownerTeamType) owner.teamType = site.ownerTeamType;
   return owner;

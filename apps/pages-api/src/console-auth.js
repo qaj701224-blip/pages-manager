@@ -2,6 +2,9 @@ import { hydrateUserDepartmentFromDirectory, shouldHydrateUserDepartment } from 
 import { deriveDepartmentTeamIdentity } from './department-path.js';
 import { jsonError } from './http.js';
 
+const CONSOLE_RECENT_LOGIN_SECONDS = 15 * 60;
+const CONSOLE_AUTH_TIME_FUTURE_SKEW_SECONDS = 30;
+
 export function isConsoleBffRequest(request) {
   const url = new URL(request.url);
   return url.hostname === 'pages-api.internal' && request.headers.get('X-Console-BFF') === 'pages-console';
@@ -15,6 +18,7 @@ export function readConsoleSessionHeaders(request) {
     userId,
     email: normalizeHeader(request.headers.get('X-Console-Email')),
     sessionVersion: Number.isInteger(sessionVersion) && sessionVersion > 0 ? sessionVersion : 1,
+    authTime: parseUnixSeconds(request.headers.get('X-Console-Auth-Time')),
   };
 }
 
@@ -79,9 +83,30 @@ export async function requireConsoleUserSession(request, env, config, store, opt
     email: currentUser.email || session.email,
     employeeStatus: currentUser.employeeStatus,
     sessionVersion: currentUser.sessionVersion,
+    authTime: session.authTime,
     isPlatformAdmin,
     user: currentUser,
   };
+}
+
+export function requireRecentConsoleLogin(session, env) {
+  const now = currentUnixSeconds(env);
+  const authTime = session?.authTime;
+  if (
+    !Number.isSafeInteger(authTime) ||
+    authTime <= 0 ||
+    !Number.isSafeInteger(now) ||
+    authTime > now + CONSOLE_AUTH_TIME_FUTURE_SKEW_SECONDS ||
+    now - authTime > CONSOLE_RECENT_LOGIN_SECONDS
+  ) {
+    return jsonError(
+      'CONSOLE_RECENT_LOGIN_REQUIRED',
+      'Recent console login is required.',
+      401,
+      'Verify your identity again before transferring site ownership.'
+    );
+  }
+  return null;
 }
 
 async function ensureDepartmentMembershipFromStoredPath({ store, environment, user }) {
@@ -121,4 +146,20 @@ export function consoleAuthRequired() {
 
 function normalizeHeader(value) {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function parseUnixSeconds(value) {
+  const normalized = normalizeHeader(value);
+  if (!/^[1-9]\d*$/.test(normalized)) return null;
+  const parsed = Number(normalized);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function currentUnixSeconds(env) {
+  const value = typeof env?.now === 'function' ? env.now() : Date.now();
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.floor(value > 10_000_000_000 ? value / 1000 : value);
+  }
+  const timestamp = value instanceof Date ? value.getTime() : Date.parse(value);
+  return Number.isFinite(timestamp) ? Math.floor(timestamp / 1000) : null;
 }

@@ -25,6 +25,14 @@
 - 含 `slug` 的 mutation 在路由同步未完成时返回 `202` 与 `routingStatus: pending`；title-only 成功响应固定为 `200`，但既有 slug 同步尚未完成时仍可能携带 `routingStatus: pending`。调用方应轮询当前站点直到 `ready`。`SITE_METADATA_MUTATIONS_ENABLED` 当前在 production 与 staging 模板中默认启用；紧急止损时可在对应模板中改为 `false`。关闭后它也拦截显式携带 `title` 的部署（包括 replay），但省略 `title` 的既有部署不受影响。
 - 缩略图上传与托管延期；当前请求、响应和 Console 均不暴露缩略图字段，也不为该能力新增 R2 binding。
 
+## 站点归属转移
+
+- Public transfer API `POST /.xd-pages/api/sites/{id}/transfer` 只允许当前个人 Owner，或源团队 `admin` 发起；团队 `publisher` 可以继续管理和发布团队站点，但不能转移其资产归属。
+- Public API 转给个人时仍只能转给已认证 actor 自己；转给团队时，actor 必须是目标团队的 `publisher` 或 `admin`。Team access token（TAT）不能改变 Owner；部署自身团队的既有站点不视为归属转移。
+- `xd-cell deploy --team <teamId>` 创建团队站点时仍接受目标团队 `publisher/admin`。若既有站点需要随部署转移，个人源站点要求当前 Owner，团队源站点要求源团队 `admin`，并在 route activation 的 D1 事务内再次复核。
+- 与当前 Owner 相同的 transfer 请求返回 `400 SITE_TRANSFER_INVALID`，不会递增 `policyVersion`、刷新 route snapshot 或写入 `site.owner.transfer` 审计。
+- Workspace Console 的归属转移要求个人 Owner 或源团队 `admin`，Admin Console 要求 platform admin；两者还要求最近 15 分钟内完成 SSO 验证，允许最多 30 秒未来时钟偏差。缺失、过期或异常的 `authTime` 返回 `401 CONSOLE_RECENT_LOGIN_REQUIRED`，旧 session 的其它只读和普通管理能力不受影响。
+
 ## 真相源
 
 | 领域               | 真相源                                                                                                                   | 说明                                          |

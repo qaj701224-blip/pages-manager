@@ -51,9 +51,7 @@ test('admin site and team queries project ownership and lifecycle fields', async
   });
   const teams = createAdminTeamsQuery({
     teams: {
-      list: async () => [
-        { id: 'team_1', name: 'Web', teamType: 'department', departmentPath: 'XD/Web', status: 'active' },
-      ],
+      list: async () => [{ id: 'team_1', name: 'Web', teamType: 'department', departmentPath: 'XD/Web', status: 'active' }],
     },
   });
 
@@ -79,7 +77,12 @@ test('admin detail projections keep access and member response shapes stable', (
   const member = projectAdminTeamMember({ teamId: 'team_1', userId: 'usr_1', role: 'admin' });
 
   assert.deepEqual(site.access, { exposure: 'internal', accessMode: 'acl', visibility: 'acl' });
-  assert.deepEqual(site.permissions, { role: 'admin', canManage: true, canManageAccess: true });
+  assert.deepEqual(site.permissions, {
+    role: 'admin',
+    canManage: true,
+    canManageAccess: true,
+    canTransferOwnership: true,
+  });
   assert.equal(member.user, null);
   assert.equal(member.role, 'admin');
 });

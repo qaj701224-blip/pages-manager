@@ -478,6 +478,7 @@ export const sitesRepositoryMethods = {
         ownerDisplayName: departmentTeamDisplayName(team),
         ownerTeamType: team.teamType,
         ownerTeamId: team.id,
+        ownerDepartmentPath: team.departmentPath || null,
         currentUserId: userId,
         managementRole: member.role,
       };
@@ -488,6 +489,7 @@ export const sitesRepositoryMethods = {
       ...site,
       ownerType: 'user',
       ownerDisplayName: ownerUser?.realname || ownerUser?.email || null,
+      ownerEmail: ownerUser?.email || null,
       currentUserId: userId,
       managementRole: 'admin',
     };

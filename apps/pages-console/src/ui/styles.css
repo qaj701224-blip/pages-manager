@@ -3281,6 +3281,12 @@ button {
   white-space: nowrap;
 }
 
+.dialog-error {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+}
+
 .admin-user-action-summary span {
   display: grid;
   gap: 2px;
@@ -3531,29 +3537,29 @@ button {
 }
 
 .team-settings-card .panel-head,
-.site-settings-card .panel-head {
+.site-ownership-card .panel-head {
   align-items: center;
 }
 
-.team-settings-card .team-settings-rows > div,
-.site-settings-card .site-settings-rows > div {
+.site-ownership-card .panel-head h2 {
+  padding: 0;
+}
+
+.team-settings-card .team-settings-rows > div {
   min-height: 56px;
 }
 
-.team-settings-rows.editing > div,
-.site-settings-rows.editing > div {
+.team-settings-rows.editing > div {
   align-items: flex-start;
   padding-top: 12px;
   padding-bottom: 12px;
 }
 
-.team-settings-rows.editing dt,
-.site-settings-rows.editing dt {
+.team-settings-rows.editing dt {
   padding-top: 10px;
 }
 
-.team-settings-rows.editing dd,
-.site-settings-rows.editing dd {
+.team-settings-rows.editing dd {
   overflow: visible;
   white-space: normal;
 }
@@ -3589,10 +3595,41 @@ button {
   padding: 0 16px 16px;
 }
 
-.site-settings-card-footer {
+.site-ownership-card__body {
   display: grid;
-  gap: 10px;
-  padding: 0 16px 16px;
+  gap: 14px;
+  padding: 16px;
+}
+
+.site-owner-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.site-owner-summary > span:last-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.site-owner-summary strong,
+.site-owner-summary small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.site-owner-summary strong {
+  color: var(--xd-text);
+  font-size: 14px;
+}
+
+.site-owner-summary small {
+  color: var(--xd-muted);
+  font-size: 12px;
 }
 
 .site-owner-editor {
@@ -3660,6 +3697,11 @@ button {
 .owner-picker-row.selected {
   border-color: rgba(243, 112, 34, 0.36);
   background: var(--xd-orange-tint);
+}
+
+.owner-picker-row:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
 }
 
 :root[data-theme='dark'] .owner-picker-row:hover,

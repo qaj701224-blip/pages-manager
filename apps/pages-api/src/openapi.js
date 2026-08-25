@@ -323,7 +323,8 @@ export function buildOpenApi(config) {
             ownerType: {
               type: 'string',
               enum: ['user', 'team'],
-              description: 'Target owner type. Team access tokens cannot transfer a team-owned site to a personal owner.',
+              description:
+                'Target owner type. Team access tokens cannot change site ownership, including transfers to personal owners.',
             },
             ownerId: {
               type: 'string',
@@ -707,9 +708,9 @@ export function buildOpenApi(config) {
         post: {
           summary: 'Transfer a site asset to a personal or team owner',
           description:
-            'Requires publish-level site management on the source site. Transfers to a team also require publisher/admin ' +
-            'membership on the target team, or a team access token owned by the target team. Team access tokens cannot ' +
-            'transfer sites to personal owners in this release.',
+            'Requires the current personal owner or an admin of the source team. Transfers to a team also require ' +
+            'publisher/admin membership on the target team. Transfers to a personal owner remain limited to the ' +
+            'authenticated actor. Team access tokens cannot change ownership, and the target must differ from the current owner.',
           parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
           requestBody: {
             required: true,
@@ -722,14 +723,13 @@ export function buildOpenApi(config) {
           'x-error-codes': [
             'INVALID_JSON',
             'SITE_TRANSFER_INVALID',
-            'SITE_POLICY_FORBIDDEN',
+            'SITE_VISIBILITY_INVALID',
             'SITE_POLICY_CONFLICT',
             'SITE_TRANSFER_FORBIDDEN',
             'TEAM_REQUIRED',
             'TEAM_NOT_FOUND',
             'SITE_NOT_FOUND',
             'SITE_TRANSFER_UNSUPPORTED',
-            'ROUTE_SNAPSHOT_WRITE_FAILED',
             'ROUTE_POLICY_REPAIR_REQUIRED',
           ],
           responses: {
@@ -738,7 +738,7 @@ export function buildOpenApi(config) {
             403: { description: 'Actor cannot transfer this site or target owner is not allowed' },
             404: { description: 'Site or team not found' },
             409: { description: 'Site changed concurrently' },
-            503: { description: 'Site transfer store, route snapshot write, or recovery unavailable' },
+            503: { description: 'Site transfer store or route policy repair unavailable' },
           },
         },
       },
@@ -1124,7 +1124,8 @@ export function buildOpenApi(config) {
             'CLI-managed multipart upload. Personal/team access keys with deploy:site may create a new site ' +
             'during this deployment; tokens with a site scope can only deploy their bound site. User CLI tokens ' +
             'or personal access tokens may include teamId to deploy as a team publisher/admin. When the target ' +
-            'slug already belongs to a site the actor can manage, teamId requests an ownership transfer that is ' +
+            'slug already belongs to a personal site owned by the actor, or a team site where the actor is an admin, ' +
+            'a different teamId requests an ownership transfer that is ' +
             'committed atomically with final route activation. A controlled integration may explicitly include title ' +
             'in the JSON metadata part; ' +
             'only an explicitly present title is applied, after the idempotency claim and before provider upload.',

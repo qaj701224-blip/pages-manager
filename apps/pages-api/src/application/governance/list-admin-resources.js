@@ -87,6 +87,7 @@ export function projectAdminSiteDetail(site) {
       role: 'admin',
       canManage: true,
       canManageAccess: true,
+      canTransferOwnership: true,
     },
   };
 }

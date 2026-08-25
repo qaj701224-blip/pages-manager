@@ -15,6 +15,7 @@ import { createPlatformAdminManagement } from '../../application/governance/mana
 import { createExposureUpdatePreparation } from '../../application/governance/prepare-exposure-update.js';
 import { createSiteExposureUpdate } from '../../application/governance/update-site-exposure.js';
 import { buildSiteOwnerTransferAuditEvent } from '../../application/sites/build-owner-transfer-audit-event.js';
+import { requireRecentConsoleLogin } from '../../console-auth.js';
 import { createDepartmentTeamMerge } from '../../application/teams/merge-department-teams.js';
 import { createTeamMemberManagement } from '../../application/teams/manage-team-members.js';
 import { createTeamManagement } from '../../application/teams/manage-team.js';
@@ -24,14 +25,8 @@ import { jsonError, jsonOk, readJsonBody } from '../../http.js';
 import { newId, nextId } from '../../id.js';
 import { buildRouteSnapshot, clearRoutePointerIfCurrent, readRouteSnapshotState } from '../../route-snapshot.js';
 import { formatAclEntry } from './site-projections.js';
-import {
-  createSiteOwnershipApplication,
-  siteTransferErrorResponse,
-} from '../shared/site-ownership-application.js';
-import {
-  refreshCurrentRouteSnapshot,
-  restoreSiteVisibilityAfterSnapshotFailure,
-} from '../shared/site-route-snapshots.js';
+import { createSiteOwnershipApplication, siteTransferErrorResponse } from '../shared/site-ownership-application.js';
+import { refreshCurrentRouteSnapshot, restoreSiteVisibilityAfterSnapshotFailure } from '../shared/site-route-snapshots.js';
 import { ensurePublicWorkerOfficeNetAbsent } from '../shared/public-office-net-application.js';
 import { normalizeNullableString, normalizeRequiredString, readNow } from './admin-support.js';
 
@@ -50,7 +45,6 @@ export async function listAdminUsers(url, config, store) {
   });
   return jsonOk(result);
 }
-
 
 export async function listAdminSites(url, config, store) {
   const exposure = normalizeNullableString(url.searchParams.get('exposure'));
@@ -124,10 +118,12 @@ export async function updateAdminSiteExposure(request, env, config, store, sessi
     );
   }
   if (result.reason === 'repair_required') {
-    return adminExposureErrorResponse(Object.assign(new Error('ROUTE_POLICY_REPAIR_REQUIRED'), {
-      code: 'ROUTE_POLICY_REPAIR_REQUIRED',
-      cause: result.error,
-    }));
+    return adminExposureErrorResponse(
+      Object.assign(new Error('ROUTE_POLICY_REPAIR_REQUIRED'), {
+        code: 'ROUTE_POLICY_REPAIR_REQUIRED',
+        cause: result.error,
+      })
+    );
   }
   return adminExposureErrorResponse(result.error);
 }
@@ -205,10 +201,7 @@ function createExposureSnapshotFinalizationApplication({ store, env }) {
     snapshots: {
       commit: ({ site, route, environment }) => writeAdminExposureSnapshot(env, store, site, route, environment),
       clearFailed: async ({ site, route, version, aclEntries }) => {
-        const state = await readRouteSnapshotState(
-          env,
-          buildRouteSnapshot({ site, route, version, aclEntries })
-        );
+        const state = await readRouteSnapshotState(env, buildRouteSnapshot({ site, route, version, aclEntries }));
         if (state.pointer) {
           await clearRoutePointerIfCurrent(env, {
             ...state.pointer,
@@ -220,14 +213,7 @@ function createExposureSnapshotFinalizationApplication({ store, env }) {
     },
     policies: {
       restore: ({ siteId, currentSite, currentRoute, committedRoute, environment }) =>
-        restoreSiteVisibilityAfterSnapshotFailure(
-          store,
-          siteId,
-          currentSite,
-          currentRoute,
-          committedRoute,
-          environment
-        ),
+        restoreSiteVisibilityAfterSnapshotFailure(store, siteId, currentSite, currentRoute, committedRoute, environment),
     },
     sites: { get: (siteId, environment) => store.getAdminSiteById(siteId, environment) },
     routes: { get: (siteId, environment) => store.getRouteBySiteId(siteId, environment) },
@@ -354,6 +340,8 @@ export async function updateAdminSiteSettings(request, env, config, store, sessi
   if (typeof store.transferSiteOwner !== 'function') {
     return jsonError('SITE_TRANSFER_UNSUPPORTED', 'Site transfer is unavailable.', 503, 'Retry later.');
   }
+  const recentLoginError = requireRecentConsoleLogin(session, env);
+  if (recentLoginError) return recentLoginError;
 
   let body;
   try {
@@ -581,9 +569,7 @@ function createAdminTeamManagement(store) {
               }),
           }
         : {}),
-      ...(typeof store.deleteCustomTeam === 'function'
-        ? { deleteCustom: (command) => store.deleteCustomTeam(command) }
-        : {}),
+      ...(typeof store.deleteCustomTeam === 'function' ? { deleteCustom: (command) => store.deleteCustomTeam(command) } : {}),
     },
     members: { get: (query) => store.getTeamMember(query) },
   });

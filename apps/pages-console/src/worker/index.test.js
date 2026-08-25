@@ -664,6 +664,33 @@ test('auth callback exchanges code, sets host-only console cookie, and redirects
   assert.equal(verified.exp - verified.iat, 7 * 24 * 60 * 60);
 });
 
+test('auth callback accepts a legacy exchange without auth time while keeping ownership transfer fail closed', async () => {
+  const response = await worker.fetch(
+    request('https://workers.xd.team/api/console/auth/callback?code=ost_console.console-secret'),
+    env({
+      PAGES_AUTH: authBinding(async () =>
+        Response.json({
+          userId: 'usr_1',
+          email: 'user@example.com',
+          employeeStatus: 'active',
+          sessionVersion: 2,
+          environment: 'production',
+          returnTo: '/workspace',
+        })
+      ),
+    })
+  );
+
+  assert.equal(response.status, 302);
+  const verified = await verifySessionJwt(extractSessionToken(response.headers.get('Set-Cookie')), jwtSigningEnv(), {
+    purpose: 'console_session',
+    audience: 'workers.xd.team',
+    now: NOW,
+  });
+  assert.equal(verified.sub, 'usr_1');
+  assert.equal(verified.authTime, undefined);
+});
+
 test('auth callback fails closed when console session signing config is missing', async () => {
   const response = await worker.fetch(
     request('https://workers.xd.team/api/console/auth/callback?code=ost_console.console-secret'),

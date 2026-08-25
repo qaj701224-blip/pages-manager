@@ -195,13 +195,15 @@ async function handleAuthCallback(url, env) {
 function buildConsoleSessionFromExchange(exchanged) {
   const sessionVersion = Number(exchanged?.sessionVersion);
   const authTime = exchanged?.authTime;
-  if (!Number.isSafeInteger(authTime) || authTime < 0) throw new Error('Console session auth time is invalid');
+  if (authTime !== undefined && (!Number.isSafeInteger(authTime) || authTime < 0)) {
+    throw new Error('Console session auth time is invalid');
+  }
   return {
     userId: String(exchanged?.userId || ''),
     email: typeof exchanged?.email === 'string' ? exchanged.email : '',
     employeeStatus: typeof exchanged?.employeeStatus === 'string' ? exchanged.employeeStatus : '',
     sessionVersion: Number.isInteger(sessionVersion) && sessionVersion > 0 ? sessionVersion : 1,
-    authTime,
+    ...(authTime === undefined ? {} : { authTime }),
   };
 }
 
