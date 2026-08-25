@@ -33,6 +33,7 @@ export function serializeConsoleSessionCookie(token) {
 export async function signConsoleSession(session, env = {}, audience) {
   const userId = session?.userId ? String(session.userId) : '';
   if (!userId) throw new Error('Console session user id is missing');
+  const authTime = normalizeAuthTime(session.authTime);
   return signSessionJwt(
     {
       purpose: 'console_session',
@@ -44,6 +45,7 @@ export async function signConsoleSession(session, env = {}, audience) {
         email: typeof session.email === 'string' ? session.email : '',
         employeeStatus: typeof session.employeeStatus === 'string' ? session.employeeStatus : '',
         sessionVersion: session.sessionVersion || 1,
+        authTime,
       },
     },
     env
@@ -67,12 +69,19 @@ export async function readConsoleSession(request, env = {}) {
   }
 
   const sessionVersion = Number(payload.sessionVersion);
+  let authTime;
+  try {
+    authTime = normalizeOptionalAuthTime(payload.authTime);
+  } catch {
+    return null;
+  }
   return {
     userId: String(payload.sub),
     email: typeof payload.email === 'string' ? payload.email : '',
     employeeStatus: typeof payload.employeeStatus === 'string' ? payload.employeeStatus : '',
     isPlatformAdmin: payload.isPlatformAdmin === true,
     sessionVersion: Number.isInteger(sessionVersion) && sessionVersion > 0 ? sessionVersion : 1,
+    ...(authTime === undefined ? {} : { authTime }),
     expiresAt: Number(payload.exp) * 1000,
   };
 }
@@ -101,4 +110,14 @@ function readNow(env = {}) {
     if (Number.isInteger(value)) return value;
   }
   return Math.floor(Date.now() / 1000);
+}
+
+function normalizeOptionalAuthTime(value) {
+  if (value === undefined) return undefined;
+  return normalizeAuthTime(value);
+}
+
+function normalizeAuthTime(value) {
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error('Console session auth time is invalid');
+  return value;
 }

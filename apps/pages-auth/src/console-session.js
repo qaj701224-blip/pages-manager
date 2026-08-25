@@ -35,6 +35,7 @@ export async function consumeConsoleLoginCode(consoleCode, record, { now, enviro
   validateFiniteNumber('now', now);
   validateFiniteNumber('consoleCode.expiresAt', record.consoleCode.expiresAt);
   if (record.consoleCode.expiresAt <= now) throw new Error('Console login code invalid: expired');
+  const normalizedUser = normalizeConsoleUser(record.consoleCode.user);
 
   record.consoleCode.consumedAt = now;
   try {
@@ -52,7 +53,7 @@ export async function consumeConsoleLoginCode(consoleCode, record, { now, enviro
     record: { ...record },
     returnTo: record.returnTo,
     environment: record.environment,
-    user: { ...record.consoleCode.user },
+    user: normalizedUser,
   };
 }
 
@@ -64,7 +65,15 @@ function normalizeConsoleUser(user) {
     email: normalizeOptionalString(user.email).toLowerCase(),
     employeeStatus: normalizeEmployeeStatus(user.employeeStatus),
     sessionVersion: Number.isInteger(user.sessionVersion) && user.sessionVersion > 0 ? user.sessionVersion : 1,
+    authTime: normalizeAuthTime(user.authTime),
   };
+}
+
+function normalizeAuthTime(value) {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error('Console login code invalid: user.authTime must be a non-negative safe integer');
+  }
+  return value;
 }
 
 function parsePublicCode(value) {

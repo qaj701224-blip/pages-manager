@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { signSessionJwt } from '@xd/session-kit';
-import { clearConsoleSessionCookie, readConsoleSession, serializeConsoleSessionCookie } from './session.js';
+import { clearConsoleSessionCookie, readConsoleSession, serializeConsoleSessionCookie, signConsoleSession } from './session.js';
 
 const now = 1_800_000_000;
 
@@ -28,6 +28,7 @@ async function signedConsoleSessionToken(claims = {}, overrides = {}) {
         email: 'user@example.com',
         isPlatformAdmin: true,
         sessionVersion: 7,
+        authTime: now - 100,
         ...claims,
       },
     },
@@ -67,6 +68,34 @@ test('valid host-bound console_session JWT cookie returns session identity', asy
   assert.equal(session.email, 'user@example.com');
   assert.equal(session.isPlatformAdmin, true);
   assert.equal(session.sessionVersion, 7);
+  assert.equal(session.authTime, now - 100);
+});
+
+test('legacy console_session JWT without auth time remains readable', async () => {
+  const header = serializeConsoleSessionCookie(await signedConsoleSessionToken({ authTime: undefined }));
+  const session = await readConsoleSession(
+    new Request('https://workers.xd.team/workspace', {
+      headers: { Cookie: header.split(';')[0] },
+    }),
+    env()
+  );
+
+  assert.equal(session.userId, 'user-1');
+  assert.equal(session.authTime, undefined);
+});
+
+test('console_session rejects invalid auth time claims', async () => {
+  const header = serializeConsoleSessionCookie(await signedConsoleSessionToken({ authTime: '1800000000' }));
+  const session = await readConsoleSession(
+    new Request('https://workers.xd.team/workspace', {
+      headers: { Cookie: header.split(';')[0] },
+    }),
+    env()
+  );
+
+  assert.equal(session, null);
+  await assert.rejects(() => signConsoleSession({ userId: 'user-1' }, env(), 'workers.xd.team'), /auth time/i);
+  await assert.rejects(() => signConsoleSession({ userId: 'user-1', authTime: -1 }, env(), 'workers.xd.team'), /auth time/i);
 });
 
 test('console_session JWT is scoped to the current console host', async () => {
