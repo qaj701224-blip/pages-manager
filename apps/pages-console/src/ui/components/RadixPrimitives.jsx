@@ -219,7 +219,6 @@ export function ConfirmDialog({
   cancelLabel = '取消',
   confirming = false,
   error,
-  errorAction,
   icon,
   onOpenChange,
   onCancel,
@@ -266,9 +265,8 @@ export function ConfirmDialog({
             </div>
             {description ? <AlertDialog.Description className="dialog-description">{description}</AlertDialog.Description> : null}
             {error ? (
-              <div className="dialog-error" role="alert">
-                <div className="form-error">{error.code || error.message || error}</div>
-                {errorAction}
+              <div className="form-error" role="alert">
+                {error.code || error.message || error}
               </div>
             ) : null}
             <div className="dialog-actions">

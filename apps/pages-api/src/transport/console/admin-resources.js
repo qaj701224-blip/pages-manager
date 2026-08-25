@@ -15,7 +15,6 @@ import { createPlatformAdminManagement } from '../../application/governance/mana
 import { createExposureUpdatePreparation } from '../../application/governance/prepare-exposure-update.js';
 import { createSiteExposureUpdate } from '../../application/governance/update-site-exposure.js';
 import { buildSiteOwnerTransferAuditEvent } from '../../application/sites/build-owner-transfer-audit-event.js';
-import { requireRecentConsoleLogin } from '../../console-auth.js';
 import { createDepartmentTeamMerge } from '../../application/teams/merge-department-teams.js';
 import { createTeamMemberManagement } from '../../application/teams/manage-team-members.js';
 import { createTeamManagement } from '../../application/teams/manage-team.js';
@@ -340,8 +339,6 @@ export async function updateAdminSiteSettings(request, env, config, store, sessi
   if (typeof store.transferSiteOwner !== 'function') {
     return jsonError('SITE_TRANSFER_UNSUPPORTED', 'Site transfer is unavailable.', 503, 'Retry later.');
   }
-  const recentLoginError = requireRecentConsoleLogin(session, env);
-  if (recentLoginError) return recentLoginError;
 
   let body;
   try {

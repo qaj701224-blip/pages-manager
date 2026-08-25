@@ -119,7 +119,7 @@ test('ownership transfer freezes its target, PATCHes after confirmation, and rep
   await unmount();
 });
 
-test('recent-login failure stays in the confirmation dialog and links to a bounded reauthentication return path', async () => {
+test('transfer failure stays in the confirmation dialog without a reauthentication action', async () => {
   let patchCount = 0;
   globalThis.fetch = async (path, init = {}) => {
     const method = String(init.method || 'GET').toUpperCase();
@@ -129,7 +129,7 @@ test('recent-login failure stays in the confirmation dialog and links to a bound
     }
     if (path === '/api/console/sites/site_1/settings' && method === 'PATCH') {
       patchCount += 1;
-      return jsonResponse({ error: { code: 'CONSOLE_RECENT_LOGIN_REQUIRED', message: 'Recent login required.' } }, 401);
+      return jsonResponse({ error: { code: 'SITE_POLICY_CONFLICT', message: 'Site policy changed.' } }, 409);
     }
     throw new Error(`unexpected request: ${method} ${path}`);
   };
@@ -141,15 +141,10 @@ test('recent-login failure stays in the confirmation dialog and links to a bound
   await click(buttonByText('继续'));
   await click(await waitFor(() => buttonByText('确认转移')));
 
-  const error = await waitFor(() => textNode('请重新验证身份后再转移站点归属。'));
+  const error = await waitFor(() => textNode('站点归属或权限已变化，请刷新后重试。'));
   assert.ok(error.closest('[role="alert"]'));
   assert.ok(document.querySelector('[role="alertdialog"]'), 'the dialog must remain open after an API error');
-  const reauthLink = linkByText('重新验证身份');
-  const reauthUrl = new URL(reauthLink.getAttribute('href'), 'https://workers.xd.team');
-  assert.equal(reauthUrl.pathname, '/api/console/auth/login');
-  assert.equal(reauthUrl.searchParams.get('reauth'), '1');
-  assert.equal(reauthUrl.searchParams.get('returnTo'), '/workspace/sites/site_1/settings');
-  assert.equal(reauthUrl.searchParams.has('ownerId'), false);
+  assert.equal(document.querySelector('[role="alertdialog"] a'), null);
   assert.equal(patchCount, 1);
   await unmount();
 });
@@ -376,10 +371,6 @@ function buttonByText(label) {
 
 function ownerButton(label) {
   return [...document.querySelectorAll('.owner-picker-row')].find((button) => button.textContent.includes(label));
-}
-
-function linkByText(label) {
-  return [...document.querySelectorAll('a')].find((link) => link.textContent.trim() === label);
 }
 
 function textNode(value) {

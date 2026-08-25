@@ -315,52 +315,7 @@ test('authorize with an existing auth session creates a console code without red
     email: 'admin@example.test',
     employeeStatus: 'active',
     sessionVersion: 9,
-    authTime: now - 100,
   });
-});
-
-test('console reauth skips the auth session shortcut and asks SSO to prompt for login', async () => {
-  let createdInput;
-  let sessionRead = false;
-  const env = testEnv({
-    createOAuthStateRecord: async (input) => {
-      createdInput = input;
-      return { publicState: 'ost_reauth.state-secret' };
-    },
-    refreshAuthSessionRecord: async () => {
-      sessionRead = true;
-      throw new Error('reauth must not read the existing session');
-    },
-  });
-  const authToken = await signSessionJwt(
-    {
-      purpose: 'auth_session',
-      audience: 'pages-auth',
-      subject: 'usr_admin',
-      now,
-      ttlSeconds: 600,
-      claims: { sid: 'sid_console' },
-    },
-    env
-  );
-
-  const response = await handleOAuthAuthorize(
-    new Request(
-      'https://auth.pages.xd.team/.xd-pages/auth/authorize?console=1&reauth=1&return_to=/workspace/sites/site_1/settings',
-      {
-        headers: { Cookie: buildAuthSessionCookie(authToken, { maxAgeSeconds: 600 }) },
-      }
-    ),
-    env,
-    readAuthConfig(env)
-  );
-
-  assert.equal(response.status, 302, await response.clone().text());
-  assert.equal(sessionRead, false);
-  assert.equal(createdInput.reauth, true);
-  const location = new URL(response.headers.get('Location'));
-  assert.equal(location.origin, 'https://sso.example.test');
-  assert.equal(location.searchParams.get('prompt'), 'login');
 });
 
 test('authorize with an existing auth session rejects missing session record before minting code', async () => {
@@ -479,10 +434,8 @@ test('authorize with an existing auth session hydrates missing department before
     employeeStatus: 'active',
     sessionVersion: 9,
     departments: [],
-    authTime: now - 100,
   });
   assert.equal(createdConsoleCodeInput.user.userId, 'usr_admin');
-  assert.equal(createdConsoleCodeInput.user.authTime, now - 100);
 });
 
 test('callback without code or state returns safe error without echoing OAuth values', async () => {

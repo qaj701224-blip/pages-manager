@@ -146,24 +146,21 @@ function buildLoginLocation(url) {
 }
 
 async function handleAuthLogin(url, env) {
-  const { authorizeUrl } = await createConsoleLogin(env, url.searchParams.get('returnTo') || '/', {
-    reauth: url.searchParams.get('reauth') === '1',
-  });
+  const { authorizeUrl } = await createConsoleLogin(env, url.searchParams.get('returnTo') || '/');
   return redirect(authorizeUrl);
 }
 
 async function handleAuthCallback(url, env) {
   let exchanged;
-  let session;
   try {
     exchanged = await exchangeConsoleCode(env, url.searchParams.get('code') || '');
-    session = buildConsoleSessionFromExchange(exchanged);
   } catch {
     return redirect('/login?error=auth_failed', {
       'Set-Cookie': [clearConsoleSessionCookie(), clearConsoleCsrfCookie()],
     });
   }
 
+  let session = buildConsoleSessionFromExchange(exchanged);
   if (isStagingHost(url)) {
     const currentSession = await validateConsoleSession(env, session);
     if (!currentSession?.isPlatformAdmin) {
@@ -194,16 +191,11 @@ async function handleAuthCallback(url, env) {
 
 function buildConsoleSessionFromExchange(exchanged) {
   const sessionVersion = Number(exchanged?.sessionVersion);
-  const authTime = exchanged?.authTime;
-  if (authTime !== undefined && (!Number.isSafeInteger(authTime) || authTime < 0)) {
-    throw new Error('Console session auth time is invalid');
-  }
   return {
     userId: String(exchanged?.userId || ''),
     email: typeof exchanged?.email === 'string' ? exchanged.email : '',
     employeeStatus: typeof exchanged?.employeeStatus === 'string' ? exchanged.employeeStatus : '',
     sessionVersion: Number.isInteger(sessionVersion) && sessionVersion > 0 ? sessionVersion : 1,
-    ...(authTime === undefined ? {} : { authTime }),
   };
 }
 

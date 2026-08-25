@@ -36,7 +36,7 @@ export async function handleOAuthAuthorize(request, env, config, context = {}) {
     stateInput.deviceCode = cliLogin.deviceCode;
   }
 
-  const sessionRedirect = stateInput.reauth ? null : await tryAuthorizeFromAuthSession(request, env, config, stateInput, now);
+  const sessionRedirect = await tryAuthorizeFromAuthSession(request, env, config, stateInput, now);
   if (sessionRedirect) return sessionRedirect;
 
   if (!config.ssoAuthorizationUrl || !config.ssoClientId) {
@@ -51,7 +51,7 @@ export async function handleOAuthAuthorize(request, env, config, context = {}) {
   }
 
   try {
-    return safeRedirect(buildSsoAuthorizeUrl(config, created.publicState, { promptLogin: stateInput.reauth }), 302);
+    return safeRedirect(buildSsoAuthorizeUrl(config, created.publicState), 302);
   } catch {
     return authError(request, config, context, 'SSO_PROVIDER_UNCONFIGURED', 'SSO provider is not configured.', 503);
   }
@@ -168,13 +168,7 @@ export async function handleOAuthCallback(request, env, config, context = {}) {
 
   if (consumedState.kind === 'console') {
     try {
-      const response = await createConsoleCodeRedirectResponse(
-        env,
-        config,
-        consumedState,
-        { ...authoritativeProfile, authTime: authSession.authTime },
-        now
-      );
+      const response = await createConsoleCodeRedirectResponse(env, config, consumedState, authoritativeProfile, now);
       response.headers.set(
         'Set-Cookie',
         buildAuthSessionCookie(authSession.token, { maxAgeSeconds: config.authSessionIdleTtlSeconds })
@@ -210,8 +204,7 @@ export async function handleInternalConsoleLoginCode(request, env, config) {
 
   try {
     const returnTo = validateConsoleReturnTo(body.returnTo);
-    if (body.reauth !== undefined && typeof body.reauth !== 'boolean') throw new Error('Console reauth is invalid');
-    return jsonOk({ authorizeUrl: buildConsoleAuthorizeUrl(config, returnTo, { reauth: body.reauth === true }) });
+    return jsonOk({ authorizeUrl: buildConsoleAuthorizeUrl(config, returnTo) });
   } catch {
     return jsonError('CONSOLE_LOGIN_INVALID', 'Console login request is invalid.', 400);
   }
@@ -248,10 +241,6 @@ export async function handleInternalConsoleExchange(request, env, config) {
   const sessionVersion = user.sessionVersion || 1;
   const employeeStatus = user.employeeStatus || 'unknown';
   const email = user.email || '';
-  const authTime = user.authTime;
-  if (!Number.isSafeInteger(authTime) || authTime < 0) {
-    return jsonError('CONSOLE_LOGIN_INVALID', 'Console login code is invalid.', 400);
-  }
   let returnTo;
   try {
     returnTo = validateConsoleReturnTo(consumed.returnTo);
@@ -264,7 +253,6 @@ export async function handleInternalConsoleExchange(request, env, config) {
     email,
     employeeStatus,
     sessionVersion,
-    authTime,
     environment: consumed.environment || config.environment,
     returnTo,
   });
@@ -310,7 +298,7 @@ export async function handleInternalConsumeSiteCode(request, env) {
   }
 }
 
-export function buildSsoAuthorizeUrl(config, publicState, { promptLogin = false } = {}) {
+export function buildSsoAuthorizeUrl(config, publicState) {
   if (!config.ssoAuthorizationUrl || !config.ssoClientId) throw new Error('SSO provider is not configured');
 
   const url = new URL(config.ssoAuthorizationUrl);
@@ -318,19 +306,16 @@ export function buildSsoAuthorizeUrl(config, publicState, { promptLogin = false 
   url.searchParams.set('redirect_uri', config.ssoRedirectUri);
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('state', publicState);
-  if (promptLogin) url.searchParams.set('prompt', 'login');
   return url.toString();
 }
 
 function buildOAuthStateInput(url, config, now) {
   if (requiredQuery(url, 'console') === '1') {
     const returnTo = requiredQuery(url, 'return_to') || '/';
-    const reauth = requiredQuery(url, 'reauth') === '1';
     return {
       environment: config.environment,
       consoleLogin: true,
       returnTo,
-      ...(reauth ? { reauth: true } : {}),
       now,
       ttlSeconds: config.oauthStateTtlSeconds,
       stateId: createOpaqueToken('ost'),
@@ -519,7 +504,6 @@ async function createAuthSession(env, config, userId, now) {
   });
   return {
     sid,
-    authTime: now,
     token: await signSessionJwt(
       {
         purpose: 'auth_session',
@@ -675,9 +659,6 @@ async function readAuthSessionUserProfile(request, env, config, now) {
     employeeStatus: user.employeeStatus || 'unknown',
     departments: mergeDepartmentPaths([], user.departmentPath),
     sessionVersion: user.sessionVersion || 1,
-    ...(Number.isSafeInteger(authSessionRecord.authTime) && authSessionRecord.authTime >= 0
-      ? { authTime: authSessionRecord.authTime }
-      : {}),
   };
 
   if (shouldHydrateUserDepartment(user, env)) {
@@ -739,11 +720,10 @@ function buildSiteCallbackUrl(siteHost, siteCode, returnTo, { recoveryAttempt = 
   return url.toString();
 }
 
-function buildConsoleAuthorizeUrl(config, returnTo, { reauth = false } = {}) {
+function buildConsoleAuthorizeUrl(config, returnTo) {
   const url = new URL('/.xd-pages/auth/authorize', config.authBase);
   url.searchParams.set('console', '1');
   url.searchParams.set('return_to', returnTo);
-  if (reauth) url.searchParams.set('reauth', '1');
   return url.toString();
 }
 
@@ -1084,7 +1064,6 @@ function consoleCodeUserFromProfile(profile) {
     email: profile.email,
     employeeStatus: profile.employeeStatus,
     sessionVersion: profile.sessionVersion,
-    authTime: profile.authTime,
   };
 }
 

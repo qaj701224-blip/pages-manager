@@ -4,28 +4,22 @@
 
 **Goal:** 清理站点设置页重复信息，把 Owner 改造成独立且受保护的归属转移能力；个人站点仅当前 Owner、团队站点仅 team admin 可以发起。
 
-**Architecture:** UI 使用独立归属卡片与二次确认；pages-api 投影专用 `canTransferOwnership` capability，并在共享 ownership application 和 D1 guarded statement 中复核源权限；Console session 从 AuthSessionDO 端到端携带权威 `authTime`，Owner 转移在服务端要求 15 分钟内重新经过 SSO 验证。
+**Architecture:** UI 使用独立归属卡片与二次确认；pages-api 投影专用 `canTransferOwnership` capability，并在共享 ownership application 和 D1 guarded statement 中复核源权限；Owner 转移使用有效 Console session，不新增 recent-login、`authTime` 或 `reauth=1` 前置条件。
 
 **Tech Stack:** Cloudflare Workers、Durable Objects、D1、JavaScript ESM、React、Radix Dialog、Node.js `node:test`、OpenAPI source contract。
 
 ---
 
-### Task 1：补齐 recent-login 可信链路
+### Task 1：保持 Console session 与滚动部署兼容
 
 **Files:**
 
-- Modify: `apps/pages-auth/src/console-session.js`
-- Modify: `apps/pages-auth/src/oauth-endpoints.js`
-- Modify: `apps/pages-console/src/worker/pages-auth-client.js`
-- Modify: `apps/pages-console/src/worker/session.js`
-- Modify: `apps/pages-console/src/worker/pages-api-client.js`
-- Modify: `apps/pages-api/src/console-auth.js`
-- Modify: 对应 focused tests
+- Modify: Console session 与登录回调 focused tests（仅在兼容性覆盖缺失时）
 
-- [ ] 将 AuthSessionDO 的 `authTime` 传入 console code、exchange、Console JWT 和可信 BFF header。
-- [ ] 增加 `reauth=1`，跳过本地 auth-session shortcut 并重新经过 SSO callback。
-- [ ] pages-api 实现 900 秒 recent window、30 秒未来时钟偏差的 fail-closed 校验。
-- [ ] 覆盖旧 cookie、伪造 header、stale/future/boundary 时间与安全 returnTo。
+- [ ] Owner 转移只要求有效 Console session，不把 `authTime` 作为登录或提交前置条件。
+- [ ] pages-auth、pages-console 与 pages-api 可以独立滚动部署；旧 exchange 响应和旧 Console cookie 缺少 `authTime` 时仍可正常登录和转移。
+- [ ] UI 不提供 Owner 转移专用 `reauth=1` 入口，也不保留 `CONSOLE_RECENT_LOGIN_REQUIRED` 专用文案。
+- [ ] 保留 host-only cookie、BFF 身份重建、CSRF 与伪造 `X-Console-*` header 防护；其它高风险操作未来可单独设计 recent login。
 
 ### Task 2：收紧共享 Owner 转移权限
 
@@ -57,7 +51,7 @@
 - [ ] 删除旧设置卡片重复的站点标题、Slug 与 Hostname，改为“站点归属”卡片。
 - [ ] 复用 Owner picker 与 `ConfirmDialog`，冻结确认目标并阻止相同 Owner。
 - [ ] Workspace 只显示 active 用户和可管理团队；Admin 显示当前环境全部 active 团队。
-- [ ] recent-login 错误提供重认证入口；转移后失权则 replace 导航到个人站点列表。
+- [ ] API 错误保留在确认框内且不出现重认证入口；转移后失权则 replace 导航到个人站点列表。
 - [ ] 保留 request guard、滚动位置、焦点和并发 metadata 状态。
 
 ### Task 4：同步公开契约与架构文档
@@ -73,7 +67,7 @@
 
 - [ ] 明确 Public transfer、deploy、PAT/Connection JWT/TAT 的源权限与错误语义。
 - [ ] 更新团队角色矩阵，移除 publisher 的归属转移权限。
-- [ ] 记录 Console recent-login 可信传递、时间窗和 reauth 流程。
+- [ ] 记录 Owner 转移不依赖 recent-login、`authTime` 或 `reauth=1`，同时保留其它高风险操作未来增强身份验证的设计空间。
 - [ ] 保持 OpenAPI 仅为源码合约，不新增公网 `/openapi.json`。
 
 ### Task 5：验证与 Review

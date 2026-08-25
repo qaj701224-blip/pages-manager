@@ -25,7 +25,6 @@ test('creates and consumes a one-time console login code', async () => {
       employeeStatus: 'active',
       departments: ['dept_design'],
       sessionVersion: 7,
-      authTime: now - 100,
       providerResourceId: 'secret-provider-id',
     },
     now: now + 2,
@@ -46,7 +45,6 @@ test('creates and consumes a one-time console login code', async () => {
     email: 'user@example.com',
     employeeStatus: 'active',
     sessionVersion: 7,
-    authTime: now - 100,
   });
   assert.equal(consumed.returnTo, '/workspace');
   assert.equal(consumed.environment, 'production');
@@ -70,7 +68,7 @@ test('console login code rejects wrong environment and signature', async () => {
   });
   await consumeOAuthState('ost_console.state-secret', tx.record, { now: now + 1, environment: 'staging' });
   await createConsoleLoginCode(tx.record, {
-    user: { userId: 'usr_1', employeeStatus: 'active', authTime: now - 100 },
+    user: { userId: 'usr_1', employeeStatus: 'active' },
     now: now + 2,
     ttlSeconds: 60,
     codeSecret: 'console-secret',
@@ -84,30 +82,4 @@ test('console login code rejects wrong environment and signature', async () => {
     () => consumeConsoleLoginCode('ost_console.wrong', tx.record, { now: now + 3, environment: 'staging' }),
     /secret/i
   );
-});
-
-test('console login code rejects missing or invalid auth time', async () => {
-  const record = {
-    id: 'ost_console',
-    kind: 'console',
-    environment: 'production',
-    returnTo: '/workspace',
-    consumedAt: now,
-  };
-
-  for (const authTime of [undefined, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, '1800000000']) {
-    await assert.rejects(
-      () =>
-        createConsoleLoginCode(
-          { ...record },
-          {
-            user: { userId: 'usr_1', employeeStatus: 'active', authTime },
-            now: now + 1,
-            ttlSeconds: 60,
-            codeSecret: 'console-secret',
-          }
-        ),
-      /authTime/i
-    );
-  }
 });

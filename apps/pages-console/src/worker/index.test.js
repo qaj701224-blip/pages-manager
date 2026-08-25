@@ -64,12 +64,7 @@ function echoConsoleSession(request) {
   };
 }
 
-async function sessionCookie({
-  isPlatformAdmin = false,
-  sessionVersion = 7,
-  environment = 'production',
-  authTime = NOW - 100,
-} = {}) {
+async function sessionCookie({ isPlatformAdmin = false, sessionVersion = 7, environment = 'production' } = {}) {
   const token = await signSessionJwt(
     {
       purpose: 'console_session',
@@ -81,7 +76,6 @@ async function sessionCookie({
         email: 'user@example.com',
         isPlatformAdmin,
         sessionVersion,
-        ...(authTime === null ? {} : { authTime }),
       },
     },
     jwtSigningEnv({ PAGES_ENV: environment })
@@ -90,12 +84,7 @@ async function sessionCookie({
   return header.split(';')[0];
 }
 
-async function signedConsoleSessionToken({
-  userId = 'usr_1',
-  sessionVersion = 2,
-  environment = 'production',
-  authTime = NOW - 100,
-} = {}) {
+async function signedConsoleSessionToken({ userId = 'usr_1', sessionVersion = 2, environment = 'production' } = {}) {
   return signSessionJwt(
     {
       purpose: 'console_session',
@@ -107,7 +96,6 @@ async function signedConsoleSessionToken({
         email: 'user@example.com',
         employeeStatus: 'active',
         sessionVersion,
-        ...(authTime === null ? {} : { authTime }),
       },
     },
     jwtSigningEnv({ PAGES_ENV: environment })
@@ -274,7 +262,7 @@ test('workspace proxy forwards only signed session identity to pages-api', async
         assert.equal(apiRequest.headers.get('X-Console-User-Id'), 'user-1');
         assert.equal(apiRequest.headers.get('X-Console-Email'), 'user@example.com');
         assert.equal(apiRequest.headers.get('X-Console-Admin'), null);
-        assert.equal(apiRequest.headers.get('X-Console-Auth-Time'), String(NOW - 100));
+        assert.equal(apiRequest.headers.get('X-Console-Auth-Time'), null);
         return Response.json({ sites: [] }, { status: 200 });
       }),
     })
@@ -308,25 +296,6 @@ test('workspace proxy forwards signed identity without auth session preflight', 
 
   assert.equal(response.status, 200, await response.clone().text());
   assert.deepEqual(calls, ['/.xd-pages/api/console/workspace/sites']);
-});
-
-test('legacy signed session stays usable but does not forward a forged auth time', async () => {
-  const cookie = await sessionCookie({ authTime: null });
-  const response = await worker.fetch(
-    request('https://workers.xd.team/api/console/workspace/sites', {
-      cookie,
-      headers: { 'X-Console-Auth-Time': String(NOW) },
-    }),
-    env({
-      PAGES_API: apiBinding(async (apiRequest) => {
-        assert.equal(apiRequest.headers.get('X-Console-User-Id'), 'user-1');
-        assert.equal(apiRequest.headers.get('X-Console-Auth-Time'), null);
-        return Response.json({ sites: [] });
-      }),
-    })
-  );
-
-  assert.equal(response.status, 200);
 });
 
 test('teams proxy forwards signed session identity to pages-api', async () => {
@@ -592,24 +561,6 @@ test('auth login calls pages-auth service binding and redirects to authorize URL
   ]);
 });
 
-test('reauth login preserves only a safe console return path', async () => {
-  const calls = [];
-  const response = await worker.fetch(
-    request('https://workers.xd.team/api/console/auth/login?reauth=1&returnTo=https%3A%2F%2Fevil.example%2Fworkspace'),
-    env({
-      PAGES_AUTH: authBinding(async (authRequest) => {
-        calls.push(await authRequest.json());
-        return Response.json({
-          authorizeUrl: 'https://auth.pages.xd.team/.xd-pages/auth/authorize?console=1&reauth=1',
-        });
-      }),
-    })
-  );
-
-  assert.equal(response.status, 302);
-  assert.deepEqual(calls, [{ returnTo: '/', reauth: true }]);
-});
-
 test('staging login page is reachable without an existing admin session', async () => {
   const response = await worker.fetch(
     request('https://staging.workers.xd.team/login?returnTo=/admin', {
@@ -635,7 +586,6 @@ test('auth callback exchanges code, sets host-only console cookie, and redirects
           email: 'user@example.com',
           employeeStatus: 'active',
           sessionVersion: 2,
-          authTime: NOW - 100,
           environment: 'production',
           returnTo: '/workspace',
         });
@@ -660,35 +610,8 @@ test('auth callback exchanges code, sets host-only console cookie, and redirects
   assert.equal(verified.email, 'user@example.com');
   assert.equal(verified.employeeStatus, 'active');
   assert.equal(verified.sessionVersion, 2);
-  assert.equal(verified.authTime, NOW - 100);
-  assert.equal(verified.exp - verified.iat, 7 * 24 * 60 * 60);
-});
-
-test('auth callback accepts a legacy exchange without auth time while keeping ownership transfer fail closed', async () => {
-  const response = await worker.fetch(
-    request('https://workers.xd.team/api/console/auth/callback?code=ost_console.console-secret'),
-    env({
-      PAGES_AUTH: authBinding(async () =>
-        Response.json({
-          userId: 'usr_1',
-          email: 'user@example.com',
-          employeeStatus: 'active',
-          sessionVersion: 2,
-          environment: 'production',
-          returnTo: '/workspace',
-        })
-      ),
-    })
-  );
-
-  assert.equal(response.status, 302);
-  const verified = await verifySessionJwt(extractSessionToken(response.headers.get('Set-Cookie')), jwtSigningEnv(), {
-    purpose: 'console_session',
-    audience: 'workers.xd.team',
-    now: NOW,
-  });
-  assert.equal(verified.sub, 'usr_1');
   assert.equal(verified.authTime, undefined);
+  assert.equal(verified.exp - verified.iat, 7 * 24 * 60 * 60);
 });
 
 test('auth callback fails closed when console session signing config is missing', async () => {
@@ -702,7 +625,6 @@ test('auth callback fails closed when console session signing config is missing'
           email: 'user@example.com',
           employeeStatus: 'active',
           sessionVersion: 2,
-          authTime: NOW - 100,
           environment: 'production',
           returnTo: '/workspace',
         })
@@ -730,28 +652,6 @@ test('auth callback redirects back to login and clears cookies when code exchang
   assert.match(setCookie, /__Host-xd_cell_csrf=;/);
 });
 
-test('auth callback rejects an invalid exchanged auth time', async () => {
-  const response = await worker.fetch(
-    request('https://workers.xd.team/api/console/auth/callback?code=ost_console.console-secret'),
-    env({
-      PAGES_AUTH: authBinding(async () =>
-        Response.json({
-          userId: 'usr_1',
-          employeeStatus: 'active',
-          sessionVersion: 2,
-          authTime: '1800000000',
-          environment: 'production',
-          returnTo: '/workspace',
-        })
-      ),
-    })
-  );
-
-  assert.equal(response.status, 302);
-  assert.equal(response.headers.get('Location'), '/login?error=auth_failed');
-  assert.match(response.headers.get('Set-Cookie') || '', /__Host-xd_cell_session=;/);
-});
-
 test('staging auth callback rejects non-platform admins and clears session cookie', async () => {
   const calls = [];
   const response = await worker.fetch(
@@ -764,7 +664,6 @@ test('staging auth callback rejects non-platform admins and clears session cooki
           email: 'user@example.com',
           employeeStatus: 'active',
           sessionVersion: 2,
-          authTime: NOW - 100,
           environment: 'staging',
           returnTo: '/workspace',
         })
@@ -776,7 +675,6 @@ test('staging auth callback rejects non-platform admins and clears session cooki
             userId: apiRequest.headers.get('X-Console-User-Id'),
             email: apiRequest.headers.get('X-Console-Email'),
             sessionVersion: apiRequest.headers.get('X-Console-Session-Version'),
-            authTime: apiRequest.headers.get('X-Console-Auth-Time'),
           });
           return Response.json({
             session: {
@@ -801,7 +699,6 @@ test('staging auth callback rejects non-platform admins and clears session cooki
       userId: 'usr_1',
       email: 'user@example.com',
       sessionVersion: '2',
-      authTime: String(NOW - 100),
     },
   ]);
 });
