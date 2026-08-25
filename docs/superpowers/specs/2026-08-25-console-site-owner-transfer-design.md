@@ -44,7 +44,18 @@ Owner 表示站点资产的最终归属方：
 | 团队 | 当前团队 `publisher` / `viewer` | 否 |
 | 任意 | platform admin（Admin Console） | 是 |
 
-该源归属规则应在共享 ownership application 中执行，因此 Console、独立 Public transfer API 和 deploy 中隐式触发的既有站点归属转移都不能由团队 `publisher` 绕过。Public API 现有“转个人仅允许转给已认证 actor 自己”和 Team Access Token 限制保持不变；本次只扩展 Console Owner 对其他 active 用户的既有直接转移体验，不扩大非交互凭证权限。
+该源归属规则应在共享 ownership application 中执行，因此 Console、独立 Public transfer API 和 deploy 中隐式触发的既有站点归属转移都不能由团队 `publisher` 绕过。各入口行为如下：
+
+| 入口/凭证 | 个人源站点 | 团队源站点 | 目标个人 | 目标团队 | 源权限不足的外部错误 |
+| --- | --- | --- | --- | --- | --- |
+| Workspace Console | 当前个人 Owner | 源团队 `admin` | 任意 active 用户 | 操作者为 `publisher/admin` 的 active 团队 | 预检 `403 SITE_ADMIN_REQUIRED`；持锁后失权为 `404 SITE_NOT_FOUND` |
+| Admin Console | platform admin | platform admin | 任意 active 用户 | 当前环境任意 active 团队 | `403 PLATFORM_ADMIN_REQUIRED`；持锁后失权为 `404 SITE_NOT_FOUND` |
+| Public transfer API：用户、Connection JWT、PAT | 当前个人 Owner | 源团队 `admin` | 仅已认证 actor 自己，保持现有约束 | 操作者为 `publisher/admin` 的 active 团队 | 预检 `403 SITE_TRANSFER_FORBIDDEN`；持锁后失权为 `404 SITE_NOT_FOUND` |
+| Public transfer API：TAT | 不适用 | 不允许改变 Owner；向同一团队提交也按相同 Owner 拒绝 | 不允许 | 不允许改变为其它团队 | `403 SITE_TRANSFER_FORBIDDEN` |
+| deploy 隐式转移：用户、Connection JWT、PAT | 当前个人 Owner | 源团队 `admin` | deploy 不提供个人目标 | 操作者为 `publisher/admin` 的 active 团队 | 预检 `403 DEPLOY_FORBIDDEN`；持锁后失权沿用 `404 SITE_NOT_FOUND` |
+| deploy：TAT | 不适用 | 可以继续部署自身团队站点，但不能改变 Owner | 不支持 | 不允许改变为其它团队 | `403 DEPLOY_FORBIDDEN` |
+
+Public API 现有“转个人仅允许转给已认证 actor 自己”的限制保持不变；本次只保留 Console Owner 对其他 active 用户的直接转移体验，不扩大非交互凭证权限。因为源团队从 `publisher/admin` 收紧为 `admin` 是公开行为变更，OpenAPI、CLI/skill 提示和相关 contract tests 都是必改项，而不是可选同步项。
 
 ### 目标权限
 
@@ -67,7 +78,7 @@ Owner 表示站点资产的最终归属方：
 点击“转移归属”后，在卡片内展开现有个人/团队选择器：
 
 - 个人候选仅显示 active 用户；不得仅排除 `inactive` 后继续展示 `unknown` 用户。
-- 团队候选仅显示操作者具备 `publisher` / `admin` 权限的 active 团队。
+- Workspace 团队候选仅显示操作者具备 `publisher` / `admin` 权限的 active 团队；Admin Console 继续显示当前环境内所有 active 团队，不受管理员的团队成员身份限制。
 - 当前 Owner 不作为可提交目标；未选择目标或选择相同目标时“继续”按钮禁用。
 - 点击“继续”后打开共享 `ConfirmDialog`。提交使用打开确认框时冻结的目标 id/type，避免搜索或异步列表刷新改变提交对象。
 
@@ -76,7 +87,7 @@ Owner 表示站点资产的最终归属方：
 - 标题：“确认转移站点归属”。
 - 摘要：“当前归属 → 目标归属”。
 - 固定说明：“转移会立即改变站点资产归属和管理权限。”
-- 若响应预期表明操作者将在转移后失权，额外提示：“转移成功后，你将无法继续访问或管理此站点。”
+- 根据当前入口、目标类型和操作者在目标团队的角色判断：若转移后操作者将失权，额外提示“转移成功后，你将无法继续访问或管理此站点。”
 - 主按钮：“确认转移”；请求中显示“转移中”，并禁止关闭和重复提交。
 - API 错误保留在确认框内，不关闭选择状态。
 
@@ -122,7 +133,7 @@ AuthSessionDO.authTime
   -> pages-api validated console session
 ```
 
-- `authTime` 使用 Unix 秒；缺失、非整数、超出允许的未来时钟偏差或距当前时间超过 15 分钟，转移接口返回 `401 CONSOLE_RECENT_LOGIN_REQUIRED`。
+- `authTime` 使用 Unix 秒，recent 窗口固定为 900 秒，允许最多 30 秒的未来时钟偏差。缺失、非整数、`authTime > now + 30` 或 `now - authTime > 900` 时，转移接口返回 `401 CONSOLE_RECENT_LOGIN_REQUIRED`；`now - authTime === 900` 仍视为有效。
 - 旧 Console cookie 可以继续访问普通页面，但对 Owner 转移 fail closed。
 - pages-console BFF 继续重建内部请求头，丢弃浏览器伪造的 `X-Console-*`；`X-Console-Auth-Time` 只能来自已验签的 host-bound Console JWT。
 - UI 收到 `CONSOLE_RECENT_LOGIN_REQUIRED` 后显示“重新验证身份”操作，跳转到 `/api/console/auth/login?reauth=1&returnTo=<当前站点设置页>`。
@@ -143,9 +154,15 @@ Admin Console 的 Owner 转移使用同一 recent-login 规则。
 4. 拒绝与当前 Owner 相同的目标。
 5. 校验团队目标与当前 visibility 兼容。
 6. 原子更新 Owner、相关 `site_members`、route `policyVersion` 与 `site.owner.transfer` 审计事件。
-7. 刷新 active route snapshot；失败沿用现有补偿，恢复旧 Owner，否则返回 repair-required 错误。
+7. 刷新 active route snapshot；失败沿用现有补偿并返回 repair-required 错误。
 
 为了关闭权限检查与提交之间的竞态，D1 guarded statement 必须表达“源团队角色仍是 admin”；不能只在 handler 或 UI 中判断。目标团队的 `publisher` / `admin` 条件也继续在事务内复核。
+
+失败语义保持现有 ownership application 边界，不在本次重做跨 D1/KV 事务模型：
+
+- recent-login、源权限、目标、相同 Owner、visibility 或 lease 校验在首次提交前失败时，不修改 Owner、`policyVersion`、snapshot 或审计。
+- D1 已提交但 snapshot 刷新失败，且补偿成功时，Owner 恢复为原值；补偿会再次推进 `policyVersion`，首次 `site.owner.transfer` 审计仍作为一次已提交后被补偿的尝试保留。API 返回 `503 ROUTE_POLICY_REPAIR_REQUIRED`，不得显示转移成功。
+- 补偿或恢复后的 snapshot 仍失败时，清理当前 route pointer 并返回 `503 ROUTE_POLICY_REPAIR_REQUIRED` 以 fail closed；此时不得承诺 Owner、`policyVersion` 或审计完全回到请求前状态，需要由现有修复流程恢复并通过详情/审计确认。
 
 ## API 与错误语义
 
@@ -170,7 +187,7 @@ PATCH /api/console/admin/sites/{siteId}/settings
 | code | status | UI 行为 |
 | --- | ---: | --- |
 | `CONSOLE_RECENT_LOGIN_REQUIRED` | 401 | 保留错误并提供“重新验证身份” |
-| `SITE_ADMIN_REQUIRED` | 403 | 提示仅个人 Owner 或源团队 admin 可转移 |
+| `SITE_ADMIN_REQUIRED` | 403 | Workspace 提示仅个人 Owner 或源团队 admin 可转移 |
 | `SITE_TRANSFER_INVALID` | 400 | 提示目标无效或与当前归属相同 |
 | `SITE_TRANSFER_FORBIDDEN` | 403 | 提示目标用户/团队不可用或无目标团队权限 |
 | `SITE_VISIBILITY_INVALID` | 400 | 提示先把 `owner` visibility 改为团队支持的模式 |
@@ -215,11 +232,11 @@ PATCH /api/console/admin/sites/{siteId}/settings
 - 站点切换或组件卸载后，迟到响应不能写入新页面。
 - 共享 Dialog 继续保持滚动位置和焦点恢复，避免设置页面跳动。
 
-## 文档同步
+## 公开 API 与文档同步
 
 - 更新 `docs/architecture/xd-cell-console.md`：删除“publisher 可转移归属”，说明独立归属卡片和 team admin 权限。
 - 更新 `docs/architecture/publishing-and-runtime.md`：补充 Console recent-login 的实际传递与重认证流程。
-- 若共享源权限改变 Public transfer API 行为，同步 `apps/pages-api/src/openapi.js`、`docs/api-boundary.md`、CLI/skill 文案和契约测试；不公开 `/openapi.json`。
+- 必须同步 `apps/pages-api/src/openapi.js`、`docs/api-boundary.md`、CLI/skill 文案和契约测试，明确 Public transfer 与 deploy 的源团队 `admin` 限制、TAT 限制及错误码；不公开 `/openapi.json`。
 
 ## 验收标准
 
@@ -227,6 +244,6 @@ PATCH /api/console/admin/sites/{siteId}/settings
 - 个人当前 Owner 可直接转给另一 active 用户或可管理团队。
 - 团队 publisher 不能通过 UI、Console BFF、Public transfer API 或 deploy 路径转移团队站点；团队 admin 可以。
 - stale Console session 无法执行转移，重新经过 SSO 验证后可以。
-- 转移失败不会留下部分 Owner、policy、snapshot 或审计状态。
+- 首次提交前失败不会产生 Owner、policy、snapshot 或审计变化；首次提交后的 snapshot/补偿失败严格遵循上文 fail-closed 语义，UI 不误报成功。
 - 转移导致操作者失权时，页面不会继续展示不可访问站点的详情。
 - focused tests、`pnpm lint` 和 `pnpm test` 全部通过。
