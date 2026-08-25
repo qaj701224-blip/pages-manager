@@ -27,6 +27,7 @@ export function createDeploymentRouteCutover({ leases, officeNet, routes }) {
       version: command.version,
       lease: command.lease,
       activation: command.activation,
+      ...(command.commit ? { commit: command.commit } : {}),
     });
   }
 }

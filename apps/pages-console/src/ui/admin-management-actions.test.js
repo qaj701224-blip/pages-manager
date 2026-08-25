@@ -40,6 +40,12 @@ test('admin site management exposes a safe detail action', () => {
   assert.match(adminSitesSource, />\s*查看详情\s*<\/Link>/);
 });
 
+test('admin site list keeps metadata changes made in the embedded detail view', () => {
+  assert.match(adminSitesSource, /onSiteChange=\{patchListedSite\}/);
+  assert.match(adminSitesSource, /patchSiteSummaryForId\(current\.sites, updatedSiteId, patch\)/);
+  assert.match(siteDetailSource, /onSiteChange\?\.\(siteId, patch\)/);
+});
+
 test('admin site management displays and filters the active deployment shape', () => {
   assert.match(adminSitesSource, /<th>站点类型<\/th>/);
   assert.match(adminSitesSource, /aria-label="站点类型"/);

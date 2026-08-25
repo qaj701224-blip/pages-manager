@@ -115,8 +115,8 @@ export async function readSiteBySlug(client, slug) {
       'SITE_NOT_FOUND',
       `未找到站点：${slug}`,
       suggestion
-        ? `未找到 ${slug}。你是不是想查看 ${suggestion}？`
-        : '请确认站点名和站点权限；如果使用 API token，请确认它绑定的是这个站点。'
+        ? `未找到 ${slug}。你是不是想查看 ${suggestion}？站点也可能已改名，请运行 xd-cell sites list 查看当前站点名。`
+        : '站点可能已改名，请运行 xd-cell sites list 查看当前站点名；同时请确认站点名和站点权限，如果使用 API token，请确认它绑定的是这个站点。'
     );
   }
   return { site };

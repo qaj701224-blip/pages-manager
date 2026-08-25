@@ -1,7 +1,16 @@
 export function createSiteLifecyclePort(store) {
   return {
+    withSiteCommitLock: bindRequired(store, 'withSiteCommitLock'),
+    getSite: bindRequired(store, 'getSite'),
+    getSiteForUser: bindRequired(store, 'getSiteForUser'),
+    getAccessKeyById: bindRequired(store, 'getAccessKeyById'),
+    getUser: bindRequired(store, 'getUser'),
+    getTeam: bindRequired(store, 'getTeam'),
+    isPlatformAdmin: bindRequired(store, 'isPlatformAdmin'),
     getRouteBySiteId: bindRequired(store, 'getRouteBySiteId'),
     getHostnameClaim: bindOptional(store, 'getHostnameClaim'),
+    listSiteHostnameClaims: bindOptional(store, 'listSiteHostnameClaims'),
+    listSiteRetiringHostnameClaims: bindOptional(store, 'listSiteRetiringHostnameClaims'),
     deleteSite: bindRequired(store, 'deleteSite'),
     restoreSiteDeleteIfCurrent: bindOptional(store, 'restoreSiteDeleteIfCurrent'),
     restoreSiteRouteIfCurrent: bindOptional(store, 'restoreSiteRouteIfCurrent'),

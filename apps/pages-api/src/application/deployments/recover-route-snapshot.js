@@ -22,14 +22,30 @@ export function createDeploymentRouteSnapshotRecovery({
 
   async function recover(command) {
     let restoredRoute = null;
+    let restoredSite = command.site;
     let restorationFailed = false;
     try {
-      restoredRoute = await routes.restore({
-        siteId: command.siteId,
-        previousRoute: command.previousRoute,
-        expectedRoute: command.failedRoute,
-        environment: command.environment,
-      });
+      if (command.ownerTransfer?.enabled && typeof routes.restoreWithOwner === 'function') {
+        const restored = await routes.restoreWithOwner({
+          siteId: command.siteId,
+          previousSite: command.ownerTransfer.previousSite,
+          failedSite: command.site,
+          previousRoute: command.previousRoute,
+          expectedRoute: command.failedRoute,
+          environment: command.environment,
+          lease: command.lease,
+        });
+        restoredRoute = restored?.route || null;
+        restoredSite = restored?.site || restoredSite;
+        if (!restored) restorationFailed = true;
+      } else {
+        restoredRoute = await routes.restore({
+          siteId: command.siteId,
+          previousRoute: command.previousRoute,
+          expectedRoute: command.failedRoute,
+          environment: command.environment,
+        });
+      }
     } catch {
       restorationFailed = true;
     }
@@ -40,12 +56,14 @@ export function createDeploymentRouteSnapshotRecovery({
       restorationFailed = true;
     }
 
-    const restoredSite =
-      (await ownerTransfers.restore({
-        siteId: command.siteId,
-        environment: command.environment,
-        ...(command.ownerTransfer || {}),
-      })) || command.site;
+    if (!command.ownerTransfer?.enabled || typeof routes.restoreWithOwner !== 'function') {
+      restoredSite =
+        (await ownerTransfers.restore({
+          siteId: command.siteId,
+          environment: command.environment,
+          ...(command.ownerTransfer || {}),
+        })) || restoredSite;
+    }
     const restoredSnapshotWritten = restorationFailed
       ? false
       : await routeSnapshots.writeRestored({

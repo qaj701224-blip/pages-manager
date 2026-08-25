@@ -35,7 +35,11 @@ access permission: 谁能访问子站内容
 - CLI 和普通用户 API 不接受 exposure；只有 Platform Admin 可在 Console 中开启或关闭公网。
 - 用户后续修改 visibility/ACL 只改变 access mode，保留 Admin 已设置的 exposure。
 
-只有 schema v3 route snapshot 显式声明 `exposure=public` 才能绕过 Router IP allowlist。旧 v2 snapshot、缺失或非法 exposure 安全降级为 internal；旧的 `visibility=public` 仍是非法策略并 fail closed。
+只有 schema v3/v4 serve route snapshot 显式声明 `exposure=public` 才能绕过 Router IP allowlist。旧 v2 snapshot、缺失或非法 exposure 安全降级为 internal；旧的 `visibility=public` 仍是非法策略并 fail closed。
+
+## 站点名称与 URL 改名
+
+展示名称 `title` 与 canonical `slug` 可独立修改；`title` 为空时界面回退显示 slug。slug 改名只更新 D1 metadata、canonical route、hostname claim 和 schema v4 serve pointer，不上传 artifact、不创建 deployment/version，也不改变站点 ID、权限、active version、runtime config 或不可变 `dataNamespace`。旧地址不跳转；控制面确认旧 pointer 已删除后才开始 5 分钟 reuse hold，到期后旧 slug 可重新使用。异常链路 fail closed。缩略图与 R2 延期。
 
 ## SSO 登录链路
 
@@ -356,7 +360,7 @@ xd-cell secrets put foo API_TOKEN
 xd-cell secrets delete foo API_TOKEN
 ```
 
-站点删除默认要求交互确认；用户取消时 CLI 不发送删除请求。AI agent、CI 或使用 `--json` 时必须显式传入 `--yes`。CLI 先在当前身份可见的站点中解析 slug，再调用既有的按 ID 删除接口。服务端保持当前 soft delete 语义；对于原先 active 的 route，会发布 `routeStatus=deleted` 的 inactive route snapshot 并推进当前指针，旧的 immutable snapshot 仍保留，同时保留 hostname reuse hold。当前不提供恢复、永久删除或批量删除。
+站点删除默认要求交互确认；用户取消时 CLI 不发送删除请求。AI agent、CI 或使用 `--json` 时必须显式传入 `--yes`。CLI 先在当前身份可见的站点中解析 slug，再调用既有的按 ID 删除接口。服务端保持当前 soft delete 语义；对于原先 active 的 route，会先发布 `routeStatus=deleted` 的 inactive route snapshot 作为 fail-closed 状态，再尝试清除 canonical pointer。清除成功后旧 hostname 不再保留 pointer；清除失败时 deleted snapshot 继续 fail closed。immutable snapshot 仍保留，同时 hostname 进入 reuse hold；hold 到期后的新 owner 可以替换旧 deleted snapshot。当前不提供恢复、永久删除或批量删除。
 
 配置优先级从高到低：
 
@@ -576,10 +580,10 @@ legacy runtime 响应只对浏览器暴露标准 `Deprecation` header；`X-XD-Pa
 
 `pages-router` 收到 runtime data 请求时先走平台门禁、site_session / visibility / ACL 校验、CSRF / Origin 策略和 payload 限制，再由 router 生成 gateway capability 并调用 `pages-kv-gateway`。浏览器请求永远不能直接访问 `kv-gateway.pages.xd.team`，也不能看到 gateway capability。
 
-v2 需要调整：
+当前 v2 capability：
 
 - capability issuer 使用 v2 身份，例如 `pages-v2`，不能继续使用 v1 `pages-manager`。
-- capability 的 subject 应绑定 site UUID、version 或 worker identity。
+- schema v4 路由签发 namespace v2 capability：`siteId` 使用不可变站点 ID，并同时绑定不可变 `dataNamespace` 与 `siteUuid`；gateway 继续兼容旧 snapshot 产生的 slug 形态 namespace v1 capability。
 - user data capability 可以包含最小化的稳定 `userId` / `anonymous` subject，用于 gateway 推导 user data 前缀；不得包含 email、SSO token、session token 或其它 PII。
 - 浏览器仍不能直接拿 gateway token 或 capability。
 
@@ -589,10 +593,10 @@ v2 需要调整：
 
 ```text
 site data:
-  s/{slug}--{siteUuid}/k/{key}
+  s/{dataNamespace}--{siteUuid}/k/{key}
 ```
 
-`slug` 只用于可读性和排查，不能作为隔离锚点；删除同名站点后新建站点必须得到新的 `siteUuid`，因此不会继承旧 KV 前缀。这适合存站点配置、共享草稿、轻量状态和站点级缓存，但不应被当作用户数据库。业务代码自行约定 `users/{userId}/...` 前缀不能形成平台级隔离，因为 userId 可能来自浏览器、业务参数或不可信 Worker 代码。
+`dataNamespace` 取建站时的 slug，只用于可读性并在后续改名时保持不变；真正的隔离还绑定不可变 `siteUuid`，因此删除后用同名 slug 重建也不会继承旧 KV 前缀。这适合存站点配置、共享草稿、轻量状态和站点级缓存，但不应被当作用户数据库。业务代码自行约定 `users/{userId}/...` 前缀不能形成平台级隔离，因为 userId 可能来自浏览器、业务参数或不可信 Worker 代码。
 
 用户级数据隔离由 `pages.data.user` 显式表达：
 
@@ -605,10 +609,10 @@ pages.data.user.get('settings');
 
 ```text
 site data:
-  s/{slug}--{siteUuid}/k/{key}
+  s/{dataNamespace}--{siteUuid}/k/{key}
 
 user data:
-  s/{slug}--{siteUuid}/u/{userId}/k/{key}
+  s/{dataNamespace}--{siteUuid}/u/{userId}/k/{key}
 ```
 
 `userId` 必须来自 `pages-router` 注入的签名身份，不能由浏览器、SDK 调用方或 User Worker 自行传入，也不能使用 email。第一版 user data 只支持当前登录用户自己的 `get` / `set` / `delete`，不支持 list、管理员读取他人数据、团队空间或共享用户组空间。匿名 `pages.data.user.get()` 返回 `null`；匿名 `set` / `delete` 返回 `USER_REQUIRED`。

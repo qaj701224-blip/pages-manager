@@ -73,6 +73,7 @@ export const ERROR_CODES = {
 };
 
 const SITE_UUID_RE = /^[0-9a-f]{32}$/;
+const SITE_ID_RE = /^site_[0-9a-f]{32}$/;
 const USER_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const MAX_USER_KEY_BYTES = 256;
 const MAX_STORAGE_KEY_BYTES = 512;
@@ -101,6 +102,10 @@ export function parseKvEnabled(value) {
 
 export function isValidSiteUuid(siteUuid) {
   return typeof siteUuid === 'string' && SITE_UUID_RE.test(siteUuid);
+}
+
+export function isValidSiteId(siteId) {
+  return typeof siteId === 'string' && SITE_ID_RE.test(siteId);
 }
 
 export function validateUserKey(key) {

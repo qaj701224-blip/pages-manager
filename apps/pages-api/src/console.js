@@ -32,6 +32,7 @@ import {
   readSiteConfig,
   teamOwnerVisibilityUnsupported,
   updateSiteAccess,
+  updateConsoleSiteMetadata,
 } from './transport/console/site-mutations.js';
 import {
   formatAclEntry,
@@ -83,6 +84,22 @@ export async function handleConsoleApi(request, env, config, store, ctx) {
       teamId,
     });
     return jsonOk({ sites: sites.map(formatWorkspaceSite) });
+  }
+
+  const siteMetadataMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/sites\/([^/]+)\/metadata$/);
+  if (siteMetadataMatch) {
+    const session = await requireConsoleUserSession(request, env, config, store);
+    if (session instanceof Response) return session;
+    if (request.method !== 'PATCH') return methodNotAllowed();
+    return updateConsoleSiteMetadata(
+      request,
+      env,
+      config,
+      store,
+      session,
+      decodeURIComponent(siteMetadataMatch[1]),
+      { ctx },
+    );
   }
 
   const siteSettingsMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/sites\/([^/]+)\/settings$/);
@@ -289,13 +306,14 @@ async function updateConsoleSiteSettings(request, env, config, store, session, s
     const result = await createSiteOwnershipApplication({ store, env })({
       environment: config.environment,
       site,
+      actor: { type: 'user', userId: session.userId },
       target,
-      buildAuditEvent: (updatedAt) =>
+      buildAuditEvent: (updatedAt, currentSite) =>
         buildSiteOwnerTransferAuditEvent({
           id: nextId(env, 'aud'),
           environment: config.environment,
           actor: { type: 'user', userId: session.userId },
-          site,
+          site: currentSite,
           target,
           source: 'console',
           createdAt: updatedAt,

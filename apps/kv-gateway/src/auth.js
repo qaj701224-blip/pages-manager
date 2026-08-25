@@ -1,4 +1,4 @@
-import { isValidSiteSlug, isValidSiteUuid, isValidUserId } from '@xd/pages-runtime-protocol';
+import { isValidSiteId, isValidSiteSlug, isValidSiteUuid, isValidUserId } from '@xd/pages-runtime-protocol';
 
 const JWT_ISSUER = 'pages-v2';
 const JWT_AUDIENCE = 'pages-kv-gateway';
@@ -93,7 +93,7 @@ function validateClaims(claims, env, requiredScope, requiredDataScope, now) {
   if (claims.aud !== JWT_AUDIENCE) throw new Error('Capability invalid: invalid audience');
   const expectedEnv = env.PAGES_ENV ?? env.XD_PAGES_ENV;
   if (!expectedEnv || claims.env !== expectedEnv) throw new Error('Capability invalid: environment mismatch');
-  if (!isValidSiteSlug(claims.siteId)) throw new Error('Capability invalid: invalid site id');
+  normalizeAndValidateNamespace(claims);
   if (!isValidSiteUuid(claims.siteUuid)) throw new Error('Capability invalid: invalid site UUID');
   normalizeAndValidateDataScope(claims, requiredDataScope);
 
@@ -119,6 +119,25 @@ function validateClaims(claims, env, requiredScope, requiredDataScope, now) {
 
   if (claims.exp - claims.iat > MAX_CAPABILITY_TTL_SECONDS) {
     throw new Error('Capability invalid: exp exceeds max ttl');
+  }
+}
+
+function normalizeAndValidateNamespace(claims) {
+  const hasDataNamespace = Object.hasOwn(claims, 'dataNamespace');
+  const hasNamespaceVersion = Object.hasOwn(claims, 'namespaceVersion');
+  if (!hasDataNamespace && !hasNamespaceVersion) {
+    if (!isValidSiteSlug(claims.siteId)) throw new Error('Capability invalid: invalid site id');
+    claims.dataNamespace = claims.siteId;
+    claims.namespaceVersion = 1;
+    return;
+  }
+
+  if (
+    claims.namespaceVersion !== 2 ||
+    !isValidSiteId(claims.siteId) ||
+    !isValidSiteSlug(claims.dataNamespace)
+  ) {
+    throw new Error('Capability invalid: invalid site id or data namespace');
   }
 }
 

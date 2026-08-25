@@ -1,24 +1,14 @@
-import {
-  canonicalDeploymentContentHash,
-  decisionRequiresAssets,
-  decisionRequiresWorker,
-} from '../../deployment-plan.js';
+import { canonicalDeploymentContentHash, decisionRequiresAssets, decisionRequiresWorker } from '../../deployment-plan.js';
 import { validateAssetFiles } from '../../deployment-upload.js';
 import { isSiteVisibility } from '../../domain/sites/access-policy.js';
+import { normalizeSiteMetadataPatch } from '../../domain/sites/metadata.js';
 import { normalizeWorkerBundle } from '../../execution-provider.js';
 import { jsonError } from '../../http.js';
 import { rejectUserExposureMutation } from '../shared/site-input.js';
 import { readDeploymentIntakeHeaders, readDeploymentMultipart } from './deployment-intake.js';
-import {
-  queueRequestTraceSuccess,
-  setRequestTraceStage,
-  traceFailureResponse,
-} from './deployment-request-trace.js';
-import {
-  normalizeOptionalSlug,
-  normalizeOptionalString,
-  validateDeploySiteSlug,
-} from './deployment-site-resolution.js';
+import { queueRequestTraceSuccess, setRequestTraceStage, traceFailureResponse } from './deployment-request-trace.js';
+import { normalizeOptionalSlug, normalizeOptionalString, validateDeploySiteSlug } from './deployment-site-resolution.js';
+import { siteTitleInvalid } from './deployment-errors.js';
 
 export async function readDeploySiteRequest({ request, config, trace }) {
   setRequestTraceStage(trace, 'intake', 'read_deployment_request');
@@ -29,9 +19,7 @@ export async function readDeploySiteRequest({ request, config, trace }) {
   const multipart = await readDeploymentMultipart(request);
   if (!multipart.ok) {
     return failed(
-      multipart.traceFailure
-        ? traceFailureResponse(trace, multipart.response, multipart.traceFailure)
-        : multipart.response
+      multipart.traceFailure ? traceFailureResponse(trace, multipart.response, multipart.traceFailure) : multipart.response
     );
   }
   queueRequestTraceSuccess(trace, 'intake', 'parse_multipart');
@@ -46,6 +34,16 @@ export async function readDeploySiteRequest({ request, config, trace }) {
   const requestedSiteSlug = normalizeOptionalSlug(body.siteSlug ?? body.slug);
   const requestedTeamId = normalizeOptionalString(body.teamId);
   const requestedVisibility = normalizeOptionalString(body.visibility);
+  const requestedTitleProvided = Object.hasOwn(body, 'title');
+  let requestedTitle;
+  if (requestedTitleProvided) {
+    try {
+      requestedTitle = normalizeSiteMetadataPatch({ title: body.title }, { environment: config.environment }).title;
+    } catch (error) {
+      if (error?.code === 'SITE_TITLE_INVALID') return failed(siteTitleInvalid());
+      throw error;
+    }
+  }
   const clientContentHash = typeof body.contentHash === 'string' ? body.contentHash : '';
   const source = typeof body.source === 'string' ? body.source : 'api';
   const decision = body.decision;
@@ -65,12 +63,7 @@ export async function readDeploySiteRequest({ request, config, trace }) {
   }
   if (requestedVisibility && !isSiteVisibility(requestedVisibility)) {
     return failed(
-      jsonError(
-        'SITE_VISIBILITY_INVALID',
-        'Site visibility is invalid.',
-        400,
-        'Use internal, org, acl, owner, or disabled.'
-      )
+      jsonError('SITE_VISIBILITY_INVALID', 'Site visibility is invalid.', 400, 'Use internal, org, acl, owner, or disabled.')
     );
   }
   if (!clientContentHash.startsWith('sha256:')) {
@@ -94,15 +87,11 @@ export async function readDeploySiteRequest({ request, config, trace }) {
       );
     }
     if (!Array.isArray(assetFiles) || assetFiles.length === 0) {
-      return failed(
-        jsonError('ASSET_FILES_REQUIRED', 'Asset files are required.', 400, 'Upload at least one asset file.')
-      );
+      return failed(jsonError('ASSET_FILES_REQUIRED', 'Asset files are required.', 400, 'Upload at least one asset file.'));
     }
     const assetFileError = validateAssetFiles(assetManifest, assetFiles);
     if (assetFileError === 'ASSET_MANIFEST_INVALID') {
-      return failed(
-        jsonError('ASSET_MANIFEST_INVALID', 'Asset manifest is invalid.', 400, 'Send a valid assetManifest field.')
-      );
+      return failed(jsonError('ASSET_MANIFEST_INVALID', 'Asset manifest is invalid.', 400, 'Send a valid assetManifest field.'));
     }
     if (assetFileError === 'ASSET_FILES_REQUIRED') {
       return failed(
@@ -155,6 +144,8 @@ export async function readDeploySiteRequest({ request, config, trace }) {
       requestedSiteSlug,
       requestedTeamId,
       requestedVisibility,
+      requestedTitleProvided,
+      requestedTitle,
       source,
       decision,
       workerRuntimeVarsProvided,

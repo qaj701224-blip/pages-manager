@@ -1,16 +1,9 @@
 import { canonicalRequestHash } from '../../crypto.js';
 import { runtimeConfigHashInput } from '../../deployment-runtime-config.js';
-import {
-  bindDeploymentTrace,
-  recordDeploymentStage,
-  withDeploymentTraceHeader,
-} from '../../deployment-trace.js';
+import { bindDeploymentTrace, recordDeploymentStage, withDeploymentTraceHeader } from '../../deployment-trace.js';
 import { actorCanDeploySite } from '../../domain/sites/authorization.js';
 import { jsonError, jsonOk } from '../../http.js';
-import {
-  deploySiteResolutionErrorResponse,
-  deploymentStateWriteFailed,
-} from '../shared/deployment-responses.js';
+import { deploySiteResolutionErrorResponse, deploymentStateWriteFailed } from '../shared/deployment-responses.js';
 import { idempotencyConflict } from './deployment-errors.js';
 import {
   bindExistingDeploymentTrace,
@@ -27,10 +20,7 @@ import {
   setRequestTraceStage,
   traceFailureResponse,
 } from './deployment-request-trace.js';
-import {
-  createDeploySiteResolutionApplication,
-  validateDeployableSiteSlug,
-} from './deployment-site-resolution.js';
+import { createDeploySiteResolutionApplication, validateDeployableSiteSlug } from './deployment-site-resolution.js';
 import { traceSucceeded } from './deployment-stage-trace.js';
 
 export async function startDeploySite({ input, env, config, store, actor, ctx, trace, authStage }) {
@@ -40,6 +30,8 @@ export async function startDeploySite({ input, env, config, store, actor, ctx, t
     requestedSiteSlug,
     requestedTeamId,
     requestedVisibility,
+    requestedTitleProvided,
+    requestedTitle,
     source,
     decision,
     workerRuntimeVarsProvided,
@@ -58,6 +50,7 @@ export async function startDeploySite({ input, env, config, store, actor, ctx, t
     teamId: requestedTeamId,
     visibility: requestedVisibility || 'org',
     requestedVisibility,
+    title: requestedTitleProvided ? requestedTitle : null,
   });
   if (!resolution.ok) {
     const response = deploySiteResolutionErrorResponse(resolution.error);
@@ -91,6 +84,7 @@ export async function startDeploySite({ input, env, config, store, actor, ctx, t
       source,
       teamId: requestedTeamId || null,
       visibility: requestedVisibility || null,
+      ...(requestedTitleProvided ? { titleIntent: { provided: true, value: requestedTitle } } : {}),
       vars: workerRuntimeVarsProvided ? await runtimeConfigHashInput(env, requestedRuntimeVars, []) : undefined,
     });
   } catch {

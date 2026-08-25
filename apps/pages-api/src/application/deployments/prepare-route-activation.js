@@ -36,6 +36,7 @@ export function createDeploymentRouteActivationPreparation({ routes, deploymentS
       latestRoute,
       uploadExposure: command.uploadExposure,
       ownerTransferApplied: command.ownerTransferApplied,
+      ownerTransferVisibility: command.ownerTransferVisibility,
     });
     return { ...resolution, latestRoute };
   }

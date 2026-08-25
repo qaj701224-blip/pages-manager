@@ -118,6 +118,7 @@ function pendingSite(prepareSite, command, owner) {
     ownerId: owner.ownerId,
     ownerUserId: owner.ownerUserId,
     visibility: command.visibility,
+    title: command.title ?? null,
   });
   return {
     id: pendingSiteCreation.id,

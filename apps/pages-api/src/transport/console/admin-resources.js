@@ -209,7 +209,13 @@ function createExposureSnapshotFinalizationApplication({ store, env }) {
           env,
           buildRouteSnapshot({ site, route, version, aclEntries })
         );
-        if (state.pointer) await clearRoutePointerIfCurrent(env, state.pointer);
+        if (state.pointer) {
+          await clearRoutePointerIfCurrent(env, {
+            ...state.pointer,
+            siteId: site.id,
+            routeId: route.id,
+          });
+        }
       },
     },
     policies: {
@@ -366,13 +372,15 @@ export async function updateAdminSiteSettings(request, env, config, store, sessi
     const result = await createSiteOwnershipApplication({ store, env })({
       environment: config.environment,
       site,
+      actor: { type: 'user', userId: session.userId },
+      capability: 'platform_admin',
       target: { ...target, ownerUserId: target.ownerUserId || session.userId },
-      buildAuditEvent: (updatedAt) =>
+      buildAuditEvent: (updatedAt, currentSite) =>
         buildSiteOwnerTransferAuditEvent({
           id: nextId(env, 'aud'),
           environment: config.environment,
           actor: { type: 'user', userId: session.userId },
-          site,
+          site: currentSite,
           target,
           source: 'console-admin',
           createdAt: updatedAt,

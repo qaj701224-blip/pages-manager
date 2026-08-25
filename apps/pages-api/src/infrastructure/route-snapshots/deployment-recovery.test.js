@@ -43,6 +43,8 @@ test('deployment snapshot recovery adapter clears only the exact failed pointer 
     },
   });
   const route = {
+    id: 'route_1',
+    siteId: 'site_1',
     hostname: 'guide.workers.xd.team',
     environment: 'production',
     routeGeneration: 3,
@@ -56,7 +58,9 @@ test('deployment snapshot recovery adapter clears only the exact failed pointer 
       environment: 'production',
       routeGeneration: 3,
       policyVersion: 2,
-      snapshotKey: 'production:route_snapshot:guide.workers.xd.team:3:2',
+      snapshotKey: 'production:route_snapshot:guide.workers.xd.team:site_1:3:2',
+      siteId: 'site_1',
+      routeId: 'route_1',
     },
   ]);
 });

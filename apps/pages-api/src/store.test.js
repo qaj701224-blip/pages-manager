@@ -3477,11 +3477,25 @@ test('D1 restoreSiteDeleteIfCurrent restores site, route, and hostname claim sta
       source: 'v2_create',
       status: 'active',
     }),
+    hostnameClaimRow({
+      id: 'claim_retiring',
+      environment: 'production',
+      hostname: 'old-docs.pages.xd.team',
+      normalizedSlug: 'old-docs',
+      hostnameFamily: 'pages',
+      ownerSystem: 'v2',
+      ownerId: 'site_1',
+      ownerRef: 'route_1',
+      source: 'site_slug_rename',
+      status: 'held',
+      releasedAt: '2026-06-15T00:01:00.000Z',
+      releaseReason: 'site_slug_renamed_pending_cleanup',
+    }),
   ];
   const store = new D1PagesStore(fakeSiteDeleteRestoreDb({ sites, routes, claims }));
   const previousSite = await store.getSite('site_1');
   const previousRoute = await store.getRouteBySiteId('site_1', 'production');
-  const previousHostnameClaim = await store.getHostnameClaim('docs.pages.xd.team');
+  const previousHostnameClaims = await store.listSiteHostnameClaims('site_1', { environment: 'production' });
 
   sites[0].deleted_at = '2026-06-15T00:02:00.000Z';
   sites[0].updated_at = '2026-06-15T00:02:00.000Z';
@@ -3496,20 +3510,22 @@ test('D1 restoreSiteDeleteIfCurrent restores site, route, and hostname claim sta
     route_status: 'deleted',
     updated_at: '2026-06-15T00:02:00.000Z',
   });
-  Object.assign(claims[0], {
-    status: 'held',
-    released_at: '2026-06-15T00:02:00.000Z',
-    reuse_hold_until: '2026-06-15T00:07:00.000Z',
-    release_reason: 'site_deleted',
-    updated_at: '2026-06-15T00:02:00.000Z',
-  });
+  for (const claim of claims) {
+    Object.assign(claim, {
+      status: 'held',
+      released_at: '2026-06-15T00:02:00.000Z',
+      reuse_hold_until: '2026-06-15T00:07:00.000Z',
+      release_reason: 'site_deleted',
+      updated_at: '2026-06-15T00:02:00.000Z',
+    });
+  }
   const expectedRoute = await store.getRouteBySiteId('site_1', 'production');
 
   const restored = await store.restoreSiteDeleteIfCurrent(
     'site_1',
     previousSite,
     previousRoute,
-    previousHostnameClaim,
+    previousHostnameClaims,
     expectedRoute,
     'production'
   );
@@ -3524,6 +3540,10 @@ test('D1 restoreSiteDeleteIfCurrent restores site, route, and hostname claim sta
   assert.equal(claims[0].released_at, null);
   assert.equal(claims[0].reuse_hold_until, null);
   assert.equal(claims[0].release_reason, null);
+  assert.equal(claims[1].status, 'held');
+  assert.equal(claims[1].released_at, '2026-06-15T00:01:00.000Z');
+  assert.equal(claims[1].reuse_hold_until, null);
+  assert.equal(claims[1].release_reason, 'site_slug_renamed_pending_cleanup');
 });
 
 test('conditional route activation rejects stale route authority records', async () => {
@@ -4754,7 +4774,15 @@ function fakeCreateSiteD1Db({ claims = [], beforeBatch, beforeInsertHostnameClai
 }
 
 async function fakeCreateSiteFirst(state, sql, args) {
-  if (/SELECT \* FROM sites WHERE environment = \? AND slug = \? AND deleted_at IS NULL/.test(sql)) {
+  if (/SELECT sites\.\*\s+FROM sites/.test(sql)) {
+    const [environment, slug] = args;
+    return (
+      [...state.sites.values()].find(
+        (site) => site.environment === environment && site.slug === slug && site.deleted_at == null
+      ) || null
+    );
+  }
+  if (/SELECT \* FROM sites\s+WHERE environment = \? AND slug = \? AND deleted_at IS NULL/.test(sql)) {
     const [environment, slug] = args;
     return (
       [...state.sites.values()].find(
@@ -4853,7 +4881,9 @@ function updateCreateSiteHostnameClaim(state, args) {
   ] = args;
   const claim = state.claims.get(hostname);
   if (!claim || !['released', 'held'].includes(claim.status)) return { meta: { changes: 0 } };
-  if (claim.reuse_hold_until && claim.reuse_hold_until > now) return { meta: { changes: 0 } };
+  if (claim.status === 'held' && (!claim.reuse_hold_until || claim.reuse_hold_until > now)) {
+    return { meta: { changes: 0 } };
+  }
   if (
     hasBlockingCreateSiteClaim(
       state,
@@ -4949,9 +4979,17 @@ function insertCreateSiteSite(state, args) {
   const [
     id,
     slug,
+    title,
+    dataNamespace,
+    slugRevision,
+    slugRoutingSyncedRevision,
     environment,
+    ownerType,
+    ownerId,
     ownerUserId,
     defaultVisibility,
+    defaultExposure,
+    defaultAccessMode,
     executionModeOverride,
     siteUuid,
     createdAt,
@@ -4962,9 +5000,17 @@ function insertCreateSiteSite(state, args) {
   state.sites.set(id, {
     id,
     slug,
+    title,
+    data_namespace: dataNamespace,
+    slug_revision: slugRevision,
+    slug_routing_synced_revision: slugRoutingSyncedRevision,
     environment,
+    owner_type: ownerType,
+    owner_id: ownerId,
     owner_user_id: ownerUserId,
     default_visibility: defaultVisibility,
+    default_exposure: defaultExposure,
+    default_access_mode: defaultAccessMode,
     execution_mode_override: executionModeOverride,
     site_uuid: siteUuid,
     created_at: createdAt,
@@ -5193,6 +5239,7 @@ function fakeSiteDeleteRestoreDb({ sites = [], routes = [], claims = [] } = {}) 
         bind(...args) {
           return {
             first: async () => fakeSiteDeleteRestoreFirst({ sites, routes, claims }, sql, args),
+            all: async () => fakeSiteDeleteRestoreAll({ sites, routes, claims }, sql, args),
             run: async () => fakeSiteDeleteRestoreRun({ sites, routes, claims }, sql, args),
           };
         },
@@ -5202,6 +5249,18 @@ function fakeSiteDeleteRestoreDb({ sites = [], routes = [], claims = [] } = {}) 
       for (const statement of statements) await statement.run();
     },
   };
+}
+
+function fakeSiteDeleteRestoreAll(state, sql, args) {
+  if (/SELECT \* FROM hostname_claims\s+WHERE owner_system = 'v2' AND owner_id = \?/.test(sql)) {
+    const [siteId, environment] = args;
+    return {
+      results: state.claims.filter(
+        (claim) => claim.owner_id === siteId && (!environment || claim.environment === environment),
+      ),
+    };
+  }
+  throw new Error(`Unhandled site delete restore SELECT all: ${sql}`);
 }
 
 function fakeSiteDeleteRestoreFirst(state, sql, args) {
@@ -5230,6 +5289,48 @@ function fakeSiteDeleteRestoreRun(state, sql, args) {
     return { meta: { changes: 1 } };
   }
   if (/UPDATE site_routes\s+SET active_version_id = \?/.test(sql)) {
+    if (/WHERE id = \? AND site_id = \?/.test(sql)) {
+      const [
+        activeVersionId,
+        workerName,
+        runtime,
+        executionProvider,
+        dispatchType,
+        dispatchBindingName,
+        slotId,
+        visibility,
+        exposure,
+        accessMode,
+        policyVersion,
+        routeGeneration,
+        routeStatus,
+        cacheTier,
+        routeId,
+        siteId,
+        environment,
+      ] = args;
+      const route = state.routes.find(
+        (row) => row.id === routeId && row.site_id === siteId && (!environment || row.environment === environment),
+      );
+      if (!route) return { meta: { changes: 0 } };
+      Object.assign(route, {
+        active_version_id: activeVersionId,
+        worker_name: workerName,
+        runtime,
+        execution_provider: executionProvider,
+        dispatch_type: dispatchType,
+        dispatch_binding_name: dispatchBindingName,
+        slot_id: slotId,
+        visibility,
+        exposure,
+        access_mode: accessMode,
+        policy_version: policyVersion,
+        route_generation: routeGeneration,
+        route_status: routeStatus,
+        cache_tier: cacheTier,
+      });
+      return { meta: { changes: 1 } };
+    }
     const [
       activeVersionId,
       workerName,

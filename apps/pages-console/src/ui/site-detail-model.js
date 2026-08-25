@@ -3,6 +3,49 @@ export function canViewRuntimeConfig(site, scope = 'workspace') {
   return scope === 'admin' || role === 'admin' || role === 'publisher';
 }
 
+export function createResourceRequestGuard(initialKey) {
+  let activeKey = initialKey;
+  let revision = 0;
+
+  return {
+    activate(key) {
+      if (key === activeKey) return;
+      activeKey = key;
+      revision += 1;
+    },
+    begin(key) {
+      if (key !== activeKey) return null;
+      revision += 1;
+      return { key, revision };
+    },
+    isActive(key) {
+      return key === activeKey;
+    },
+    isCurrent(request) {
+      return request?.key === activeKey && request.revision === revision;
+    },
+  };
+}
+
+export function applyResourceUpdateForKey(guard, key, currentState, data) {
+  if (!guard.isActive(key)) return currentState;
+  return { status: 'ready', data, error: null };
+}
+
+export function patchSiteStateForId(currentState, siteId, patch) {
+  if (!currentState?.site || currentState.site.id !== siteId) return currentState;
+  const site = { ...currentState.site, ...patch };
+  return { ...currentState, site: { ...site, displayName: site.title || site.slug }, error: null };
+}
+
+export function pickSiteOwnershipPatch(site) {
+  if (!site || typeof site !== 'object') return {};
+  return {
+    ...(Object.hasOwn(site, 'owner') ? { owner: site.owner } : {}),
+    ...(Object.hasOwn(site, 'permissions') ? { permissions: site.permissions } : {}),
+  };
+}
+
 export function getSiteCapabilities(site) {
   const permissions = site?.permissions || {};
   const canEditAccess = Boolean(permissions.canManageAccess);

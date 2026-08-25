@@ -4,14 +4,16 @@ export function resolveDeploymentRouteActivation({
   latestRoute,
   uploadExposure,
   ownerTransferApplied,
+  ownerTransferVisibility,
 }) {
   if (!latestRoute) return conflict('route_missing');
 
   const exposure = normalizeDeploymentExposure(latestRoute.exposure);
   if (exposure !== uploadExposure) return conflict('exposure_changed');
 
-  const visibility =
-    ownerTransferApplied || latestRoute.visibility === routeBeforeActivation?.visibility
+  const visibility = ownerTransferApplied
+    ? ownerTransferVisibility || latestRoute.visibility
+    : latestRoute.visibility === routeBeforeActivation?.visibility
       ? site.defaultVisibility
       : latestRoute.visibility;
   return {

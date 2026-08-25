@@ -33,6 +33,17 @@ export function createSiteLifecycleApplication({ store, env, config, ctx }) {
 export function siteDeleteErrorResponse(error) {
   const code = error?.code || error?.message;
   if (code === 'SITE_NOT_FOUND') return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
+  if (code === 'SITE_POLICY_LOCKED' || code === 'SITE_POLICY_CONFLICT' || code === 'SITE_COMMIT_TIMEOUT') {
+    return jsonError('SITE_POLICY_CONFLICT', 'Site changed concurrently.', 409, 'Refresh the site and retry.');
+  }
+  if (code === 'ROUTE_POLICY_REPAIR_REQUIRED') {
+    return jsonError(
+      'ROUTE_POLICY_REPAIR_REQUIRED',
+      'Route policy could not be confirmed effective.',
+      503,
+      'Repair the route snapshot before retrying.'
+    );
+  }
   if (code === 'ROUTE_VERSION_NOT_FOUND' || code === 'ROUTE_SNAPSHOT_WRITE_FAILED') {
     return routeSnapshotErrorResponse(error);
   }

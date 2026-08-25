@@ -7,6 +7,11 @@ export function mapSite(row) {
   return {
     id: row.id,
     slug: row.slug,
+    title: row.title || null,
+    dataNamespace: row.data_namespace || row.slug,
+    slugRevision: Number(row.slug_revision ?? 1),
+    slugRoutingSyncedRevision: Number(row.slug_routing_synced_revision ?? 1),
+    slugRoutingReconcileAttemptedAt: row.slug_routing_reconcile_attempted_at || null,
     environment: row.environment,
     ownerType: row.owner_type || 'user',
     ownerId: row.owner_id || row.owner_user_id,

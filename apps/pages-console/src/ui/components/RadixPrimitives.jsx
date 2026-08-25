@@ -5,8 +5,79 @@ import * as Select from '@radix-ui/react-select';
 import * as Tabs from '@radix-ui/react-tabs';
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { Check, ChevronDown, X } from 'lucide-react';
+import { useCallback, useLayoutEffect, useRef } from 'react';
 
 import { radixValueToSelectValue, selectValueToRadixValue } from '../select-model.js';
+
+function usePreservedDialogScroll(open) {
+  const scrollPositionRef = useRef(null);
+  const openerRef = useRef(null);
+  const locationRef = useRef('');
+  const restoreFrameRef = useRef(null);
+  const openRef = useRef(open);
+  const wasOpenRef = useRef(false);
+
+  useLayoutEffect(() => {
+    return () => {
+      openRef.current = false;
+      if (restoreFrameRef.current !== null && typeof window !== 'undefined') {
+        window.cancelAnimationFrame(restoreFrameRef.current);
+        restoreFrameRef.current = null;
+      }
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    openRef.current = open;
+    if (restoreFrameRef.current !== null && typeof window !== 'undefined') {
+      window.cancelAnimationFrame(restoreFrameRef.current);
+      restoreFrameRef.current = null;
+    }
+    if (open && !wasOpenRef.current && typeof window !== 'undefined') {
+      scrollPositionRef.current = { x: window.scrollX, y: window.scrollY };
+      openerRef.current = document.activeElement;
+      locationRef.current = window.location.href;
+    }
+    wasOpenRef.current = open;
+  }, [open]);
+
+  const canRestoreScroll = useCallback(() => {
+    if (typeof window === 'undefined') return false;
+    return window.location.href === locationRef.current;
+  }, []);
+
+  const canRestoreFocus = useCallback(() => {
+    if (!canRestoreScroll() || typeof document === 'undefined') return false;
+    const opener = openerRef.current;
+    return opener?.isConnected && opener.ownerDocument === document;
+  }, [canRestoreScroll]);
+
+  const restoreScroll = useCallback(() => {
+    if (!canRestoreScroll() || !scrollPositionRef.current) return;
+    if (restoreFrameRef.current !== null) {
+      window.cancelAnimationFrame(restoreFrameRef.current);
+    }
+    const { x, y } = scrollPositionRef.current;
+    const openState = openRef.current;
+    restoreFrameRef.current = window.requestAnimationFrame(() => {
+      restoreFrameRef.current = null;
+      if (openRef.current !== openState || !canRestoreScroll()) return;
+      window.scrollTo(x, y);
+    });
+  }, [canRestoreScroll]);
+
+  const restoreFocusAndScroll = useCallback((event) => {
+    if (openRef.current || !canRestoreScroll()) return;
+    event.preventDefault();
+    const opener = canRestoreFocus() ? openerRef.current : null;
+    if (opener && typeof opener.focus === 'function') {
+      opener.focus({ preventScroll: true });
+    }
+    restoreScroll();
+  }, [canRestoreFocus, canRestoreScroll, restoreScroll]);
+
+  return { restoreScroll, restoreFocusAndScroll };
+}
 
 export function SelectField({ label, value, options, disabled = false, className = '', onChange }) {
   const selected = options.find((option) => option.value === value) || options[0];
@@ -83,12 +154,27 @@ export function MenuItem({ active = false, icon, children, onSelect }) {
   );
 }
 
-export function AppDialog({ open, title, eyebrow, children, footer, onOpenChange }) {
+export function AppDialog({ open, title, eyebrow, children, footer, initialFocusRef, onOpenChange }) {
+  const { restoreScroll, restoreFocusAndScroll } = usePreservedDialogScroll(open);
+  const handleOpenAutoFocus = useCallback((event) => {
+    const target = initialFocusRef?.current;
+    if (target?.isConnected && typeof target.focus === 'function') {
+      event.preventDefault();
+      target.focus({ preventScroll: true });
+    }
+    restoreScroll();
+  }, [initialFocusRef, restoreScroll]);
+
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay className="radix-dialog-overlay" />
-        <Dialog.Content className="radix-dialog-content" onPointerDownOutside={(event) => event.preventDefault()}>
+        <Dialog.Content
+          className="radix-dialog-content"
+          onOpenAutoFocus={handleOpenAutoFocus}
+          onCloseAutoFocus={restoreFocusAndScroll}
+          onPointerDownOutside={(event) => event.preventDefault()}
+        >
           <div className="dialog-head">
             <div>
               {eyebrow ? <p>{eyebrow}</p> : null}
@@ -124,6 +210,7 @@ export function ConfirmDialog({
   onCancel,
   onConfirm,
 }) {
+  const { restoreScroll, restoreFocusAndScroll } = usePreservedDialogScroll(open);
   const close = () => {
     if (confirming) return;
     onCancel?.();
@@ -140,7 +227,11 @@ export function ConfirmDialog({
     }}>
       <AlertDialog.Portal>
         <AlertDialog.Overlay className="radix-dialog-overlay" />
-        <AlertDialog.Content className="radix-dialog-content alert-dialog-content">
+        <AlertDialog.Content
+          className="radix-dialog-content alert-dialog-content"
+          onOpenAutoFocus={restoreScroll}
+          onCloseAutoFocus={restoreFocusAndScroll}
+        >
           <div className="dialog-head">
             <div>
               {eyebrow ? <p>{eyebrow}</p> : null}

@@ -203,14 +203,14 @@ admin 操作不通过 access key 暴露。
 
 ### Router IP Allowlist
 
-站点网络范围由 route snapshot 的 `exposure` 决定：`internal` 继续受公司网络 IP allowlist 保护，只有可信的 schema v3 snapshot 显式声明 `exposure=public` 时才允许从公网继续访问。旧 v2 snapshot、字段缺失或非法 exposure 一律按 `internal` 处理，不能绕过 IP 门禁。
+站点网络范围由最终 serve route snapshot 的 `exposure` 决定：`internal` 继续受公司网络 IP allowlist 保护，只有可信的 schema v3/v4 serve snapshot 显式声明 `exposure=public` 时才允许从公网继续访问。旧 v2 snapshot、字段缺失或非法 exposure 一律按 `internal` 处理，不能绕过 IP 门禁。
 
 执行顺序：
 
 ```text
 1. 校验 environment、hostname 和平台保留路径。
 2. 读取并验证 route pointer / snapshot，只解析决定网络范围所需的可信策略。
-3. schema v3 且 exposure=public：跳过公司网络 IP allowlist；其它情况必须命中当前环境 allowlist。
+3. schema v3/v4 serve 且 exposure=public：跳过公司网络 IP allowlist；其它情况必须命中当前环境 allowlist。
 4. 通过网络范围判断后，再校验 route 可用性、accessMode、SSO/ACL 和 dispatch target。
 5. snapshot 缺失、损坏、版本未知或 accessMode 非法时 fail closed，不 dispatch 到 User Worker。
 ```
@@ -244,7 +244,9 @@ IP allowlist 规则：
 | `owner` | `owner` | 需要 active owner 身份 |
 | `disabled` | `disabled` | 直接拒绝，不 dispatch 到 User Worker |
 
-router 必须先处理网络范围和身份门禁，再 dispatch 到 User Worker。User Worker 不能自行决定是否绕过平台门禁。未知 visibility，包括旧的 public，必须 fail closed；schema v3 accessMode 缺失、非法或与 visibility 投影不一致也必须 fail closed。
+Router 继续兼容 schema v2/v3 serve snapshot；对 schema v4 只接受 `kind=serve`，`redirect` 或其它 kind 一律 fail closed，不签 session、不执行 User Worker，也不返回 3xx。slug 改名由控制面删除旧 hostname pointer；删除确认前 hostname claim 无限期保留，确认后才进入 reuse hold。
+
+router 必须先处理网络范围和身份门禁，再 dispatch 到 User Worker。User Worker 不能自行决定是否绕过平台门禁。未知 visibility，包括旧的 public，必须 fail closed；schema v3/v4 serve snapshot 的 accessMode 缺失、非法或与 visibility 投影不一致也必须 fail closed。
 
 推荐判定顺序：
 

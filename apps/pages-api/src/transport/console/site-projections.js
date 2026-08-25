@@ -1,7 +1,10 @@
 export function formatDirectorySite(site) {
   return {
     id: site.id,
+    title: site.title || null,
+    displayName: site.title || site.slug,
     slug: site.slug,
+    routingStatus: routingStatus(site),
     hostname: site.route?.hostname || site.hostname || null,
     owner: formatOwner(site, { includeDisplayName: true }),
     visibility: site.route?.visibility || site.defaultVisibility,
@@ -12,7 +15,10 @@ export function formatDirectorySite(site) {
 export function formatWorkspaceSite(site) {
   return {
     id: site.id,
+    title: site.title || null,
+    displayName: site.title || site.slug,
     slug: site.slug,
+    routingStatus: routingStatus(site),
     hostname: site.route?.hostname || site.hostname || null,
     owner: formatOwner(site, { includeDisplayName: true }),
     visibility: site.route?.visibility || site.defaultVisibility,
@@ -103,4 +109,8 @@ function formatOwner(site, { includeDisplayName, includeId = false, includeEmail
 
 function canManageSite(role) {
   return role === 'admin' || role === 'publisher';
+}
+
+function routingStatus(site) {
+  return site.slugRoutingSyncedRevision === site.slugRevision ? 'ready' : 'pending';
 }

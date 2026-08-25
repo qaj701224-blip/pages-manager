@@ -10,6 +10,7 @@ test('scheduled transport sends cleanup work through the injected task scheduler
     readConfig: () => ({ environment: 'production' }),
     createStore: () => store,
     runDueCleanups: async (...args) => calls.push(['cleanup', ...args]),
+    runMetadataReconciliation: async (...args) => calls.push(['metadata', ...args]),
     taskScheduler: {
       schedule: async (context, task) => {
         calls.push(['schedule', context]);
@@ -28,7 +29,14 @@ test('scheduled transport sends cleanup work through the injected task scheduler
     store,
     { limit: 7 },
   ]);
-  assert.deepEqual(calls[1], ['schedule', context]);
+  assert.deepEqual(calls[1], [
+    'metadata',
+    { DEPLOYMENT_CLEANUP_CRON_LIMIT: '7' },
+    { environment: 'production' },
+    store,
+    { limit: 50 },
+  ]);
+  assert.deepEqual(calls[2], ['schedule', context]);
 });
 
 test('scheduled transport fails closed before scheduling when config or store creation fails', async () => {
@@ -40,6 +48,7 @@ test('scheduled transport fails closed before scheduling when config or store cr
     },
     createStore: () => ({}),
     runDueCleanups: async () => {},
+    runMetadataReconciliation: async () => {},
     taskScheduler,
   });
   const invalidStore = createScheduledHandler({
@@ -48,6 +57,7 @@ test('scheduled transport fails closed before scheduling when config or store cr
       throw new Error('invalid store');
     },
     runDueCleanups: async () => {},
+    runMetadataReconciliation: async () => {},
     taskScheduler,
   });
 

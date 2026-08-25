@@ -190,6 +190,8 @@ export function filterAdminSites(
     }
     if (!normalizedQuery) return true;
     return [
+      site.title,
+      site.displayName,
       site.slug,
       site.hostname,
       sitePublicUrl(site.hostname),
@@ -204,6 +206,14 @@ export function filterAdminSites(
       .join(' ')
       .toLowerCase()
       .includes(normalizedQuery);
+  });
+}
+
+export function patchSiteSummaryForId(sites, siteId, patch) {
+  return sites.map((site) => {
+    if (site.id !== siteId) return site;
+    const updated = { ...site, ...patch };
+    return { ...updated, displayName: updated.title || updated.slug };
   });
 }
 

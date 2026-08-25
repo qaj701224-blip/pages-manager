@@ -99,14 +99,16 @@ Runtime Plane: 用户 Worker 执行、能力网关、资源隔离
 
 | 术语         | 含义                                               | 是否可变 | 是否可作为安全边界 |
 | ------------ | -------------------------------------------------- | -------- | ------------------ |
-| `slug`       | 用户可见站点名，例如 `foo`；同一 environment 内唯一 | 首版不开放修改；长期可 rename | 否 |
+| `title`      | 可选展示名称；为空时回退显示 slug                 | 可修改、可清空 | 否                 |
+| `slug`       | canonical URL 名，例如 `foo`；同一 environment 内唯一 | 可修改；旧值安全释放 | 否 |
 | `siteId`     | 平台内部站点主键，例如 `site_xxx`                  | 不可变   | 可用于授权关系     |
 | `siteUuid`   | 站点数据隔离锚点，删除后重建必须变化               | 不可变   | 是                 |
+| `dataNamespace` | runtime data key 的可读 namespace；建站后不随 slug 改名 | 不可变 | 需与 siteUuid 组合 |
 | `routeId`    | 某个 hostname 到站点版本的路由记录                 | 不可变   | 可用于审计         |
 | `versionId`  | 一次 immutable 发布版本                            | 不可变   | 可用于回滚和审计   |
 | `workerName` | 执行面的 Worker 名；WFP 模式为 user Worker 名，slot 模式为 slot Worker 名 | 可派生 | 否，需结合 route   |
 
-文档里出现 `site` 时，如果是用户输入或 CLI 展示，应理解为 `slug`；如果是服务端授权、审计或存储隔离，必须显式写 `siteId` 或 `siteUuid`。实现中不能把 `slug` 当作 KV/R2/D1 数据隔离锚点。
+文档里出现 `site` 时，如果是部署定位或 URL，应理解为 `slug`；如果是界面主标题，应使用 `title || slug`；服务端授权、审计或存储隔离必须显式使用 `siteId`、`siteUuid` 与不可变 `dataNamespace`。实现中不能把当前可变 slug 当作 KV/R2/D1 数据隔离锚点。
 
 ## 目标目录
 

@@ -4,6 +4,7 @@ import { createHs256Jwt, parseKeyRegistry, verifyCapability } from './auth.js';
 
 const now = 1_700_000_000;
 const siteUuid = '4b4c8e8361ef4b47b64f5c20a7db7c47';
+const stableSiteId = 'site_4b4c8e8361ef4b47b64f5c20a7db7c47';
 
 function testEnv(overrides = {}) {
   return {
@@ -87,6 +88,46 @@ test('valid HS256 token verifies and returns claims', async () => {
   assert.equal(verified.siteId, 'q2-report');
   assert.equal(verified.siteUuid, siteUuid);
   assert.equal(verified.jti, 'capability-1');
+});
+
+test('namespace v2 capability validates stable site id and preserves an immutable data namespace', async () => {
+  const jwt = await token(
+    claims({
+      namespaceVersion: 2,
+      siteId: stableSiteId,
+      dataNamespace: 'q2-report',
+    }),
+  );
+
+  const verified = await verifyCapability(`Bearer ${jwt}`, testEnv(), { requiredScope: 'kv:get', now });
+
+  assert.equal(verified.siteId, stableSiteId);
+  assert.equal(verified.dataNamespace, 'q2-report');
+  assert.equal(verified.namespaceVersion, 2);
+});
+
+test('legacy capability normalizes its slug-shaped site id as the data namespace', async () => {
+  const jwt = await token();
+
+  const verified = await verifyCapability(`Bearer ${jwt}`, testEnv(), { requiredScope: 'kv:get', now });
+
+  assert.equal(verified.siteId, 'q2-report');
+  assert.equal(verified.dataNamespace, 'q2-report');
+  assert.equal(verified.namespaceVersion, 1);
+});
+
+test('namespace v2 capability rejects malformed stable ids, namespaces, and versions', async () => {
+  for (const overrides of [
+    { namespaceVersion: 2, siteId: 'q2-report', dataNamespace: 'q2-report' },
+    { namespaceVersion: 2, siteId: stableSiteId, dataNamespace: 'Bad Namespace' },
+    { namespaceVersion: 3, siteId: stableSiteId, dataNamespace: 'q2-report' },
+    { siteId: stableSiteId, dataNamespace: 'q2-report' },
+  ]) {
+    await assert.rejects(
+      verifyCapability(`Bearer ${await token(claims(overrides))}`, testEnv(), { requiredScope: 'kv:get', now }),
+      /site id|namespace/i,
+    );
+  }
 });
 
 test('valid site data capability requires matching data scope', async () => {

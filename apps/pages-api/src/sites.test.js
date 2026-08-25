@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import { createAccessKeyPlaintext, hashAccessKey } from './crypto.js';
 import worker from './index.js';
+import { buildRouteSnapshot, writeRouteSnapshot } from './route-snapshot.js';
 import { markRuntimeConfigError } from './runtime-config-diagnostics.js';
 import {
   syncActiveWfpPlainTextBindings,
@@ -487,6 +488,7 @@ test('deletes owned site by soft-deleting site and holding hostname claim for re
     authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1', {}, { method: 'DELETE' }),
     testEnv(store, {
       now: () => '2026-06-15T00:00:00.000Z',
+      ROUTE_SNAPSHOTS: createSnapshotStore(),
       WEBHOOK_URL_ENCRYPTION_KEY: TEST_WEBHOOK_URL_ENCRYPTION_KEY,
       resolveWebhookHost: async () => ['8.8.8.8'],
       WEBHOOK_FETCH: async (request) => {
@@ -513,6 +515,57 @@ test('deletes owned site by soft-deleting site and holding hostname claim for re
   assert.equal(payload.event.type, 'site.deleted');
   assert.equal(payload.actor.userId, 'usr_1');
   assert.equal(payload.site.status, 'deleted');
+});
+
+test('inactive site delete does not start the hostname reuse hold when pointer cleanup cannot be confirmed', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.workers.xd.team',
+  });
+
+  const response = await worker.fetch(
+    authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1', {}, { method: 'DELETE' }),
+    testEnv(store)
+  );
+
+  assert.equal(response.status, 503, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'ROUTE_SNAPSHOT_WRITE_FAILED');
+  assert.equal((await store.getSite('site_1')).deletedAt, null);
+  assert.equal((await store.getRouteBySiteId('site_1')).routeStatus, 'disabled');
+  const claim = await store.getHostnameClaim('guide.workers.xd.team');
+  assert.equal(claim.status, 'active');
+  assert.equal(claim.reuseHoldUntil, null);
+});
+
+test('site delete returns a conflict while another site mutation holds the commit lease', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.workers.xd.team',
+  });
+  await store.acquireSiteCommitLock('production', 'site_1', { lockId: 'metadata_lock' });
+
+  const response = await worker.fetch(
+    authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1', {}, { method: 'DELETE' }),
+    testEnv(store),
+  );
+
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).error.code, 'SITE_POLICY_CONFLICT');
+  assert.equal((await store.getSite('site_1')).deletedAt, null);
 });
 
 test('CLI missing and repeated deletes do not emit site.deleted', async () => {
@@ -714,6 +767,47 @@ test('site delete rejects read-only access keys and non-owner members', async ()
   assert.equal((await store.getHostnameClaim('guide.workers.xd.team')).status, 'active');
 });
 
+test('site delete rechecks access-key revocation inside the site lease', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.workers.xd.team',
+  });
+  const key = await seedAccessKey(store, 'ak_delete_revoked_in_lock', ['deploy:site'], 'site_1');
+  const withSiteCommitLock = store.withSiteCommitLock.bind(store);
+  store.withSiteCommitLock = (environment, siteId, work, options) =>
+    withSiteCommitLock(
+      environment,
+      siteId,
+      async (lease) => {
+        await store.revokeAccessKey('ak_delete_revoked_in_lock', '2026-06-15T00:00:00.000Z');
+        return work(lease);
+      },
+      options,
+    );
+
+  const response = await worker.fetch(
+    authRequest(
+      'https://api.pages.xd.team/.xd-pages/api/sites/site_1',
+      { Authorization: `Bearer ${key}` },
+      { method: 'DELETE' },
+    ),
+    testEnv(store),
+  );
+
+  assert.equal(response.status, 404, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'SITE_NOT_FOUND');
+  assert.equal((await store.getSite('site_1')).deletedAt, null);
+  assert.equal((await store.getHostnameClaim('guide.workers.xd.team')).status, 'active');
+  assert.deepEqual(await store.listDeploymentResourceCleanupTasks({ environment: 'production' }), []);
+});
+
 test('team site creator cannot manage policy after losing team admin role', async () => {
   const store = await createSeededStore();
   const team = await store.createTeam({
@@ -812,11 +906,7 @@ test('team publisher can manage team site policy and delete team sites', async (
   assert.equal((await update.json()).site.route.visibility, 'disabled');
   assert.equal(del.status, 200, await del.clone().text());
   assert.equal((await store.getSite('site_team')).deletedAt, '2026-06-15T00:00:00.000Z');
-  const pointer = snapshots.read('production:route_pointer:team-guide.pages.xd.team');
-  const snapshot = snapshots.read(pointer.snapshotKey);
-  assert.equal(snapshot.routeStatus, 'deleted');
-  assert.equal(snapshot.runtime, 'disabled');
-  assert.equal(snapshot.ownerUserId, null);
+  assert.equal(snapshots.read('production:route_pointer:team-guide.pages.xd.team'), undefined);
 });
 
 test('personal access token can transfer a managed team site to the token user', async () => {
@@ -876,6 +966,61 @@ test('personal access token can transfer a managed team site to the token user',
     await store.getSiteForUser('site_team', 'usr_creator', { type: 'user', userId: 'usr_creator' }, 'production'),
     null
   );
+});
+
+test('public owner transfer rechecks source team membership inside the site lease', async () => {
+  const store = await createSeededStore();
+  const team = await store.createTeam({
+    id: 'team_transfer_source',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Transfer Source',
+    createdByUserId: 'usr_1',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_1',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  await store.createSite({
+    id: 'site_team',
+    slug: 'team-guide',
+    ownerUserId: 'usr_1',
+    ownerType: 'team',
+    ownerId: team.id,
+    siteUuid: 'uuid_team',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_team',
+    hostname: 'team-guide.pages.xd.team',
+  });
+  const withSiteCommitLock = store.withSiteCommitLock.bind(store);
+  store.withSiteCommitLock = (environment, siteId, work, options) =>
+    withSiteCommitLock(
+      environment,
+      siteId,
+      async (lease) => {
+        await store.removeTeamMember({ teamId: team.id, userId: 'usr_1', actorUserId: 'usr_admin' });
+        return work(lease);
+      },
+      options,
+    );
+
+  const response = await worker.fetch(
+    jsonMethodRequest('POST', 'https://api.pages.xd.team/.xd-pages/api/sites/site_team/transfer', {
+      ownerType: 'user',
+      ownerId: 'usr_1',
+    }),
+    testEnv(store),
+  );
+
+  assert.equal(response.status, 404, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'SITE_NOT_FOUND');
+  const current = await store.getSite('site_team');
+  assert.equal(current.ownerType, 'team');
+  assert.equal(current.ownerId, team.id);
+  assert.equal((await store.listAuditEvents()).filter((event) => event.eventType === 'site.owner.transfer').length, 0);
 });
 
 test('personal access token can transfer a personal site to a team when the user is a team publisher', async () => {
@@ -938,6 +1083,96 @@ test('personal access token can transfer a personal site to a team when the user
     toOwner: { type: 'team', id: team.id },
     source: 'api',
   });
+});
+
+test('public owner transfer restores the previous owner when the active route snapshot write fails', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  await activateSite(store, 'site_1', { visibility: 'org' });
+  const team = await store.createTeam({
+    id: 'team_1',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team One',
+    createdByUserId: 'usr_1',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_1',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  const key = await seedAccessKey(store, 'ak_publish_team_transfer_snapshot_failure', ['deploy:site'], null);
+
+  const response = await worker.fetch(
+    jsonMethodRequest(
+      'POST',
+      'https://api.pages.xd.team/.xd-pages/api/sites/site_1/transfer',
+      { ownerType: 'team', teamId: team.id },
+      { Authorization: `Bearer ${key}` }
+    ),
+    testEnv(store, { ROUTE_SNAPSHOTS: failingSnapshotStore() })
+  );
+
+  assert.equal(response.status, 503, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'ROUTE_POLICY_REPAIR_REQUIRED');
+  const restored = await store.getSite('site_1');
+  assert.equal(restored.ownerType, 'user');
+  assert.equal(restored.ownerId, 'usr_1');
+  assert.equal(restored.ownerUserId, 'usr_1');
+});
+
+test('owner transfer returns a stable conflict while another mutation holds the site lease', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  const team = await store.createTeam({
+    id: 'team_1',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team One',
+    createdByUserId: 'usr_1',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_1',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  const key = await seedAccessKey(store, 'ak_publish_team_transfer_conflict', ['deploy:site'], null);
+  const lease = await store.acquireSiteCommitLock('production', 'site_1', { lockId: 'metadata_lock' });
+
+  const response = await worker.fetch(
+    jsonMethodRequest(
+      'POST',
+      'https://api.pages.xd.team/.xd-pages/api/sites/site_1/transfer',
+      { ownerType: 'team', teamId: team.id },
+      { Authorization: `Bearer ${key}` }
+    ),
+    testEnv(store)
+  );
+
+  assert.equal(response.status, 409, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'SITE_POLICY_CONFLICT');
+  assert.equal((await store.getSite('site_1')).ownerId, 'usr_1');
+  await store.releaseSiteCommitLock('production', 'site_1', lease.lockId);
 });
 
 test('personal access token cannot transfer owner-visible sites to teams', async () => {
@@ -1144,6 +1379,378 @@ test('updates site visibility and bumps policy version for active routes', async
   });
 });
 
+test('updates a site title independently and exposes displayName plus routingStatus', async () => {
+  const store = await createSeededStore();
+  const metadataEvents = [];
+  const site = await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  const previousRoute = await store.getRouteBySiteId(site.id, 'production');
+
+  const response = await worker.fetch(
+    patchJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1/metadata', {
+      title: '  产品文档  ',
+    }),
+    testEnv(store, {
+      SITE_METADATA_MUTATIONS_ENABLED: 'true',
+      logSiteMetadataEvent: (line) => metadataEvents.push(JSON.parse(line)),
+      nextId: (prefix) => ({ audit: 'audit_title', smt: 'smt_title' })[prefix],
+    }),
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.site.title, '产品文档');
+  assert.equal(body.site.displayName, '产品文档');
+  assert.equal(body.site.slug, 'guide');
+  assert.equal(body.site.routingStatus, 'ready');
+  assert.equal((await store.getRouteBySiteId(site.id, 'production')).routeGeneration, previousRoute.routeGeneration);
+  assert.deepEqual(metadataEvents, [
+    {
+      event: 'pages_site_metadata_event',
+      operation: 'update_title',
+      outcome: 'ready',
+      environment: 'production',
+      traceId: 'smt_title',
+      siteId: 'site_1',
+      slugRevision: 1,
+    },
+  ]);
+});
+
+test('site metadata API enforces deploy scope and site-scoped access key boundaries', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  await store.createSite({
+    id: 'site_2',
+    slug: 'other-guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_2',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_2',
+    hostname: 'other-guide.pages.xd.team',
+  });
+  const deployKey = await seedAccessKey(store, 'ak_metadata_deploy', ['deploy:site'], 'site_1');
+  const readKey = await seedAccessKey(store, 'ak_metadata_read', ['read:site'], 'site_1');
+  const wrongSiteKey = await seedAccessKey(store, 'ak_metadata_wrong_site', ['deploy:site'], 'site_2');
+  const endpoint = 'https://api.pages.xd.team/.xd-pages/api/sites/site_1/metadata';
+  const environment = testEnv(store, { SITE_METADATA_MUTATIONS_ENABLED: 'true' });
+
+  const allowed = await worker.fetch(patchJsonRequest(endpoint, { title: 'Allowed' }, deployKey), environment);
+  const readOnly = await worker.fetch(patchJsonRequest(endpoint, { title: 'Blocked read' }, readKey), environment);
+  const wrongSite = await worker.fetch(patchJsonRequest(endpoint, { title: 'Blocked site' }, wrongSiteKey), environment);
+
+  assert.equal(allowed.status, 200, await allowed.clone().text());
+  assert.equal(readOnly.status, 404);
+  assert.equal((await readOnly.json()).error.code, 'SITE_NOT_FOUND');
+  assert.equal(wrongSite.status, 404);
+  assert.equal((await wrongSite.json()).error.code, 'SITE_NOT_FOUND');
+  assert.equal((await store.getSite('site_1')).title, 'Allowed');
+});
+
+test('site metadata rechecks access-key revocation after acquiring the site lease', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  const key = await seedAccessKey(store, 'ak_metadata_revoked_in_lock', ['deploy:site'], 'site_1');
+  const withSiteCommitLock = store.withSiteCommitLock.bind(store);
+  store.withSiteCommitLock = (environment, siteId, work, options) =>
+    withSiteCommitLock(
+      environment,
+      siteId,
+      async (lease) => {
+        await store.revokeAccessKey('ak_metadata_revoked_in_lock', '2026-06-15T00:00:00.000Z');
+        return work(lease);
+      },
+      options,
+    );
+
+  const response = await worker.fetch(
+    patchJsonRequest(
+      'https://api.pages.xd.team/.xd-pages/api/sites/site_1/metadata',
+      { title: 'Must not commit' },
+      key,
+    ),
+    testEnv(store, { SITE_METADATA_MUTATIONS_ENABLED: 'true' }),
+  );
+
+  assert.equal(response.status, 404, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'SITE_NOT_FOUND');
+  assert.equal((await store.getSite('site_1')).title, null);
+  assert.equal((await store.listAuditEvents()).filter((event) => event.eventType === 'site_metadata_updated').length, 0);
+});
+
+test('site metadata rechecks cli-login key revocation after acquiring the site lease', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  const withSiteCommitLock = store.withSiteCommitLock.bind(store);
+  store.withSiteCommitLock = (environment, siteId, work, options) =>
+    withSiteCommitLock(
+      environment,
+      siteId,
+      async (lease) => {
+        await store.revokeAccessKey('ak_cli_usr_1', '2026-06-15T00:00:00.000Z');
+        return work(lease);
+      },
+      options,
+    );
+
+  const response = await worker.fetch(
+    patchJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1/metadata', {
+      title: 'Must not commit',
+    }),
+    testEnv(store, { SITE_METADATA_MUTATIONS_ENABLED: 'true' }),
+  );
+
+  assert.equal(response.status, 404, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'SITE_NOT_FOUND');
+  assert.equal((await store.getSite('site_1')).title, null);
+});
+
+test('site metadata API allows team admins and publishers while hiding the site from team viewers', async () => {
+  const store = await createSeededStore();
+  await store.createUser({ userId: 'usr_publisher', email: 'publisher@example.com', employeeStatus: 'active' });
+  await store.createUser({ userId: 'usr_viewer', email: 'viewer@example.com', employeeStatus: 'active' });
+  await seedCliLoginKey(store, 'usr_publisher', BEARER_USR_PUBLISHER);
+  await seedCliLoginKey(store, 'usr_viewer', BEARER_USR_VIEWER);
+  const team = await store.createTeam({
+    id: 'team_metadata',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Metadata Team',
+    createdByUserId: 'usr_1',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_publisher',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_viewer',
+    role: 'viewer',
+    membershipSource: 'manual',
+  });
+  await store.createSite({
+    id: 'site_team_metadata',
+    slug: 'team-metadata',
+    ownerUserId: 'usr_1',
+    ownerType: 'team',
+    ownerId: team.id,
+    siteUuid: 'uuid_team_metadata',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_team_metadata',
+    hostname: 'team-metadata.pages.xd.team',
+  });
+  const endpoint = 'https://api.pages.xd.team/.xd-pages/api/sites/site_team_metadata/metadata';
+  const environment = testEnv(store, { SITE_METADATA_MUTATIONS_ENABLED: 'true' });
+
+  const admin = await worker.fetch(patchJsonRequest(endpoint, { title: 'Admin title' }), environment);
+  const publisher = await worker.fetch(
+    patchJsonRequest(endpoint, { title: 'Publisher title' }, BEARER_USR_PUBLISHER),
+    environment,
+  );
+  const viewer = await worker.fetch(
+    patchJsonRequest(endpoint, { title: 'Viewer title' }, BEARER_USR_VIEWER),
+    environment,
+  );
+
+  assert.equal(admin.status, 200, await admin.clone().text());
+  assert.equal(publisher.status, 200, await publisher.clone().text());
+  assert.equal(viewer.status, 404, await viewer.clone().text());
+  assert.equal((await viewer.json()).error.code, 'SITE_NOT_FOUND');
+  assert.equal((await store.getSite('site_team_metadata')).title, 'Publisher title');
+});
+
+test('renames a site without deploying and removes the previous route pointer', async () => {
+  const store = await createSeededStore();
+  const site = await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  const activeRoute = await activateSite(store, site.id);
+  const snapshots = createSnapshotStore();
+  const activeVersion = await store.getSiteVersion(activeRoute.activeVersionId, 'production');
+  await writeRouteSnapshot(
+    snapshots,
+    buildRouteSnapshot({ site, route: activeRoute, version: activeVersion, aclEntries: [] }),
+  );
+  assert.ok(snapshots.read('production:route_pointer:guide.pages.xd.team'));
+
+  const response = await worker.fetch(
+    patchJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1/metadata', { slug: 'handbook' }),
+    testEnv(store, { SITE_METADATA_MUTATIONS_ENABLED: 'true', ROUTE_SNAPSHOTS: snapshots }),
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.site.slug, 'handbook');
+  assert.equal(body.site.displayName, 'handbook');
+  assert.equal(body.site.routingStatus, 'ready');
+  assert.equal(body.site.url, 'https://handbook.workers.xd.team');
+  assert.deepEqual(Object.keys(body.site).sort(), ['displayName', 'id', 'routingStatus', 'slug', 'title', 'url']);
+  const renamed = await store.getSite(site.id);
+  assert.equal(renamed.id, site.id);
+  assert.equal(renamed.siteUuid, site.siteUuid);
+  assert.equal(renamed.dataNamespace, 'guide');
+  assert.equal(renamed.slugRevision, 2);
+  assert.equal(renamed.slugRoutingSyncedRevision, 2);
+
+  const canonicalPointer = snapshots.read('production:route_pointer:handbook.workers.xd.team');
+  assert.equal(snapshots.read(canonicalPointer.snapshotKey).kind, 'serve');
+  assert.equal(snapshots.read('production:route_pointer:guide.pages.xd.team'), undefined);
+  const releasedClaim = await store.getHostnameClaim('guide.pages.xd.team');
+  assert.equal(releasedClaim.status, 'held');
+  assert.equal(releasedClaim.releaseReason, 'site_slug_renamed');
+  assert.equal(releasedClaim.reuseHoldUntil, '2026-06-15T00:05:00.000Z');
+  assert.equal((await store.findSiteBySlug('production', 'guide')), null);
+  assert.equal((await store.findSiteBySlug('production', 'handbook')).id, site.id);
+  assert.equal((await store.getRouteBySiteId(site.id, 'production')).routeGeneration, activeRoute.routeGeneration + 1);
+});
+
+test('deleting a renamed site preserves the completed historical slug release', async () => {
+  const store = await createSeededStore();
+  const site = await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.workers.xd.team',
+  });
+  await activateSite(store, site.id);
+  const snapshots = createSnapshotStore();
+  const environment = testEnv(store, {
+    SITE_METADATA_MUTATIONS_ENABLED: 'true',
+    ROUTE_SNAPSHOTS: snapshots,
+  });
+
+  const rename = await worker.fetch(
+    patchJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1/metadata', { slug: 'handbook' }),
+    environment
+  );
+  assert.equal(rename.status, 200, await rename.clone().text());
+  assert.equal(snapshots.read('production:route_pointer:guide.workers.xd.team'), undefined);
+  assert.ok(snapshots.read('production:route_pointer:handbook.workers.xd.team'));
+  const historicalClaimBeforeDeletion = await store.getHostnameClaim('guide.workers.xd.team');
+
+  const deletion = await worker.fetch(
+    authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1', {}, { method: 'DELETE' }),
+    environment
+  );
+
+  assert.equal(deletion.status, 200, await deletion.clone().text());
+  assert.equal(snapshots.read('production:route_pointer:guide.workers.xd.team'), undefined);
+  assert.equal(snapshots.read('production:route_pointer:handbook.workers.xd.team'), undefined);
+  const historicalClaimAfterDeletion = await store.getHostnameClaim('guide.workers.xd.team');
+  const canonicalClaimAfterDeletion = await store.getHostnameClaim('handbook.workers.xd.team');
+  assert.equal(historicalClaimAfterDeletion.status, 'held');
+  assert.equal(historicalClaimAfterDeletion.releaseReason, 'site_slug_renamed');
+  assert.equal(historicalClaimAfterDeletion.reuseHoldUntil, historicalClaimBeforeDeletion.reuseHoldUntil);
+  assert.equal(canonicalClaimAfterDeletion.status, 'held');
+  assert.equal(canonicalClaimAfterDeletion.releaseReason, 'site_deleted');
+});
+
+test('returns 202 after a committed rename when routing is pending and repairs on same-slug retry', async () => {
+  const store = await createSeededStore();
+  const site = await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  await activateSite(store, site.id);
+
+  const pending = await worker.fetch(
+    patchJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1/metadata', { slug: 'handbook' }),
+    testEnv(store, { SITE_METADATA_MUTATIONS_ENABLED: 'true', ROUTE_SNAPSHOTS: failingSnapshotStore() }),
+  );
+  assert.equal(pending.status, 202, await pending.clone().text());
+  const pendingBody = await pending.json();
+  assert.equal(pendingBody.site.slug, 'handbook');
+  assert.equal(pendingBody.site.routingStatus, 'pending');
+  assert.equal(pendingBody.warning.code, 'SITE_METADATA_ROUTING_PENDING');
+
+  const snapshots = createSnapshotStore();
+  const repaired = await worker.fetch(
+    patchJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1/metadata', { slug: 'handbook' }),
+    testEnv(store, { SITE_METADATA_MUTATIONS_ENABLED: 'true', ROUTE_SNAPSHOTS: snapshots }),
+  );
+  assert.equal(repaired.status, 200, await repaired.clone().text());
+  assert.equal((await repaired.json()).site.routingStatus, 'ready');
+});
+
+test('metadata mutations fail closed while the rollout flag is disabled', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+
+  const response = await worker.fetch(
+    patchJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1/metadata', { title: 'Docs' }),
+    testEnv(store),
+  );
+
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error.code, 'SITE_METADATA_MUTATIONS_DISABLED');
+  assert.equal((await store.getSite('site_1')).title, null);
+});
+
 test('regular visibility update uses the site lease and preserves an existing public exposure', async () => {
   const store = await createSeededStore();
   const site = await store.createSite({
@@ -1309,7 +1916,7 @@ test('rolls back active site deletes when route snapshot write fails', async () 
   );
 
   assert.equal(response.status, 503);
-  assert.equal((await response.json()).error.code, 'ROUTE_SNAPSHOT_WRITE_FAILED');
+  assert.equal((await response.json()).error.code, 'ROUTE_POLICY_REPAIR_REQUIRED');
   assert.equal((await store.getSite('site_1')).deletedAt, null);
   assert.equal((await store.getRouteBySiteId('site_1')).routeStatus, 'active');
   assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, 'ver_1');
@@ -2663,7 +3270,7 @@ test('runtime provider sync passes the lease abort signal to vars and secret ope
   assert.notEqual(signals[1], controller.signal);
 });
 
-test('runtime plain-text sync acquires the site lease before the runtime settings lock and re-reads the active Worker', async () => {
+test('runtime plain-text sync acquires the site lease before the runtime settings lock', async () => {
   const store = await createSeededStore();
   const site = await store.createSite({
     id: 'site_1',
@@ -4324,7 +4931,9 @@ function failingSnapshotStore() {
 function createSnapshotStore() {
   const values = new Map();
   return {
+    get: async (key) => (values.has(key) ? JSON.stringify(values.get(key)) : null),
     put: async (key, value) => values.set(key, JSON.parse(value)),
+    delete: async (key) => values.delete(key),
     read: (key) => values.get(key),
   };
 }

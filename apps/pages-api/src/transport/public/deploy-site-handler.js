@@ -3,16 +3,10 @@ import { decisionRequiresWorker } from '../../deployment-plan.js';
 import { jsonError, jsonOk } from '../../http.js';
 import { nextId } from '../../id.js';
 import { deploymentStateWriteFailed } from '../shared/deployment-responses.js';
+import { createSiteMetadataApplication } from '../shared/site-metadata-application.js';
 import { isPublicOfficeNetFailure, publicOfficeNetOperationError } from '../shared/public-office-net-application.js';
-import {
-  buildDeploymentFailureDiagnostics,
-  deploymentStoreErrorCause,
-} from './deployment-diagnostics.js';
-import {
-  deploymentOperationError,
-  deploymentOperationFailurePatch,
-  siteNotFound,
-} from './deployment-errors.js';
+import { buildDeploymentFailureDiagnostics, deploymentStoreErrorCause } from './deployment-diagnostics.js';
+import { deploymentOperationError, deploymentSiteMetadataFailure, siteMetadataMutationsDisabled } from './deployment-errors.js';
 import { readDeploySiteRequest } from './deploy-site-intake.js';
 import { startDeploySite } from './deploy-site-start.js';
 import { prepareDeploymentUpload } from './deployment-upload-stage.js';
@@ -30,6 +24,7 @@ import { deploymentEnvelope } from './deployment-projection.js';
 import { validateDeploymentRuntimeConfigSnapshot } from './deployment-runtime-config.js';
 import {
   createDeploymentCommitLeaseApplication,
+  createDeploymentCommitAuthorizationApplication,
   createDeploymentRouteActivationPreparationApplication,
   createDeploymentRouteCutoverApplication,
   createDeploymentRouteSnapshotCommitApplication,
@@ -39,6 +34,9 @@ import {
 export async function createDeployment(request, env, config, store, actor, ctx, trace, authStage) {
   const intake = await readDeploySiteRequest({ request, config, trace });
   if (!intake.ok) return intake.response;
+  if (intake.input.requestedTitleProvided && env.SITE_METADATA_MUTATIONS_ENABLED !== 'true') {
+    return siteMetadataMutationsDisabled();
+  }
   const {
     decision,
     workerRuntimeVarsProvided,
@@ -47,11 +45,29 @@ export async function createDeployment(request, env, config, store, actor, ctx, 
     assetManifest,
     assetFiles,
     canonicalContentHash,
+    requestedTitleProvided,
+    requestedTitle,
   } = intake.input;
   const started = await startDeploySite({ input: intake.input, env, config, store, actor, ctx, trace, authStage });
   if (!started.ok) return started.response;
   let { site } = started;
   const { siteId, deployment } = started;
+  if (requestedTitleProvided && !site.pendingSiteCreation) {
+    const metadataResult = await applyDeploySiteTitle({
+      site,
+      siteId,
+      deployment,
+      title: requestedTitle,
+      env,
+      config,
+      store,
+      actor,
+      ctx,
+      trace,
+    });
+    if (!metadataResult.ok) return metadataResult.response;
+    site = metadataResult.site;
+  }
   let ownerTransfer = null;
   const prepared = await prepareDeploymentUpload({
     site,
@@ -136,7 +152,7 @@ export async function createDeployment(request, env, config, store, actor, ctx, 
           siteId,
           previousSite: ownerTransferRollbackSite,
           environment: config.environment,
-          enabled: ownerTransferApplied,
+          enabled: false,
         },
       });
       site = recovery.site;
@@ -164,45 +180,6 @@ export async function createDeployment(request, env, config, store, actor, ctx, 
         preActivationRuntimeSnapshotError.status,
         preActivationRuntimeSnapshotError.action
       );
-    }
-    if (site.pendingOwnerTransfer) {
-      ownerTransferRollbackSite = site;
-      const transferResult = await applyPendingDeployOwnerTransfer(store, actor, config, env, site, site.pendingOwnerTransfer);
-      if (transferResult instanceof Response) {
-        const recovery = await createDeploymentActivationFailureRecoveryApplication({ store, env, provider, trace }).recover({
-          site,
-          worker: {
-            uploaded,
-            originalFailure: { stage: 'auth_and_site_resolution', code: 'SITE_TRANSFER_FAILED' },
-            trafficImpact: 'old_version_retained',
-          },
-          runtimeConfig: {
-            environment: config.environment,
-            siteId,
-            restoreVars: originalRuntimeVarRecords,
-            expectedVars: committedRuntimeVarRecords,
-            actorId: actor.userId,
-            enabled: workerRuntimeVarsProvided,
-          },
-          ownerTransfer: {
-            siteId,
-            previousSite: ownerTransferRollbackSite,
-            environment: config.environment,
-            enabled: ownerTransferApplied,
-          },
-        });
-        site = recovery.site;
-        await finalizeFailedDeployment(
-          deploymentOperationFailurePatch({
-            errorCode: 'SITE_TRANSFER_FAILED',
-            errorMessage: 'Site owner transfer failed.',
-          })
-        );
-        return transferResult;
-      }
-      ownerTransferApplied = true;
-      site = transferResult.site;
-      ownerTransfer = transferResult.ownerTransfer;
     }
     const versionResult = await createDeploymentVersionCreationApplication(store, env, trace).create({
       versionId,
@@ -234,24 +211,42 @@ export async function createDeployment(request, env, config, store, actor, ctx, 
     const commitLeaseApplication = createDeploymentCommitLeaseApplication(store, env, trace);
     const routeActivationPreparation = createDeploymentRouteActivationPreparationApplication(store, env);
     const routeCutoverApplication = createDeploymentRouteCutoverApplication({ store, env, trace, provider });
-    const routeSnapshotApplication = createDeploymentRouteSnapshotCommitApplication(
-      store,
-      env,
-      trace,
-      'write_route_snapshot'
-    );
+    const routeSnapshotApplication = createDeploymentRouteSnapshotCommitApplication(store, env, trace, 'write_route_snapshot');
     const commitResult = await commitLeaseApplication.run(
       { environment: config.environment, siteId },
       async (activationLease) => {
+        const commitAuthorizationApplication = createDeploymentCommitAuthorizationApplication(store, env);
+        const pendingOwnerTransfer = site.pendingOwnerTransfer || null;
+        const commitAuthorization = await commitAuthorizationApplication.authorize({
+          environment: config.environment,
+          siteId,
+          actor,
+          expectedSite: site,
+          ownerTransfer: pendingOwnerTransfer,
+        });
+        const sourceSite = commitAuthorization.site;
+        const transferAuditEvent = pendingOwnerTransfer
+          ? buildSiteOwnerTransferAuditEvent({
+              id: nextId(env, 'aud'),
+              environment: config.environment,
+              actor: commitAuthorization.actor,
+              site: sourceSite,
+              target: commitAuthorization.target,
+              source: 'deploy',
+              createdAt: readNow(env),
+            })
+          : null;
+        ownerTransferRollbackSite = pendingOwnerTransfer ? sourceSite : null;
         const routeBeforeActivation = previousRoute;
         const activationPreparation = await routeActivationPreparation.prepare({
           deploymentId: deployment.id,
           environment: config.environment,
           siteId,
-          site,
+          site: sourceSite,
           routeBeforeActivation,
           uploadExposure,
-          ownerTransferApplied,
+          ownerTransferApplied: Boolean(pendingOwnerTransfer),
+          ownerTransferVisibility: pendingOwnerTransfer?.visibility,
         });
         if (activationPreparation.latestRoute) previousRoute = activationPreparation.latestRoute;
         if (!activationPreparation.ok) {
@@ -263,6 +258,15 @@ export async function createDeployment(request, env, config, store, actor, ctx, 
             : deploymentOperationError(activationPreparation.error.code);
         }
         const activation = activationPreparation.activation;
+        const siteForActivation = pendingOwnerTransfer
+          ? {
+              ...sourceSite,
+              ownerType: commitAuthorization.target.ownerType,
+              ownerId: commitAuthorization.target.ownerId,
+              ownerUserId: commitAuthorization.target.ownerUserId,
+              defaultVisibility: activation.visibility,
+            }
+          : sourceSite;
         const activationResult = await routeCutoverApplication.activate({
           environment: config.environment,
           siteId,
@@ -270,12 +274,29 @@ export async function createDeployment(request, env, config, store, actor, ctx, 
           lease: activationLease,
           activation,
           deploymentShape: decision.deploymentShape,
+          commit: {
+            expectedSite: sourceSite,
+            authorization: commitAuthorization.authorization,
+            ...(pendingOwnerTransfer
+              ? {
+                  ownerTransfer: {
+                    ...commitAuthorization.target,
+                    auditEvent: transferAuditEvent,
+                  },
+                }
+              : {}),
+          },
         });
         if (!activationResult.ok && activationResult.kind === 'office_net_failed') {
           throw publicOfficeNetOperationError(activationResult.error);
         }
         const activatedRoute = activationResult.ok ? activationResult.route : null;
         if (!activatedRoute) return null;
+        site = activationResult.site || siteForActivation;
+        if (pendingOwnerTransfer) {
+          ownerTransferApplied = true;
+          ownerTransfer = transferAuditEvent.metadata;
+        }
         const snapshotResult = await routeSnapshotApplication.commit({
           site,
           route: activatedRoute,
@@ -302,6 +323,7 @@ export async function createDeployment(request, env, config, store, actor, ctx, 
               previousSite: ownerTransferRollbackSite,
               enabled: ownerTransferApplied,
             },
+            lease: activationLease,
           });
           site = recovery.site;
           const { restoredRoute, restoredSnapshotWritten, routePointerCleared, repairRequired } = recovery;
@@ -373,9 +395,9 @@ export async function createDeployment(request, env, config, store, actor, ctx, 
             ? { stage: 'office_net', code: error.code }
             : routePolicyLockFailed
               ? { stage: 'route_policy_lock', code: error?.code || 'SITE_POLICY_LOCKED' }
-            : error?.code === 'SITE_POLICY_LOCKED' || error?.code === 'ROUTE_ACTIVATION_CONFLICT'
-              ? { stage: 'route_activate', code: error.code }
-              : { stage: 'version_create', code: 'DEPLOYMENT_STATE_WRITE_FAILED' },
+              : error?.code === 'SITE_POLICY_LOCKED' || error?.code === 'ROUTE_ACTIVATION_CONFLICT'
+                ? { stage: 'route_activate', code: error.code }
+                : { stage: 'version_create', code: 'DEPLOYMENT_STATE_WRITE_FAILED' },
         trafficImpact: 'old_version_retained',
       },
       runtimeConfig: {
@@ -390,7 +412,7 @@ export async function createDeployment(request, env, config, store, actor, ctx, 
         siteId,
         previousSite: ownerTransferRollbackSite,
         environment: config.environment,
-        enabled: ownerTransferApplied,
+        enabled: false,
       },
     });
     site = recovery.site;
@@ -422,12 +444,18 @@ export async function createDeployment(request, env, config, store, actor, ctx, 
         error.action || 'Check the active Worker settings and retry the deployment.'
       );
     }
-    if (error?.code === 'SITE_POLICY_LOCKED' || error?.code === 'ROUTE_ACTIVATION_CONFLICT') {
+    if (
+      error?.code === 'SITE_POLICY_LOCKED' ||
+      error?.code === 'SITE_POLICY_CONFLICT' ||
+      error?.code === 'SITE_NOT_FOUND' ||
+      error?.code === 'ROUTE_ACTIVATION_CONFLICT'
+    ) {
+      const operationError = error?.action ? error : deploymentOperationError(error.code, { cause: error });
       const failureStage = routePolicyLockFailed ? 'route_policy_lock' : 'activate_route';
       await finalizeFailedDeployment({
         versionId: version?.id || null,
-        errorCode: error.code,
-        errorMessage: error.message,
+        errorCode: operationError.code,
+        errorMessage: operationError.message,
         failureStage,
         failureDiagnostics: buildDeploymentFailureDiagnostics({
           stage: failureStage,
@@ -441,13 +469,13 @@ export async function createDeployment(request, env, config, store, actor, ctx, 
           routePointerCommitted: false,
           uploadedWorkerCleanup: 'attempted',
           cause: {
-            code: error.code,
+            code: operationError.code,
             class: routePolicyLockFailed ? 'site_policy_lock_error' : 'route_activation_conflict',
           },
         }),
         completedAt: readNow(env),
       });
-      return jsonError(error.code, error.message, error.status || 409, error.action);
+      return jsonError(operationError.code, operationError.message, operationError.status, operationError.action);
     }
     await recordDeploymentStatePersistFailure({
       trace,
@@ -456,22 +484,20 @@ export async function createDeployment(request, env, config, store, actor, ctx, 
       operation: error?.deploymentStateOperation || 'persist_activation_state',
       cause: error,
     });
-    await finalizeFailedDeployment(
-      {
-        versionId: version?.id,
-        errorCode: 'DEPLOYMENT_STATE_WRITE_FAILED',
-        errorMessage: 'Deployment state could not be persisted.',
-        failureStage: 'persist_deployment_state',
-        failureDiagnostics: buildDeploymentFailureDiagnostics({
-          stage: 'persist_deployment_state',
-          executionProvider: 'unknown',
-          plannedVersionId: version?.id,
-          routePointerCommitted: false,
-          cause: deploymentStoreErrorCause(),
-        }),
-        completedAt: readNow(env),
-      }
-    );
+    await finalizeFailedDeployment({
+      versionId: version?.id,
+      errorCode: 'DEPLOYMENT_STATE_WRITE_FAILED',
+      errorMessage: 'Deployment state could not be persisted.',
+      failureStage: 'persist_deployment_state',
+      failureDiagnostics: buildDeploymentFailureDiagnostics({
+        stage: 'persist_deployment_state',
+        executionProvider: 'unknown',
+        plannedVersionId: version?.id,
+        routePointerCommitted: false,
+        cause: deploymentStoreErrorCause(),
+      }),
+      completedAt: readNow(env),
+    });
     return deploymentStateWriteFailed();
   }
   if (activationSnapshotFailureResponse) return activationSnapshotFailureResponse;
@@ -505,7 +531,7 @@ export async function createDeployment(request, env, config, store, actor, ctx, 
           siteId,
           previousSite: ownerTransferRollbackSite,
           environment: config.environment,
-          enabled: ownerTransferApplied,
+          enabled: false,
         },
       });
       site = recovery.site;
@@ -555,7 +581,7 @@ export async function createDeployment(request, env, config, store, actor, ctx, 
         siteId,
         previousSite: ownerTransferRollbackSite,
         environment: config.environment,
-        enabled: ownerTransferApplied,
+        enabled: false,
       },
     });
     site = recovery.site;
@@ -606,33 +632,37 @@ export async function createDeployment(request, env, config, store, actor, ctx, 
   return jsonOk(await deploymentEnvelope(store, completed, { version, route, decision, ownerTransfer }), 201);
 }
 
-async function applyPendingDeployOwnerTransfer(store, actor, config, env, site, transfer) {
-  const updatedAt = readNow(env);
-  const auditEvent = buildSiteOwnerTransferAuditEvent({
-    id: nextId(env, 'aud'),
-    environment: config.environment,
-    actor,
-    site,
-    target: { ownerType: 'team', ownerId: transfer.ownerId },
-    source: 'deploy',
-    createdAt: updatedAt,
-  });
-  const updated = await store.transferSiteOwner(
-    site.id,
-    {
-      ownerType: 'team',
-      ownerId: transfer.ownerId,
-      ownerUserId: actor.userId || site.ownerUserId,
-      defaultVisibility: transfer.visibility || undefined,
-      updatedAt,
-      auditEvent,
-    },
-    config.environment
-  );
-  if (!updated) return siteNotFound('Check the site id.');
-
-  return {
-    site: updated,
-    ownerTransfer: auditEvent.metadata,
-  };
+async function applyDeploySiteTitle({ site, siteId, deployment, title, env, config, store, actor, ctx, trace }) {
+  try {
+    const mutation = await createSiteMetadataApplication({ store, env, config })({
+      environment: config.environment,
+      siteId,
+      actor,
+      source: 'deploy',
+      traceId: trace?.traceId || null,
+      patch: { title },
+    });
+    return {
+      ok: true,
+      site: {
+        ...site,
+        ...mutation.site,
+        route: mutation.route || site.route,
+      },
+    };
+  } catch (error) {
+    const failure = deploymentSiteMetadataFailure(error);
+    await updateDeploymentToFailedAndNotify({
+      store,
+      env,
+      config,
+      ctx,
+      deploymentId: deployment.id,
+      patch: { ...failure.patch, completedAt: readNow(env) },
+      actor,
+      site,
+      trace,
+    });
+    return { ok: false, response: failure.response };
+  }
 }

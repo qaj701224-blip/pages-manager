@@ -33,6 +33,7 @@ test('site creation prepares one canonical input and returns the requested route
     ownerId: 'team_1',
     ownerUserId: 'usr_1',
     visibility: 'internal',
+    title: 'Product guide',
     actor: { type: 'user', userId: 'usr_1' },
     includeRoute: true,
   });
@@ -44,6 +45,7 @@ test('site creation prepares one canonical input and returns the requested route
       ownerType: 'team',
       ownerId: 'team_1',
       ownerUserId: 'usr_1',
+      title: 'Product guide',
       siteUuid: 'uuid_1',
       defaultVisibility: 'internal',
       environment: 'production',
@@ -82,10 +84,12 @@ test('pending deployment creation reuses its prepared input through legacy takeo
     ownerId: 'usr_1',
     ownerUserId: 'usr_1',
     visibility: 'org',
+    title: 'Legacy guide',
   });
 
   const site = await creation.commit({ actor, siteInput, allowLegacyV1Takeover: true });
 
   assert.equal(site.id, 'site_prepared');
+  assert.equal(siteInput.title, 'Legacy guide');
   assert.deepEqual(takeoverCalls, [{ actor, siteInput }]);
 });

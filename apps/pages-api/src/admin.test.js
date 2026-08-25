@@ -4301,6 +4301,42 @@ test('platform admin can edit admin-scope site settings without asset membership
   assert.equal(site.ownerUserId, 'usr_target');
 });
 
+test('platform admin can update site name and URL without site membership', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await seedConsoleUser(store, 'usr_owner');
+  await store.createSite({
+    id: 'site_console',
+    slug: 'console-site',
+    ownerUserId: 'usr_owner',
+    siteUuid: 'uuid_site_console',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_site_console',
+    hostname: 'console-site.workers.xd.team',
+  });
+  await activateSite(store, 'site_console');
+  const snapshots = createSnapshotStore();
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_console/metadata', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'PATCH',
+      body: { title: 'Console Site', slug: 'renamed-console' },
+    }),
+    env(store, { SITE_METADATA_MUTATIONS_ENABLED: 'true', ROUTE_SNAPSHOTS: snapshots })
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.site.title, 'Console Site');
+  assert.equal(body.site.displayName, 'Console Site');
+  assert.equal(body.site.slug, 'renamed-console');
+  assert.equal(body.site.routingStatus, 'ready');
+  assert.equal(body.site.owner.id, 'usr_owner');
+});
+
 test('platform admin site detail and settings avoid full admin site scans', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
   await seedPlatformAdmin(store);
@@ -4489,7 +4525,7 @@ test('platform admin site owner transfer rolls back when route snapshot cannot r
   );
 
   assert.equal(response.status, 503, await response.clone().text());
-  assert.equal((await response.json()).error.code, 'ROUTE_SNAPSHOT_WRITE_FAILED');
+  assert.equal((await response.json()).error.code, 'ROUTE_POLICY_REPAIR_REQUIRED');
   const site = await store.getSite('site_personal');
   assert.equal(site.ownerType, 'user');
   assert.equal(site.ownerId, 'usr_owner');

@@ -11,11 +11,16 @@ import {
   actorCanReadSitesApi,
   actorHasPublishScope,
 } from '../../domain/sites/authorization.js';
+import { siteMetadataRoutingStatus } from '../../domain/sites/metadata.js';
 import { jsonError, jsonOk, readJsonBody } from '../../http.js';
 import { nextId } from '../../id.js';
 import { emitSiteDisabledWebhook } from '../../lifecycle-webhooks.js';
 import { createSiteCreationApplication, siteCreateErrorResponse } from '../shared/site-creation-application.js';
 import { createSiteLifecycleApplication, siteDeleteErrorResponse } from '../shared/site-lifecycle-application.js';
+import {
+  createSiteMetadataApplication,
+  runSiteMetadataRoutingReconciliation,
+} from '../shared/site-metadata-application.js';
 import {
   createSiteOwnershipApplication,
   siteTransferErrorResponse,
@@ -82,6 +87,14 @@ export async function handleSitesApi(request, env, config, store, ctx) {
   const transferSiteId = matchSiteTransfer(url.pathname);
   if (transferSiteId) {
     if (request.method === 'POST') return transferSiteOwner(request, env, config, store, auth.actor, transferSiteId);
+    return methodNotAllowed();
+  }
+
+  const metadataSiteId = matchSiteMetadata(url.pathname);
+  if (metadataSiteId) {
+    if (request.method === 'PATCH') {
+      return updateSiteMetadata(request, env, config, store, auth.actor, metadataSiteId, ctx);
+    }
     return methodNotAllowed();
   }
 
@@ -158,6 +171,64 @@ async function updateSite(request, env, config, store, actor, siteId, ctx) {
   return jsonOk({ site: formatSite({ ...mutation.site, route: mutation.route }) });
 }
 
+async function updateSiteMetadata(request, env, config, store, actor, siteId, ctx) {
+  if (env.SITE_METADATA_MUTATIONS_ENABLED !== 'true') {
+    return jsonError(
+      'SITE_METADATA_MUTATIONS_DISABLED',
+      'Site metadata mutations are temporarily disabled.',
+      503,
+      'Retry after the feature is enabled.',
+    );
+  }
+
+  const site = await store.getSiteForUser(siteId, actor.userId, actor, config.environment);
+  if (!site || !actorCanManageSite(actor, site)) {
+    return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
+  }
+
+  let patch;
+  try {
+    patch = await readJsonBody(request, { maxBytes: 32 * 1024 });
+  } catch {
+    return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
+  }
+
+  const command = {
+    environment: config.environment,
+    siteId: site.id,
+    actor,
+    source: 'api',
+    patch,
+  };
+  let mutation;
+  try {
+    mutation = await createSiteMetadataApplication({ store, env, config })(command);
+  } catch (error) {
+    return siteMetadataErrorResponse(error);
+  }
+
+  const responseSite = formatSiteMetadata({ ...mutation.site, route: mutation.route });
+  if (Object.hasOwn(patch, 'slug') && mutation.routingStatus === 'pending') {
+    if (typeof ctx?.waitUntil === 'function') {
+      ctx.waitUntil(
+        runSiteMetadataRoutingReconciliation(env, config, store, { limit: 50 }).catch(() => {}),
+      );
+    }
+    return jsonOk(
+      {
+        site: responseSite,
+        warning: {
+          code: 'SITE_METADATA_ROUTING_PENDING',
+          message: 'Site metadata was saved and routing is still being synchronized.',
+          action: 'Retry this request or wait for routing reconciliation.',
+        },
+      },
+      202,
+    );
+  }
+  return jsonOk({ site: responseSite });
+}
+
 async function deleteSite(env, config, store, actor, siteId, ctx) {
   const site = await getOwnerSite(store, actor, siteId, config.environment);
   if (site instanceof Response) return site;
@@ -207,18 +278,20 @@ async function transferSiteOwner(request, env, config, store, actor, siteId) {
     const result = await createSiteOwnershipApplication({ store, env })({
       environment: config.environment,
       site,
+      actor,
       target,
-      buildAuditEvent: (updatedAt) =>
+      targetUserMustMatchActor: true,
+      buildAuditEvent: (updatedAt, currentSite) =>
         buildSiteOwnerTransferAuditEvent({
           id: nextId(env, 'aud'),
           environment: config.environment,
           actor,
-          site,
+          site: currentSite,
           target,
           source: 'api',
           createdAt: updatedAt,
         }),
-      compensateSnapshotFailure: false,
+      compensateSnapshotFailure: true,
     });
     updated = result.site;
     route = result.route;
@@ -465,7 +538,10 @@ function formatSite(site) {
   const route = site.route || null;
   return {
     id: site.id,
+    title: site.title || null,
+    displayName: site.title || site.slug,
     slug: site.slug,
+    routingStatus: siteMetadataRoutingStatus(site),
     environment: site.environment,
     defaultVisibility: site.defaultVisibility,
     owner: {
@@ -488,6 +564,18 @@ function formatSite(site) {
     createdAt: site.createdAt,
     updatedAt: site.updatedAt,
     deletedAt: site.deletedAt || null,
+  };
+}
+
+function formatSiteMetadata(site) {
+  const projected = formatSite(site);
+  return {
+    id: projected.id,
+    title: projected.title,
+    displayName: projected.displayName,
+    slug: projected.slug,
+    routingStatus: projected.routingStatus,
+    url: projected.url,
   };
 }
 
@@ -558,6 +646,11 @@ function matchSiteTransfer(pathname) {
   return match ? match[1] : null;
 }
 
+function matchSiteMetadata(pathname) {
+  const match = pathname.match(/^\/\.xd-pages\/api\/sites\/([^/]+)\/metadata$/);
+  return match ? match[1] : null;
+}
+
 function matchSiteId(pathname) {
   const match = pathname.match(/^\/\.xd-pages\/api\/sites\/([^/]+)$/);
   return match ? match[1] : null;
@@ -583,4 +676,38 @@ function teamOwnerVisibilityUnsupported() {
 
 function methodNotAllowed() {
   return jsonError('METHOD_NOT_ALLOWED', 'Method not allowed.', 405, 'Use a supported HTTP method.');
+}
+
+function siteMetadataErrorResponse(error) {
+  const code = error?.code || error?.message;
+  if (code === 'SITE_METADATA_INVALID') {
+    return jsonError('SITE_METADATA_INVALID', 'Site metadata is invalid.', 400, 'Send title, slug, or both.');
+  }
+  if (code === 'SITE_TITLE_INVALID') {
+    return jsonError(
+      'SITE_TITLE_INVALID',
+      'Site title is invalid.',
+      400,
+      'Use 1-80 visible Unicode characters, or null to clear the title.',
+    );
+  }
+  if (code === 'SITE_SLUG_INVALID') {
+    return jsonError(
+      'SITE_SLUG_INVALID',
+      'Site slug is invalid.',
+      400,
+      'Use 2-50 lowercase letters, numbers, and hyphens; the first and last characters must be alphanumeric.',
+    );
+  }
+  if (code === 'SITE_SLUG_RESERVED') {
+    return jsonError('SITE_SLUG_RESERVED', 'Site slug is reserved.', 400, 'Choose a different site slug.');
+  }
+  if (code === 'SITE_SLUG_CONFLICT') {
+    return jsonError('SITE_SLUG_CONFLICT', 'Site slug already exists.', 409, 'Choose a different site slug.');
+  }
+  if (code === 'SITE_METADATA_CONFLICT') {
+    return jsonError('SITE_METADATA_CONFLICT', 'Site metadata changed concurrently.', 409, 'Refresh the site and retry.');
+  }
+  if (code === 'SITE_NOT_FOUND') return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
+  return jsonError('SITE_METADATA_UPDATE_FAILED', 'Site metadata could not be updated.', 500, 'Retry the update.');
 }

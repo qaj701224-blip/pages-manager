@@ -1,12 +1,30 @@
 import { jsonError } from '../../http.js';
 import { createSiteRouteSnapshots } from '../../infrastructure/route-snapshots/site-route-snapshots.js';
-import { buildRouteSnapshot, writeRouteSnapshot } from '../../route-snapshot.js';
+import {
+  buildRouteSnapshot,
+  clearRoutePointerIfCurrent,
+  repairRouteSnapshot,
+  routeSnapshotKey,
+  writeRouteSnapshot,
+} from '../../route-snapshot.js';
 
 export function createSiteRouteSnapshotAdapter({ store, env }) {
   return createSiteRouteSnapshots({
     store,
     buildSnapshot: buildRouteSnapshot,
     writeSnapshot: (snapshot) => writeRouteSnapshot(env, snapshot),
+    repairSnapshot: (snapshot) => repairRouteSnapshot(env, snapshot),
+    clearPointer: (pointer) =>
+      clearRoutePointerIfCurrent(env, {
+        ...pointer,
+        snapshotKey: routeSnapshotKey(
+          pointer.environment,
+          pointer.hostname,
+          pointer.routeGeneration,
+          pointer.policyVersion,
+          pointer.siteId,
+        ),
+      }),
   });
 }
 

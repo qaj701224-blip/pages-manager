@@ -118,7 +118,7 @@ export function SiteCard({ site, cardAction = 'detail' }) {
   const visibilityText = siteVisibilityLabel(visibility);
   const status = site.status || (visibility === 'disabled' ? 'disabled' : 'active');
   const statusKind = siteStatusKind({ status, visibility });
-  const title = site.slug || site.hostname || site.id;
+  const title = site.displayName || site.title || site.slug || site.hostname || site.id;
   const detailPath = `/workspace/sites/${encodeURIComponent(site.id)}`;
   const openDetail = () => navigate(detailPath);
   const onKeyDown = (event) => {
@@ -184,6 +184,8 @@ function filterSites(sites, { query, status }) {
     if (!normalizedQuery) return true;
     const haystack = [
       site.slug,
+      site.title,
+      site.displayName,
       site.hostname,
       sitePublicUrl(site.hostname),
       siteCardOwnerLabel(site.owner),

@@ -425,11 +425,20 @@ test('site management proxy forwards access and runtime config writes to pages-a
     }),
     apiEnv
   );
+  const metadataResponse = await worker.fetch(
+    request('https://workers.xd.team/api/console/sites/site_1/metadata', {
+      method: 'PATCH',
+      headers: writeHeaders,
+      body: JSON.stringify({ title: '产品文档' }),
+    }),
+    apiEnv
+  );
 
   assert.equal(accessResponse.status, 200, await accessResponse.clone().text());
   assert.equal(varResponse.status, 200, await varResponse.clone().text());
   assert.equal(secretResponse.status, 200, await secretResponse.clone().text());
   assert.equal(settingsResponse.status, 200, await settingsResponse.clone().text());
+  assert.equal(metadataResponse.status, 200, await metadataResponse.clone().text());
   assert.deepEqual(calls, [
     {
       url: 'https://pages-api.internal/.xd-pages/api/console/sites/site_1/access',
@@ -462,6 +471,14 @@ test('site management proxy forwards access and runtime config writes to pages-a
       bff: 'pages-console',
       contentType: 'application/json',
       body: { ownerType: 'team', teamId: 'team_1' },
+    },
+    {
+      url: 'https://pages-api.internal/.xd-pages/api/console/sites/site_1/metadata',
+      method: 'PATCH',
+      userId: 'user-1',
+      bff: 'pages-console',
+      contentType: 'application/json',
+      body: { title: '产品文档' },
     },
   ]);
 });

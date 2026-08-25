@@ -14,6 +14,7 @@ import {
   encodeUserKey,
   isReservedSiteSlug,
   isValidSiteSlug,
+  isValidSiteId,
   isValidSiteUuid,
   parseKvEnabled,
   scopeForDataOperation,
@@ -84,6 +85,13 @@ test('siteSlug matches deploy handler name semantics', () => {
   assert.equal(isValidSiteSlug('-q2-report'), false);
   assert.equal(isValidSiteSlug('q2-report-'), false);
   assert.equal(isValidSiteSlug('q2_report'), false);
+});
+
+test('stable site ids use the generated site prefix and lowercase hex payload', () => {
+  assert.equal(isValidSiteId('site_4b4c8e8361ef4b47b64f5c20a7db7c47'), true);
+  assert.equal(isValidSiteId('site_1'), false);
+  assert.equal(isValidSiteId('q2-report'), false);
+  assert.equal(isValidSiteId('site_4B4C8E8361EF4B47B64F5C20A7DB7C47'), false);
 });
 
 test('siteSlug reserves platform names consistently across control and data plane', () => {
