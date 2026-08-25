@@ -1,6 +1,6 @@
 import { validateNewDeploymentSiteSlug } from '../../domain/deployments/site-resolution.js';
 import { teamOwnerSupportsVisibility } from '../../domain/sites/access-policy.js';
-import { actorCanManageSite } from '../../domain/sites/authorization.js';
+import { actorCanTransferSiteOwnership } from '../../domain/sites/authorization.js';
 
 export function createDeploySiteResolution({ sites, prepareSite }) {
   if (typeof sites?.getForActor !== 'function') throw new TypeError('sites.getForActor is required');
@@ -29,7 +29,7 @@ export function createDeploySiteResolution({ sites, prepareSite }) {
 async function resolveTransferIfRequested(sites, site, command) {
   if (!command.teamId) return succeeded(site);
   if (site.ownerType === 'team' && site.ownerId === command.teamId) return succeeded(site);
-  if (!actorCanManageSite(command.actor, site)) return failed('DEPLOY_TRANSFER_FORBIDDEN_CURRENT');
+  if (!actorCanTransferSiteOwnership(command.actor, site)) return failed('DEPLOY_TRANSFER_FORBIDDEN_CURRENT');
 
   const target = await resolveTransferTeam(sites, command.actor, command.teamId, command.environment);
   if (!target.ok) return target;

@@ -79,6 +79,9 @@ function buildConsoleHeaders(session, { requireAdmin = false } = {}) {
     headers.set('X-Console-User-Id', session.userId);
     if (session.email) headers.set('X-Console-Email', session.email);
     headers.set('X-Console-Session-Version', String(session.sessionVersion || 1));
+    if (Number.isSafeInteger(session.authTime) && session.authTime >= 0) {
+      headers.set('X-Console-Auth-Time', String(session.authTime));
+    }
   }
   return headers;
 }

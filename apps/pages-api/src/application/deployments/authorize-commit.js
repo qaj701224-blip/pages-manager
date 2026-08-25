@@ -1,5 +1,6 @@
 import { authorizeSiteMutation } from '../sites/authorize-site-mutation.js';
 import { authorizeSiteTransferTarget } from '../sites/transfer-owner.js';
+import { actorCanTransferSiteOwnership } from '../../domain/sites/authorization.js';
 
 export function createAuthorizeDeploymentCommit({ sites, clock }) {
   if (!sites || typeof sites !== 'object') throw new TypeError('sites port is required');
@@ -23,6 +24,9 @@ export function createAuthorizeDeploymentCommit({ sites, clock }) {
         ownerId: command.ownerTransfer.ownerId,
         ownerUserId: authorization.actor.userId || authorization.site.ownerUserId,
       };
+      if (!actorCanTransferSiteOwnership(authorization.actor, authorization.site)) {
+        throw applicationError('SITE_NOT_FOUND');
+      }
       await authorizeSiteTransferTarget(
         sites,
         {
@@ -32,7 +36,11 @@ export function createAuthorizeDeploymentCommit({ sites, clock }) {
         },
         authorization.actor
       );
-      return { ...authorization, target };
+      return {
+        ...authorization,
+        authorization: { ...authorization.authorization, operation: 'site_owner_transfer' },
+        target,
+      };
     }
 
     return { ...authorization, target: null };

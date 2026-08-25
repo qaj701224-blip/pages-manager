@@ -38,10 +38,10 @@ import {
   putAdminSiteRuntimeVar,
   putSiteRuntimeSecret,
   putSiteRuntimeVar,
-  updateAdminSiteSettings,
+  transferAdminSiteOwnership,
   updateAdminSiteAccess,
   updateSiteMetadata,
-  updateSiteSettings,
+  transferSiteOwnership,
   updateSiteAccess,
 } from '../api.js';
 import { AppDialog, ConfirmDialog, SelectField } from '../components/RadixPrimitives.jsx';
@@ -68,16 +68,21 @@ import {
   toAclUpdatePayload,
 } from '../site-detail-model.js';
 import {
-  buildSiteOwnerSettingsForm,
+  buildSiteOwnershipReauthHref,
+  buildSiteOwnershipTransferForm,
   filterSiteOwnerCandidates,
   getSiteMetadataErrorMessage,
-  getSiteSettingsErrorMessage,
+  getSiteOwnershipTransferErrorMessage,
+  isCurrentSiteOwner,
   normalizeSiteSlugMetadataPayload,
   normalizeSiteTitleMetadataPayload,
-  normalizeSiteOwnerSettingsPayload,
+  normalizeSiteOwnershipTransferPayload,
+  shouldLeaveSiteAfterOwnershipTransfer,
   siteHostnameForSlug,
   siteOwnerCandidateLabel,
   siteOwnerCandidateMeta,
+  siteOwnerView,
+  siteOwnershipTransferLosesAccess,
 } from '../site-settings-model.js';
 import { adminDeploymentActorView, deploymentProviderView, siteVisibilityLabel } from '../site-display-model.js';
 import { PageHeading } from './SitesDirectory.jsx';
@@ -107,8 +112,8 @@ function createSiteApi(scope) {
       updateAccess: updateAdminSiteAccess,
       updateExposure: updateAdminSiteExposure,
       updateMetadata: updateAdminSiteMetadata,
-      updateSettings: updateAdminSiteSettings,
-      listOwnerUsers: ({ query } = {}) => listAdminUsers({ query }),
+      transferOwnership: transferAdminSiteOwnership,
+      listOwnerUsers: ({ query } = {}) => listAdminUsers({ query, status: 'active' }),
       listOwnerTeams: () => listAdminTeams({ status: 'active' }),
       putRuntimeVar: putAdminSiteRuntimeVar,
       deleteRuntimeVar: deleteAdminSiteRuntimeVar,
@@ -127,7 +132,7 @@ function createSiteApi(scope) {
     getResource: (siteId, resource) => fetchJson(`/api/console/sites/${encodeURIComponent(siteId)}/${resource}`),
     updateAccess: updateSiteAccess,
     updateMetadata: updateSiteMetadata,
-    updateSettings: updateSiteSettings,
+    transferOwnership: transferSiteOwnership,
     listOwnerUsers: ({ query } = {}) => listConsoleUsers({ query }),
     listOwnerTeams: () => listTeams(),
     putRuntimeVar: putSiteRuntimeVar,
@@ -162,8 +167,7 @@ export function SiteDetail({
   if (!resourceRequestGuardRef.current) {
     resourceRequestGuardRef.current = createResourceRequestGuard(resourceKey);
   }
-  const canViewConfig =
-    state.status === 'ready' && state.site?.id === siteId && canViewRuntimeConfig(state.site, scope);
+  const canViewConfig = state.status === 'ready' && state.site?.id === siteId && canViewRuntimeConfig(state.site, scope);
 
   useLayoutEffect(() => {
     resourceRequestGuardRef.current.activate(resourceKey);
@@ -176,6 +180,14 @@ export function SiteDetail({
     },
     [onSiteChange, siteId]
   );
+
+  const leaveTransferredSite = useCallback(() => {
+    if (scope !== 'workspace') return;
+    navigate('/workspace/published', {
+      replace: true,
+      state: { notice: '站点归属已转移。' },
+    });
+  }, [navigate, scope]);
 
   const updateActiveResource = useCallback(
     (data) => {
@@ -274,6 +286,7 @@ export function SiteDetail({
         <SiteTabContent
           site={state.site}
           scope={scope}
+          currentUserId={sessionState?.session?.user?.userId || null}
           canViewConfig={canViewConfig}
           siteApi={siteApi}
           tab={activeTab}
@@ -282,6 +295,7 @@ export function SiteDetail({
           onSitePatch={patchActiveSite}
           onResourceReload={reloadResource}
           onSiteDeleted={() => navigate(siteApi.deletedRedirect)}
+          onOwnershipLost={leaveTransferredSite}
         />
       ) : null}
     </>
@@ -369,6 +383,7 @@ function ContextLink({ href, active, icon, label }) {
 function SiteTabContent({
   site,
   scope,
+  currentUserId,
   canViewConfig,
   siteApi,
   tab,
@@ -377,6 +392,7 @@ function SiteTabContent({
   onSitePatch,
   onResourceReload,
   onSiteDeleted,
+  onOwnershipLost,
 }) {
   if (tab === 'deployments') return <DeploymentsPanel state={resourceState} site={site} scope={scope} />;
   if (tab === 'access') {
@@ -398,7 +414,17 @@ function SiteTabContent({
     return <ConfigPanel site={site} siteApi={siteApi} state={resourceState} onResourceReload={onResourceReload} />;
   }
   if (tab === 'settings')
-    return <SiteSettingsPanel site={site} siteApi={siteApi} onSiteDeleted={onSiteDeleted} onSiteUpdate={onSitePatch} />;
+    return (
+      <SiteSettingsPanel
+        site={site}
+        scope={scope}
+        currentUserId={currentUserId}
+        siteApi={siteApi}
+        onSiteDeleted={onSiteDeleted}
+        onSiteUpdate={onSitePatch}
+        onOwnershipLost={onOwnershipLost}
+      />
+    );
   return <SiteOverview site={site} />;
 }
 
@@ -791,11 +817,7 @@ function AdminExposurePanel({ site, access, updateExposure, onResourceUpdate, on
       setExposure(nextExposure);
       setDialog(null);
       setReason('');
-      setAuditWarning(
-        data.auditStatus === 'unconfirmed'
-          ? siteExposureAuditWarning(nextExposure)
-          : null
-      );
+      setAuditWarning(data.auditStatus === 'unconfirmed' ? siteExposureAuditWarning(nextExposure) : null);
       onResourceUpdate?.({ access: nextAccess });
       onSitePatch?.({ access: { ...(site.access || {}), ...nextAccess } });
     } catch (nextError) {
@@ -821,9 +843,7 @@ function AdminExposurePanel({ site, access, updateExposure, onResourceUpdate, on
       <section className="info-list access-control-card exposure-policy-card" aria-label="网络范围控制">
         <div className="access-control-card__head">
           <h2>网络范围</h2>
-          <span className={exposure === 'public' ? 'tag tag-success' : 'tag muted'}>
-            {rangeView.status}
-          </span>
+          <span className={exposure === 'public' ? 'tag tag-success' : 'tag muted'}>{rangeView.status}</span>
         </div>
         <div className="access-control-card__body network-range-body">
           <div className="exposure-policy-summary">
@@ -908,13 +928,7 @@ function AclEntryDialog({ open, draft, error, onDraftChange, onOpenChange, onSub
   const subjectInputRef = useRef(null);
 
   return (
-    <AppDialog
-      open={open}
-      title="添加访问对象"
-      eyebrow="ACL"
-      initialFocusRef={subjectInputRef}
-      onOpenChange={onOpenChange}
-    >
+    <AppDialog open={open} title="添加访问对象" eyebrow="ACL" initialFocusRef={subjectInputRef} onOpenChange={onOpenChange}>
       <form
         className="dialog-form"
         onSubmit={(event) => {
@@ -1102,13 +1116,7 @@ function RuntimeVarDialog({ open, siteId, siteApi, onOpenChange, onResourceReloa
   };
 
   return (
-    <AppDialog
-      open={open}
-      title="添加环境变量"
-      eyebrow="运行配置"
-      initialFocusRef={nameInputRef}
-      onOpenChange={onOpenChange}
-    >
+    <AppDialog open={open} title="添加环境变量" eyebrow="运行配置" initialFocusRef={nameInputRef} onOpenChange={onOpenChange}>
       <form className="dialog-form" onSubmit={submit}>
         <label className="field">
           <span>Name</span>
@@ -1248,13 +1256,7 @@ function RuntimeSecretDialog({ open, siteId, siteApi, onOpenChange, onResourceRe
   };
 
   return (
-    <AppDialog
-      open={open}
-      title="添加 Secret"
-      eyebrow="运行配置"
-      initialFocusRef={nameInputRef}
-      onOpenChange={onOpenChange}
-    >
+    <AppDialog open={open} title="添加 Secret" eyebrow="运行配置" initialFocusRef={nameInputRef} onOpenChange={onOpenChange}>
       <form className="dialog-form" onSubmit={submit}>
         <label className="field">
           <span>Name</span>
@@ -1384,33 +1386,49 @@ function refreshResourceInBackground(onResourceReload) {
   void onResourceReload().catch(() => {});
 }
 
-function SiteSettingsPanel({ site, siteApi, onSiteDeleted, onSiteUpdate }) {
+function SiteSettingsPanel({ site, scope, currentUserId, siteApi, onSiteDeleted, onSiteUpdate, onOwnershipLost }) {
   const [editing, setEditing] = useState(false);
-  const [form, setForm] = useState(() => buildSiteOwnerSettingsForm(site));
+  const [form, setForm] = useState(() => buildSiteOwnershipTransferForm(site));
   const [ownerOptions, setOwnerOptions] = useState({ status: 'idle', users: [], teams: [], error: null });
-  const [saveState, setSaveState] = useState({ saving: false, error: '', notice: '' });
+  const [confirmTarget, setConfirmTarget] = useState(null);
+  const [transferState, setTransferState] = useState({ transferring: false, error: null, notice: '' });
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleteState, setDeleteState] = useState({ deleting: false, error: null });
   const settingsRequestGuardRef = useRef(null);
+  const ownershipKey = `${site.id}:${site.owner?.type || 'user'}:${site.owner?.id || ''}:${
+    site.permissions?.canTransferOwnership === true ? 'transfer' : 'readonly'
+  }`;
   if (!settingsRequestGuardRef.current) {
-    settingsRequestGuardRef.current = createResourceRequestGuard(site.id);
+    settingsRequestGuardRef.current = createResourceRequestGuard(ownershipKey);
   }
   const canEdit = Boolean(site.permissions?.canManage);
+  const canTransferOwnership = Boolean(site.permissions?.canTransferOwnership);
   const canDelete = Boolean(site.permissions?.canManageAccess);
+  const rawCandidates = form.ownerType === 'team' ? ownerOptions.teams : ownerOptions.users;
+  const ownerCandidates = filterSiteOwnerCandidates(rawCandidates, form.query, form.ownerType, scope);
+  const selectedCandidate = ownerCandidates.find((candidate) => candidate.id === form.ownerId) || null;
+  const currentOwnerSelected = isCurrentSiteOwner(site, form);
+  const canContinue = Boolean(canTransferOwnership && selectedCandidate && !currentOwnerSelected);
+  const currentOwnerView = siteOwnerView(site.owner);
 
   useLayoutEffect(() => {
-    settingsRequestGuardRef.current.activate(site.id);
+    settingsRequestGuardRef.current.activate(ownershipKey);
     return () => settingsRequestGuardRef.current.activate(null);
-  }, [site.id]);
+  }, [ownershipKey]);
 
-  useEffect(() => {
-    setForm(buildSiteOwnerSettingsForm(site));
+  useLayoutEffect(() => {
+    setForm(buildSiteOwnershipTransferForm(site));
     setEditing(false);
     setOwnerOptions({ status: 'idle', users: [], teams: [], error: null });
-    setSaveState({ saving: false, error: '', notice: '' });
+    setConfirmTarget(null);
+    setTransferState((current) => ({ transferring: false, error: null, notice: current.notice }));
     setDeleteTarget(null);
     setDeleteState({ deleting: false, error: null });
-  }, [site.id, site.owner?.type, site.owner?.id]);
+  }, [site.id, site.owner?.type, site.owner?.id, site.permissions?.canTransferOwnership]);
+
+  useEffect(() => {
+    setTransferState({ transferring: false, error: null, notice: '' });
+  }, [site.id]);
 
   useEffect(() => {
     if (!editing) return undefined;
@@ -1445,14 +1463,15 @@ function SiteSettingsPanel({ site, siteApi, onSiteDeleted, onSiteUpdate }) {
   }, [editing, form.ownerType, form.query, siteApi]);
 
   const beginEdit = () => {
-    setForm(buildSiteOwnerSettingsForm(site));
-    setSaveState({ saving: false, error: '', notice: '' });
+    setForm(buildSiteOwnershipTransferForm(site));
+    setTransferState({ transferring: false, error: null, notice: '' });
     setEditing(true);
   };
 
   const cancelEdit = () => {
-    setForm(buildSiteOwnerSettingsForm(site));
-    setSaveState({ saving: false, error: '', notice: '' });
+    setForm(buildSiteOwnershipTransferForm(site));
+    setTransferState({ transferring: false, error: null, notice: '' });
+    setConfirmTarget(null);
     setEditing(false);
   };
 
@@ -1461,27 +1480,52 @@ function SiteSettingsPanel({ site, siteApi, onSiteDeleted, onSiteUpdate }) {
     setOwnerOptions((current) => ({ ...current, status: 'idle', error: null }));
   };
 
-  const save = async (event) => {
+  const openTransferConfirmation = (event) => {
     event.preventDefault();
-    if (!canEdit || !editing) return;
-    const request = settingsRequestGuardRef.current.begin(site.id);
-    if (!request) return;
-    setSaveState({ saving: true, error: '', notice: '' });
+    if (!editing || !canContinue || transferState.transferring) return;
+    let payload;
     try {
-      const data = await siteApi.updateSettings(site.id, normalizeSiteOwnerSettingsPayload(form));
+      payload = normalizeSiteOwnershipTransferPayload(form);
+    } catch (error) {
+      setTransferState({ transferring: false, error, notice: '' });
+      return;
+    }
+    setTransferState({ transferring: false, error: null, notice: '' });
+    setConfirmTarget({
+      ownerType: form.ownerType,
+      ownerId: form.ownerId,
+      payload,
+      label: siteOwnerCandidateLabel(selectedCandidate, form.ownerType),
+      meta: siteOwnerCandidateMeta(selectedCandidate, form.ownerType),
+      currentUserRole: selectedCandidate.currentUserRole || null,
+    });
+  };
+
+  const confirmTransfer = async () => {
+    if (!confirmTarget || transferState.transferring || !canTransferOwnership) return;
+    const request = settingsRequestGuardRef.current.begin(ownershipKey);
+    if (!request) return;
+    setTransferState({ transferring: true, error: null, notice: '' });
+    try {
+      const data = await siteApi.transferOwnership(site.id, confirmTarget.payload);
       if (!settingsRequestGuardRef.current.isCurrent(request)) return;
+      if (shouldLeaveSiteAfterOwnershipTransfer(scope, data?.site)) {
+        onOwnershipLost?.();
+        return;
+      }
       if (data?.site) onSiteUpdate?.(pickSiteOwnershipPatch(data.site));
       setEditing(false);
-      setSaveState({ saving: false, error: '', notice: '站点设置已保存' });
+      setConfirmTarget(null);
+      setTransferState({ transferring: false, error: null, notice: '站点归属已转移' });
     } catch (error) {
       if (!settingsRequestGuardRef.current.isCurrent(request)) return;
-      setSaveState({ saving: false, error: getSiteSettingsErrorMessage(error), notice: '' });
+      setTransferState({ transferring: false, error, notice: '' });
     }
   };
 
   const confirmDelete = async () => {
     if (!deleteTarget) return;
-    const request = settingsRequestGuardRef.current.begin(site.id);
+    const request = settingsRequestGuardRef.current.begin(ownershipKey);
     if (!request) return;
     setDeleteState({ deleting: true, error: null });
     try {
@@ -1499,30 +1543,27 @@ function SiteSettingsPanel({ site, siteApi, onSiteDeleted, onSiteUpdate }) {
     <section className="detail-stack">
       <SiteTitleSettings site={site} siteApi={siteApi} canEdit={canEdit} onSiteUpdate={onSiteUpdate} />
       <SiteSlugSettings site={site} siteApi={siteApi} canEdit={canEdit} onSiteUpdate={onSiteUpdate} />
-      <form className="info-list site-settings-card" onSubmit={save}>
+      <form className="info-list site-ownership-card" onSubmit={openTransferConfirmation}>
         <div className="panel-head">
-          <div>
-            <p>设置</p>
-            <h2>{site.displayName || site.title || site.slug || site.id || '站点'}</h2>
-          </div>
+          <h2>站点归属</h2>
           <div className="panel-actions">
-            {canEdit && !editing ? (
+            {canTransferOwnership && !editing ? (
               <button
                 className="secondary-button"
                 type="button"
-                disabled={saveState.saving || deleteState.deleting}
+                disabled={transferState.transferring || deleteState.deleting}
                 onClick={beginEdit}
               >
                 <Pencil size={15} />
-                修改
+                转移归属
               </button>
             ) : null}
-            {canEdit && editing ? (
+            {canTransferOwnership && editing ? (
               <>
                 <button
                   className="secondary-button"
                   type="button"
-                  disabled={saveState.saving || deleteState.deleting}
+                  disabled={transferState.transferring || deleteState.deleting}
                   onClick={cancelEdit}
                 >
                   <X size={15} />
@@ -1531,42 +1572,39 @@ function SiteSettingsPanel({ site, siteApi, onSiteDeleted, onSiteUpdate }) {
                 <button
                   className="primary-button"
                   type="submit"
-                  disabled={saveState.saving || deleteState.deleting || !form.ownerId}
+                  disabled={transferState.transferring || deleteState.deleting || !canContinue}
                 >
-                  <Save size={16} />
-                  {saveState.saving ? '保存中' : '保存'}
+                  继续
                 </button>
               </>
             ) : null}
           </div>
         </div>
-        <dl className={editing ? 'site-settings-rows editing' : 'site-settings-rows'}>
-          <div>
-            <dt>Slug</dt>
-            <dd title={site.slug || '-'}>{site.slug || '-'}</dd>
+        <div className="site-ownership-card__body">
+          <div className="site-owner-summary">
+            <span className="tag muted">{currentOwnerView.typeLabel}</span>
+            <span>
+              <strong>{currentOwnerView.label}</strong>
+              {currentOwnerView.meta ? <small>{currentOwnerView.meta}</small> : null}
+            </span>
           </div>
-          <div>
-            <dt>Hostname</dt>
-            <dd title={site.hostname || '-'}>{site.hostname || '-'}</dd>
-          </div>
-          <div>
-            <dt>Owner</dt>
-            <dd title={editing ? undefined : ownerLabel(site.owner)}>
-              {editing ? (
-                <SiteOwnerEditor form={form} ownerOptions={ownerOptions} onChange={setForm} onOwnerTypeChange={updateOwnerType} />
-              ) : (
-                ownerLabel(site.owner)
-              )}
-            </dd>
-          </div>
-        </dl>
-        {!canEdit || saveState.notice || saveState.error ? (
-          <div className="site-settings-card-footer">
-            {!canEdit ? <div className="form-note">仅站点 owner 或团队 publisher/admin 可修改站点设置。</div> : null}
-            {saveState.notice ? <div className="form-note success">{saveState.notice}</div> : null}
-            {saveState.error ? <div className="form-error">{saveState.error}</div> : null}
-          </div>
-        ) : null}
+          {editing ? (
+            <SiteOwnerEditor
+              site={site}
+              scope={scope}
+              form={form}
+              ownerOptions={ownerOptions}
+              onChange={setForm}
+              onOwnerTypeChange={updateOwnerType}
+            />
+          ) : null}
+          {!canTransferOwnership ? <div className="form-note">仅当前个人 Owner 或团队 admin 可转移站点归属。</div> : null}
+          {transferState.notice ? (
+            <div className="form-note success" aria-live="polite">
+              {transferState.notice}
+            </div>
+          ) : null}
+        </div>
       </form>
       <section className="info-list danger-zone">
         <h2>删除站点</h2>
@@ -1597,6 +1635,46 @@ function SiteSettingsPanel({ site, siteApi, onSiteDeleted, onSiteUpdate }) {
           setDeleteState({ deleting: false, error: null });
         }}
         onConfirm={confirmDelete}
+      />
+      <ConfirmDialog
+        open={Boolean(confirmTarget)}
+        title="确认转移站点归属"
+        target={confirmTarget ? `${currentOwnerView.label} → ${confirmTarget.label}` : ''}
+        targetMeta={
+          confirmTarget
+            ? `${currentOwnerView.typeLabel} → ${confirmTarget.ownerType === 'team' ? '团队' : '个人'}${
+                confirmTarget.meta ? ` · ${confirmTarget.meta}` : ''
+              }`
+            : ''
+        }
+        description={
+          <>
+            转移会立即改变站点资产归属和管理权限。
+            {confirmTarget && siteOwnershipTransferLosesAccess(scope, confirmTarget, currentUserId) ? (
+              <>
+                <br />
+                <strong>转移成功后，你将无法继续访问或管理此站点。</strong>
+              </>
+            ) : null}
+          </>
+        }
+        confirmLabel={transferState.transferring ? '转移中' : '确认转移'}
+        confirming={transferState.transferring}
+        error={transferState.error ? getSiteOwnershipTransferErrorMessage(transferState.error) : ''}
+        errorAction={
+          transferState.error?.code === 'CONSOLE_RECENT_LOGIN_REQUIRED' ? (
+            <a className="secondary-button" href={buildSiteOwnershipReauthHref(site.id, scope)}>
+              重新验证身份
+            </a>
+          ) : null
+        }
+        icon={<AlertTriangle size={16} />}
+        onCancel={() => {
+          if (transferState.transferring) return;
+          setConfirmTarget(null);
+          setTransferState((current) => ({ ...current, error: null }));
+        }}
+        onConfirm={confirmTransfer}
       />
     </section>
   );
@@ -1670,8 +1748,16 @@ function SiteTitleSettings({ site, siteApi, canEdit, onSiteUpdate }) {
         </label>
         <p className="field-help">最多 80 个字符。留空并保存可清除名称，界面将回退显示站点 URL。</p>
         {!canEdit ? <div className="form-note">仅站点 owner 或团队 publisher/admin 可修改名称。</div> : null}
-        {state.notice ? <div className="form-note success" aria-live="polite">{state.notice}</div> : null}
-        {state.error ? <div className="form-error" role="alert">{state.error}</div> : null}
+        {state.notice ? (
+          <div className="form-note success" aria-live="polite">
+            {state.notice}
+          </div>
+        ) : null}
+        {state.error ? (
+          <div className="form-error" role="alert">
+            {state.error}
+          </div>
+        ) : null}
       </div>
     </form>
   );
@@ -1799,22 +1885,32 @@ function SiteSlugSettings({ site, siteApi, canEdit, onSiteUpdate }) {
             }}
           />
         </label>
-        <p className="site-url-preview" title={nextHostname}>https://{nextHostname || '-'}</p>
+        <p className="site-url-preview" title={nextHostname}>
+          https://{nextHostname || '-'}
+        </p>
         <div className="form-note">
           旧地址将停止访问，并在安全期后释放给其他站点使用；请同步更新本地 <code>xd-cell.config.json</code> 的 <code>name</code>。
         </div>
         {!canEdit ? <div className="form-note">仅站点 owner 或团队 publisher/admin 可修改站点 URL。</div> : null}
         {site.routingStatus === 'pending' ? <div className="form-note">地址正在同步，页面会自动刷新状态。</div> : null}
-        {state.notice ? <div className="form-note success" aria-live="polite">{state.notice}</div> : null}
-        {state.error ? <div className="form-error" role="alert">{state.error}</div> : null}
+        {state.notice ? (
+          <div className="form-note success" aria-live="polite">
+            {state.notice}
+          </div>
+        ) : null}
+        {state.error ? (
+          <div className="form-error" role="alert">
+            {state.error}
+          </div>
+        ) : null}
       </div>
     </form>
   );
 }
 
-function SiteOwnerEditor({ form, ownerOptions, onChange, onOwnerTypeChange }) {
+function SiteOwnerEditor({ site, scope, form, ownerOptions, onChange, onOwnerTypeChange }) {
   const rawCandidates = form.ownerType === 'team' ? ownerOptions.teams : ownerOptions.users;
-  const candidates = filterSiteOwnerCandidates(rawCandidates, form.query, form.ownerType);
+  const candidates = filterSiteOwnerCandidates(rawCandidates, form.query, form.ownerType, scope);
   const emptyText = form.ownerType === 'team' ? '没有可用团队' : '没有匹配用户';
 
   return (
@@ -1838,7 +1934,7 @@ function SiteOwnerEditor({ form, ownerOptions, onChange, onOwnerTypeChange }) {
         <Search size={15} />
         <input
           value={form.query}
-          onChange={(event) => onChange((current) => ({ ...current, query: event.target.value }))}
+          onChange={(event) => onChange((current) => ({ ...current, ownerId: '', query: event.target.value }))}
           placeholder={form.ownerType === 'team' ? '搜索团队名称或部门路径' : '搜索姓名、邮箱或部门'}
         />
       </label>
@@ -1850,16 +1946,18 @@ function SiteOwnerEditor({ form, ownerOptions, onChange, onOwnerTypeChange }) {
         ) : null}
         {candidates.map((candidate) => {
           const selected = form.ownerId === candidate.id;
+          const currentOwner = site.owner?.type === form.ownerType && site.owner?.id === candidate.id;
           return (
             <button
               className={selected ? 'owner-picker-row selected' : 'owner-picker-row'}
               key={candidate.id}
               type="button"
               aria-pressed={selected}
+              disabled={currentOwner}
               onClick={() => onChange((current) => ({ ...current, ownerId: candidate.id }))}
             >
               <strong>{siteOwnerCandidateLabel(candidate, form.ownerType)}</strong>
-              <span>{siteOwnerCandidateMeta(candidate, form.ownerType)}</span>
+              <span>{currentOwner ? '当前归属' : siteOwnerCandidateMeta(candidate, form.ownerType)}</span>
             </button>
           );
         })}

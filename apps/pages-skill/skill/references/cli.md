@@ -44,6 +44,17 @@ node tools/xd-cell-cli/main.js help login
 - 不要打印、持久化、提交、截图或引用 API token、CLI access key、CLI token（legacy）、cookie、SSO code 或 secret。
 - 不要把凭证发送到用户未确认的自定义 endpoint。
 
+## 站点归属与凭证边界
+
+CLI 当前不提供独立的归属转移命令。交互用户应使用 Console；只有受控集成才使用 Public transfer API，并由服务端执行以下授权边界：
+
+- 用户登录凭证、Cindy Connection JWT 和 Personal Access Token（PAT）只允许当前个人 Owner 或源团队 `admin` 发起转移。转给个人时只能转给已认证 actor 自己；转给团队时，actor 必须是目标团队的 `publisher` 或 `admin`。
+- Team Access Token（TAT）不能通过 Public transfer API 改变 Owner，也不能通过向相同 Owner 提交请求来绕过限制。
+- `xd-cell deploy --team <teamId>` 创建团队站点时，目标团队的 `publisher/admin` 可以发布。既有站点随发布隐式转移时，个人源站点要求当前 Owner，团队源站点要求源团队 `admin`；目标团队仍要求 `publisher/admin`。
+- Team Access Token（TAT）只能继续发布其自身团队站点，不能改变 Owner；不得用它把个人站点或其他团队站点转入该团队，也不得转到其他团队。
+
+不要为了归属转移猜测 API 请求、认证 header 或内部路由；普通用户与 agent 按 Console 和 CLI 已公开能力操作。
+
 ## 配置
 
 `--config <file>` 是一次性输入，只能包含 CLI help 允许的非敏感发布模板字段。默认模板名是 `xd-cell.config.json`。

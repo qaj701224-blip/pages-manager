@@ -4295,10 +4295,48 @@ test('platform admin can edit admin-scope site settings without asset membership
   assert.equal(settingsBody.site.owner.type, 'user');
   assert.equal(settingsBody.site.owner.id, 'usr_target');
   assert.equal(settingsBody.site.owner.displayName, '目标用户');
+  assert.equal(settingsBody.site.permissions.canTransferOwnership, true);
   const site = await store.getSite('site_console');
   assert.equal(site.ownerType, 'user');
   assert.equal(site.ownerId, 'usr_target');
   assert.equal(site.ownerUserId, 'usr_target');
+});
+
+test('platform admin site ownership transfer requires a recent login without side effects', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await seedConsoleUser(store, 'usr_owner');
+  await seedConsoleUser(store, 'usr_target');
+  await store.createSite({
+    id: 'site_personal',
+    slug: 'personal',
+    ownerUserId: 'usr_owner',
+    ownerType: 'user',
+    ownerId: 'usr_owner',
+    siteUuid: 'uuid_site_personal',
+    defaultVisibility: 'internal',
+    environment: 'production',
+    routeId: 'route_site_personal',
+    hostname: 'personal.workers.xd.team',
+  });
+  const routeBefore = await store.getRouteBySiteId('site_personal', 'production');
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_personal/settings', {
+      userId: 'usr_root',
+      admin: true,
+      authTime: null,
+      method: 'PATCH',
+      body: { ownerType: 'user', ownerId: 'usr_target' },
+    }),
+    env(store)
+  );
+
+  assert.equal(response.status, 401, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'CONSOLE_RECENT_LOGIN_REQUIRED');
+  assert.equal((await store.getSite('site_personal')).ownerId, 'usr_owner');
+  assert.equal((await store.getRouteBySiteId('site_personal', 'production')).policyVersion, routeBefore.policyVersion);
+  assert.equal((await store.listAuditEvents()).filter((event) => event.eventType === 'site.owner.transfer').length, 0);
 });
 
 test('platform admin can update site name and URL without site membership', async () => {
@@ -4385,9 +4423,13 @@ test('platform admin site detail and settings avoid full admin site scans', asyn
   );
 
   assert.equal(detail.status, 200, await detail.clone().text());
-  assert.equal((await detail.json()).site.id, 'site_personal');
+  const detailBody = await detail.json();
+  assert.equal(detailBody.site.id, 'site_personal');
+  assert.equal(detailBody.site.owner.email, 'owner@example.com');
   assert.equal(settings.status, 200, await settings.clone().text());
-  assert.equal((await settings.json()).site.owner.id, 'usr_target');
+  const settingsBody = await settings.json();
+  assert.equal(settingsBody.site.owner.id, 'usr_target');
+  assert.equal(settingsBody.site.owner.email, 'target@example.com');
 });
 
 test('platform-admin force DELETE emits site.deleted with the admin actor', async () => {
@@ -4910,7 +4952,7 @@ function env(store, overrides = {}) {
 
 function internalConsoleRequest(
   path,
-  { userId, email = 'user@example.com', admin = false, sessionVersion, method = 'GET', body } = {}
+  { userId, email = 'user@example.com', admin = false, sessionVersion, authTime = 1782950400, method = 'GET', body } = {}
 ) {
   const headers = {
     Host: 'pages-api.internal',
@@ -4921,6 +4963,7 @@ function internalConsoleRequest(
     headers['X-Console-Email'] = email;
     headers['X-Console-Admin'] = admin ? 'true' : 'false';
     if (sessionVersion !== undefined) headers['X-Console-Session-Version'] = String(sessionVersion);
+    if (authTime !== null) headers['X-Console-Auth-Time'] = String(authTime);
   }
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   return new Request(`https://pages-api.internal${path}`, {

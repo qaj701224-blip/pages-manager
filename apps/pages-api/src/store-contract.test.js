@@ -1132,6 +1132,96 @@ for (const backend of storeBackends) {
     }
   });
 
+  test(`${backend.name} contract: personal access key owner transfer requires source team admin at the D1 commit`, async () => {
+    const fixture = await backend.create();
+    try {
+      await fixture.store.createUser({
+        userId: 'usr_owner',
+        email: 'owner@example.com',
+        employeeStatus: 'active',
+      });
+      await fixture.store.createUser({
+        userId: 'usr_target',
+        email: 'target@example.com',
+        employeeStatus: 'active',
+      });
+      await fixture.store.createTeam({
+        id: 'team_source',
+        environment: 'production',
+        name: 'Source Team',
+        createdByUserId: 'usr_owner',
+      });
+      await fixture.store.createAccessKey({
+        id: 'ak_owner_transfer',
+        environment: 'production',
+        ownerType: 'user',
+        ownerId: 'usr_owner',
+        ownerUserId: 'usr_owner',
+        createdByUserId: 'usr_owner',
+        keyHash: 'hash_owner_transfer',
+        pepperId: 'pepper_1',
+        name: 'owner transfer',
+        scopes: ['deploy:site'],
+        expiresAt: '2026-07-29T00:00:00.000Z',
+      });
+      const site = await fixture.store.createSite({
+        id: 'site_1',
+        slug: 'docs',
+        ownerType: 'team',
+        ownerId: 'team_source',
+        ownerUserId: 'usr_owner',
+        siteUuid: 'uuid_1',
+        defaultVisibility: 'org',
+        environment: 'production',
+        routeId: 'route_1',
+        hostname: 'docs.pages.xd.team',
+      });
+      const route = await fixture.store.getRouteBySiteId(site.id, 'production');
+      const lease = await fixture.store.acquireSiteCommitLock('production', site.id, {
+        lockId: 'transfer_source_admin_lock',
+      });
+
+      await fixture.store.addTeamMember({
+        teamId: 'team_source',
+        userId: 'usr_owner',
+        role: 'publisher',
+        membershipSource: 'manual',
+      });
+      await assert.rejects(
+        () =>
+          fixture.store.transferSiteOwner(
+            site.id,
+            {
+              ownerType: 'user',
+              ownerId: 'usr_target',
+              ownerUserId: 'usr_target',
+              expected: { ownerType: 'team', ownerId: 'team_source' },
+              expectedRoute: transferExpectedRoute(route),
+              bumpPolicyVersion: true,
+              authorization: {
+                kind: 'access_key',
+                actorUserId: 'usr_owner',
+                accessKeyId: 'ak_owner_transfer',
+                ownerType: 'user',
+                ownerId: 'usr_owner',
+                operation: 'site_owner_transfer',
+              },
+              lease,
+            },
+            'production'
+          ),
+        (error) => error.code === 'SITE_NOT_FOUND'
+      );
+      assert.deepEqual(ownerAuthority(await fixture.store.getSite(site.id)), {
+        ownerType: 'team',
+        ownerId: 'team_source',
+      });
+      assert.equal((await fixture.store.getRouteBySiteId(site.id, 'production')).policyVersion, route.policyVersion);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   test(`${backend.name} contract: owner transfer rejects membership removed after authorization`, async () => {
     const fixture = await backend.create();
     try {
@@ -1183,7 +1273,7 @@ for (const backend of storeBackends) {
               ownerUserId: 'usr_target',
               expected: { ownerType: 'team', ownerId: 'team_source' },
               expectedRoute: transferExpectedRoute(route),
-              authorization: { kind: 'user', actorUserId: 'usr_owner' },
+              authorization: { kind: 'user', actorUserId: 'usr_owner', operation: 'site_owner_transfer' },
               lease,
             },
             'production'

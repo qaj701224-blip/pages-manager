@@ -42,10 +42,12 @@ export function normalizeConsoleReturnTo(value) {
   return '/';
 }
 
-export async function createConsoleLogin(env, returnTo) {
-  return callPagesAuth(env, '/.xd-pages/internal/console/login-code', {
+export async function createConsoleLogin(env, returnTo, { reauth = false } = {}) {
+  const body = {
     returnTo: normalizeConsoleReturnTo(returnTo),
-  });
+  };
+  if (reauth) body.reauth = true;
+  return callPagesAuth(env, '/.xd-pages/internal/console/login-code', body);
 }
 
 export async function exchangeConsoleCode(env, code) {

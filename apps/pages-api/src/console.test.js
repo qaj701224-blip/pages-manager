@@ -873,10 +873,15 @@ test('site detail computes permissions from team role for team-owned site', asyn
   await seedConsoleUsers(store, ['usr_admin', 'usr_publisher', 'usr_other']);
   const team = await store.createTeam({
     environment: 'production',
-    teamType: 'custom',
-    name: 'Console Team',
-    description: null,
-    createdByUserId: 'usr_admin',
+    teamType: 'department',
+    departmentPath: 'XD/Platform',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_admin',
+    role: 'admin',
+    membershipSource: 'directory',
+    departmentPath: 'XD/Platform',
   });
   await store.addTeamMember({
     teamId: team.id,
@@ -898,6 +903,10 @@ test('site detail computes permissions from team role for team-owned site', asyn
     internalConsoleRequest('/.xd-pages/api/console/sites/site_team', { userId: 'usr_publisher' }),
     env(store)
   );
+  const adminDetail = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/sites/site_team', { userId: 'usr_admin' }),
+    env(store)
+  );
   const forbidden = await worker.fetch(
     internalConsoleRequest('/.xd-pages/api/console/sites/site_team', { userId: 'usr_other' }),
     env(store)
@@ -908,10 +917,13 @@ test('site detail computes permissions from team role for team-owned site', asyn
 
   const body = await detail.json();
   assert.equal(body.site.owner.type, 'team');
-  assert.equal(body.site.owner.displayName, 'Console Team');
+  assert.equal(body.site.owner.displayName, 'XD/Platform');
+  assert.equal(body.site.owner.departmentPath, 'XD/Platform');
   assert.equal(body.site.permissions.role, 'publisher');
   assert.equal(body.site.permissions.canManage, true);
   assert.equal(body.site.permissions.canManageAccess, true);
+  assert.equal(body.site.permissions.canTransferOwnership, false);
+  assert.equal((await adminDetail.json()).site.permissions.canTransferOwnership, true);
   assertNoSensitiveConsoleFields(body);
 });
 
@@ -956,7 +968,12 @@ test('site detail and subresources are internal-only, permission checked, and re
   const detailBody = await detail.json();
   assert.equal(detailBody.site.slug, 'mine');
   assert.equal(detailBody.site.hostname, 'mine.workers.xd.team');
-  assert.deepEqual(detailBody.site.owner, { type: 'user', id: 'usr_me', displayName: '徐天麒' });
+  assert.deepEqual(detailBody.site.owner, {
+    type: 'user',
+    id: 'usr_me',
+    email: 'usr_me@example.com',
+    displayName: '徐天麒',
+  });
   assert.equal(detailBody.site.access.visibility, 'acl');
   assert.deepEqual(await deployments.json(), { deployments: [] });
   assert.deepEqual(await access.json(), { access: { visibility: 'acl', aclEntries: [] } });
@@ -2315,7 +2332,7 @@ test('console missing and repeated deletes do not emit site.deleted', async () =
   assert.equal(requests.length, 1);
 });
 
-test('site publisher can transfer site owner from console settings to an active user', async () => {
+test('personal site owner can transfer site ownership from console settings to an active user', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   await seedSite(store, {
     id: 'site_mine',
@@ -2346,10 +2363,176 @@ test('site publisher can transfer site owner from console settings to an active 
     displayName: '目标用户',
   });
   assert.equal(body.site.permissions.canManage, false);
+  assert.equal(body.site.permissions.canTransferOwnership, false);
   const site = await store.getSite('site_mine');
   assert.equal(site.ownerType, 'user');
   assert.equal(site.ownerId, 'usr_target');
   assert.equal(site.ownerUserId, 'usr_target');
+});
+
+test('console ownership transfer requires a recent login without creating side effects', async (t) => {
+  for (const scenario of [
+    { name: 'missing auth time', authTime: null },
+    { name: 'malformed auth time', authTime: 'not-a-time' },
+    { name: 'stale auth time', authTime: 1781480699 },
+    { name: 'future auth time', authTime: 1781481631 },
+  ]) {
+    await t.test(scenario.name, async () => {
+      const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+      await seedSite(store, {
+        id: 'site_mine',
+        slug: 'mine',
+        ownerUserId: 'usr_me',
+        visibility: 'org',
+      });
+      await seedConsoleUser(store, 'usr_target');
+      const routeBefore = await store.getRouteBySiteId('site_mine', 'production');
+
+      const response = await worker.fetch(
+        internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/settings', {
+          userId: 'usr_me',
+          authTime: scenario.authTime,
+          method: 'PATCH',
+          body: { ownerType: 'user', ownerId: 'usr_target' },
+        }),
+        env(store)
+      );
+
+      assert.equal(response.status, 401, await response.clone().text());
+      assert.equal((await response.json()).error.code, 'CONSOLE_RECENT_LOGIN_REQUIRED');
+      assert.equal((await store.getSite('site_mine')).ownerId, 'usr_me');
+      assert.equal((await store.getRouteBySiteId('site_mine', 'production')).policyVersion, routeBefore.policyVersion);
+      assert.equal((await store.listAuditEvents()).filter((event) => event.eventType === 'site.owner.transfer').length, 0);
+    });
+  }
+});
+
+test('console rejects transferring a site to its current owner without side effects', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedSite(store, {
+    id: 'site_mine',
+    slug: 'mine',
+    ownerUserId: 'usr_me',
+    visibility: 'org',
+  });
+  const routeBefore = await store.getRouteBySiteId('site_mine', 'production');
+
+  const response = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/settings', {
+      userId: 'usr_me',
+      method: 'PATCH',
+      body: { ownerType: 'user', ownerId: 'usr_me' },
+    }),
+    env(store)
+  );
+
+  assert.equal(response.status, 400, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'SITE_TRANSFER_INVALID');
+  assert.equal((await store.getSite('site_mine')).ownerId, 'usr_me');
+  assert.equal((await store.getRouteBySiteId('site_mine', 'production')).policyVersion, routeBefore.policyVersion);
+  assert.equal((await store.listAuditEvents()).filter((event) => event.eventType === 'site.owner.transfer').length, 0);
+});
+
+test('workspace ownership transfer allows source team admins and rejects source team publishers', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedConsoleUsers(store, ['usr_admin', 'usr_publisher', 'usr_target']);
+  const team = await store.createTeam({
+    id: 'team_source',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Source Team',
+    createdByUserId: 'usr_admin',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_publisher',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  await seedSite(store, {
+    id: 'site_team',
+    slug: 'team-site',
+    ownerUserId: 'usr_admin',
+    ownerType: 'team',
+    ownerId: team.id,
+    visibility: 'org',
+  });
+
+  const publisher = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_team/settings', {
+      userId: 'usr_publisher',
+      method: 'PATCH',
+      body: { ownerType: 'user', ownerId: 'usr_target' },
+    }),
+    env(store)
+  );
+  assert.equal(publisher.status, 403, await publisher.clone().text());
+  assert.equal((await publisher.json()).error.code, 'SITE_ADMIN_REQUIRED');
+  assert.equal((await store.getSite('site_team')).ownerId, team.id);
+
+  const admin = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_team/settings', {
+      userId: 'usr_admin',
+      method: 'PATCH',
+      body: { ownerType: 'user', ownerId: 'usr_target' },
+    }),
+    env(store)
+  );
+  assert.equal(admin.status, 200, await admin.clone().text());
+  assert.equal((await store.getSite('site_team')).ownerId, 'usr_target');
+});
+
+test('workspace ownership transfer D1 guard rejects a source team admin downgraded after locked authorization', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedConsoleUsers(store, ['usr_admin', 'usr_backup', 'usr_target']);
+  const team = await store.createTeam({
+    id: 'team_source',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Source Team',
+    createdByUserId: 'usr_admin',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_backup',
+    role: 'admin',
+    membershipSource: 'manual',
+  });
+  await seedSite(store, {
+    id: 'site_team',
+    slug: 'team-site',
+    ownerUserId: 'usr_admin',
+    ownerType: 'team',
+    ownerId: team.id,
+    visibility: 'org',
+  });
+  const routeBefore = await store.getRouteBySiteId('site_team', 'production');
+  const transferSiteOwner = store.transferSiteOwner.bind(store);
+  store.transferSiteOwner = async (...args) => {
+    await store.addTeamMember({
+      teamId: team.id,
+      userId: 'usr_admin',
+      role: 'publisher',
+      membershipSource: 'manual',
+      actorUserId: 'usr_backup',
+    });
+    return transferSiteOwner(...args);
+  };
+
+  const response = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_team/settings', {
+      userId: 'usr_admin',
+      method: 'PATCH',
+      body: { ownerType: 'user', ownerId: 'usr_target' },
+    }),
+    env(store)
+  );
+
+  assert.equal(response.status, 404, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'SITE_NOT_FOUND');
+  assert.equal((await store.getSite('site_team')).ownerId, team.id);
+  assert.equal((await store.getRouteBySiteId('site_team', 'production')).policyVersion, routeBefore.policyVersion);
+  assert.equal((await store.listAuditEvents()).filter((event) => event.eventType === 'site.owner.transfer').length, 0);
 });
 
 test('workspace publisher updates site name and URL through independent metadata fields', async () => {
@@ -2655,7 +2838,7 @@ test('workspace metadata rechecks team publisher membership inside the site leas
   assert.equal((await store.listAuditEvents()).filter((event) => event.eventType === 'site_metadata_updated').length, 0);
 });
 
-test('site publisher owner transfer rolls back when route snapshot cannot refresh', async () => {
+test('site owner transfer rolls back when route snapshot cannot refresh', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   await seedSite(store, {
     id: 'site_mine',
@@ -2675,7 +2858,7 @@ test('site publisher owner transfer rolls back when route snapshot cannot refres
       method: 'PATCH',
       body: { ownerType: 'user', ownerId: 'usr_target' },
     }),
-    env(store, { ROUTE_SNAPSHOTS: failingSnapshotStore() })
+    env(store, { ROUTE_SNAPSHOTS: failFirstSnapshotStore() })
   );
 
   assert.equal(response.status, 503, await response.clone().text());
@@ -2686,7 +2869,7 @@ test('site publisher owner transfer rolls back when route snapshot cannot refres
   assert.equal(site.ownerUserId, 'usr_me');
 });
 
-test('site publisher cannot transfer site owner from console settings to a disabled user', async () => {
+test('site owner cannot transfer site ownership from console settings to a disabled user', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   await seedConsoleUser(store, 'usr_owner');
   await seedConsoleUser(store, 'usr_disabled', { employeeStatus: 'disabled' });
@@ -2713,7 +2896,7 @@ test('site publisher cannot transfer site owner from console settings to a disab
   assert.equal(site.ownerId, 'usr_owner');
 });
 
-test('site publisher can transfer site owner from console settings to a manageable team', async () => {
+test('personal site owner can transfer site ownership from console settings to a manageable team', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   await seedSite(store, {
     id: 'site_mine',
@@ -2975,7 +3158,7 @@ function envWithSequencedIds(store, overrides = {}) {
 
 function internalConsoleRequest(
   path,
-  { userId, email = 'user@example.com', admin = false, sessionVersion, method = 'GET' } = {}
+  { userId, email = 'user@example.com', admin = false, sessionVersion, authTime = 1781481600, method = 'GET' } = {}
 ) {
   const headers = {
     Host: 'pages-api.internal',
@@ -2986,12 +3169,16 @@ function internalConsoleRequest(
     headers['X-Console-Email'] = email;
     headers['X-Console-Admin'] = admin ? 'true' : 'false';
     if (sessionVersion !== undefined) headers['X-Console-Session-Version'] = String(sessionVersion);
+    if (authTime !== null) headers['X-Console-Auth-Time'] = String(authTime);
   }
   return new Request(`https://pages-api.internal${path}`, { method, headers });
 }
 
-function internalConsoleJsonRequest(path, { userId, email = 'user@example.com', admin = false, method = 'POST', body } = {}) {
-  const request = internalConsoleRequest(path, { userId, email, admin, method });
+function internalConsoleJsonRequest(
+  path,
+  { userId, email = 'user@example.com', admin = false, authTime = 1781481600, method = 'POST', body } = {}
+) {
+  const request = internalConsoleRequest(path, { userId, email, admin, authTime, method });
   const headers = Object.fromEntries(request.headers.entries());
   headers['Content-Type'] = 'application/json';
   return new Request(request.url, {
@@ -3072,6 +3259,19 @@ function failingSnapshotStore() {
   return {
     put: async () => {
       throw new Error('snapshot write failed');
+    },
+  };
+}
+
+function failFirstSnapshotStore() {
+  const snapshots = createSnapshotStore();
+  let writes = 0;
+  return {
+    ...snapshots,
+    async put(key, value) {
+      writes += 1;
+      if (writes === 1) throw new Error('snapshot write failed');
+      return snapshots.put(key, value);
     },
   };
 }

@@ -6,6 +6,7 @@ import { authenticateApiRequest } from './auth.js';
 import { createConnectionJwksCache } from './connection-assertion.js';
 import { createTestPagesStore } from '../test-support/pages-store-fixture.js';
 import { handleWhoamiApi } from './whoami.js';
+import worker from './index.js';
 
 const ISSUER = 'https://auth-dev.cindy.test';
 const AUDIENCE = 'xd:xd-sites';
@@ -125,13 +126,7 @@ test('binds the membership id to an existing user by email on first contact', as
     employeeStatus: 'active',
   });
 
-  const auth = await authenticateApiRequest(
-    bearerRequest(await signAssertion()),
-    await connectionEnv(),
-    store,
-    CONFIG,
-    NOW_ISO
-  );
+  const auth = await authenticateApiRequest(bearerRequest(await signAssertion()), await connectionEnv(), store, CONFIG, NOW_ISO);
 
   assert.equal(auth.ok, true);
   assert.equal(auth.actor.userId, 'usr_email');
@@ -186,13 +181,7 @@ test('rejects an email already bound to a different membership id', async () => 
     cindyMembershipId: 'mem_other',
   });
 
-  const auth = await authenticateApiRequest(
-    bearerRequest(await signAssertion()),
-    await connectionEnv(),
-    store,
-    CONFIG,
-    NOW_ISO
-  );
+  const auth = await authenticateApiRequest(bearerRequest(await signAssertion()), await connectionEnv(), store, CONFIG, NOW_ISO);
 
   assert.equal(auth.ok, false);
   assert.equal(auth.error.code, 'CONNECTION_IDENTITY_CONFLICT');
@@ -328,6 +317,126 @@ test('connection actors cannot list or create access keys', async () => {
   assert.equal((await create.json()).error.code, 'ACCESS_KEY_CREATE_FORBIDDEN');
 });
 
+test('connection JWT follows public owner transfer rules for personal owners and source team roles', async () => {
+  const store = createTestPagesStore({ now: () => NOW_ISO });
+  await store.createUser({
+    userId: 'usr_connection',
+    email: 'someone@xd.com',
+    realname: 'Connection User',
+    employeeStatus: 'active',
+    cindyMembershipId: 'mem_1',
+  });
+  await store.createUser({
+    userId: 'usr_creator',
+    email: 'creator@xd.com',
+    employeeStatus: 'active',
+  });
+  const targetTeam = await store.createTeam({
+    id: 'team_target',
+    environment: 'staging',
+    teamType: 'custom',
+    name: 'Target Team',
+    createdByUserId: 'usr_creator',
+  });
+  await store.addTeamMember({
+    teamId: targetTeam.id,
+    userId: 'usr_connection',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  const adminTeam = await store.createTeam({
+    id: 'team_admin_source',
+    environment: 'staging',
+    teamType: 'custom',
+    name: 'Admin Source Team',
+    createdByUserId: 'usr_connection',
+  });
+  const publisherTeam = await store.createTeam({
+    id: 'team_publisher_source',
+    environment: 'staging',
+    teamType: 'custom',
+    name: 'Publisher Source Team',
+    createdByUserId: 'usr_creator',
+  });
+  await store.addTeamMember({
+    teamId: publisherTeam.id,
+    userId: 'usr_connection',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  await seedConnectionSite(store, {
+    id: 'site_personal',
+    slug: 'connection-personal',
+    ownerType: 'user',
+    ownerId: 'usr_connection',
+    ownerUserId: 'usr_connection',
+  });
+  await seedConnectionSite(store, {
+    id: 'site_admin_source',
+    slug: 'connection-admin-source',
+    ownerType: 'team',
+    ownerId: adminTeam.id,
+    ownerUserId: 'usr_connection',
+  });
+  await seedConnectionSite(store, {
+    id: 'site_publisher_source',
+    slug: 'connection-publisher-source',
+    ownerType: 'team',
+    ownerId: publisherTeam.id,
+    ownerUserId: 'usr_creator',
+  });
+
+  const token = await signAssertion();
+  const env = await connectionEnv({
+    PAGES_ENV: 'staging',
+    PAGES_STORE: store,
+    ROUTE_SNAPSHOTS: createSnapshotStore(),
+  });
+
+  const personalToTeam = await worker.fetch(
+    connectionJsonRequest(token, '/.xd-pages/api/sites/site_personal/transfer', {
+      ownerType: 'team',
+      teamId: targetTeam.id,
+    }),
+    env
+  );
+  assert.equal(personalToTeam.status, 200, await personalToTeam.clone().text());
+  assert.equal((await store.getSite('site_personal')).ownerId, targetTeam.id);
+
+  const adminToSelf = await worker.fetch(
+    connectionJsonRequest(token, '/.xd-pages/api/sites/site_admin_source/transfer', {
+      ownerType: 'user',
+      ownerId: 'usr_connection',
+    }),
+    env
+  );
+  assert.equal(adminToSelf.status, 200, await adminToSelf.clone().text());
+  assert.equal((await store.getSite('site_admin_source')).ownerId, 'usr_connection');
+
+  const publisherRouteBefore = await store.getRouteBySiteId('site_publisher_source', 'staging');
+  const transferAuditsBefore = (await store.listAuditEvents({ environment: 'staging' })).filter(
+    (event) => event.eventType === 'site.owner.transfer'
+  ).length;
+  const publisherToSelf = await worker.fetch(
+    connectionJsonRequest(token, '/.xd-pages/api/sites/site_publisher_source/transfer', {
+      ownerType: 'user',
+      ownerId: 'usr_connection',
+    }),
+    env
+  );
+  assert.equal(publisherToSelf.status, 403, await publisherToSelf.clone().text());
+  assert.equal((await publisherToSelf.json()).error.code, 'SITE_TRANSFER_FORBIDDEN');
+  assert.equal((await store.getSite('site_publisher_source')).ownerId, publisherTeam.id);
+  assert.equal(
+    (await store.getRouteBySiteId('site_publisher_source', 'staging')).policyVersion,
+    publisherRouteBefore.policyVersion
+  );
+  assert.equal(
+    (await store.listAuditEvents({ environment: 'staging' })).filter((event) => event.eventType === 'site.owner.transfer').length,
+    transferAuditsBefore
+  );
+});
+
 test('whoami reports a connection credential without inventing an access key id', async () => {
   const store = createTestPagesStore({ now: () => NOW_ISO });
   await store.createUser({
@@ -356,3 +465,42 @@ test('whoami reports a connection credential without inventing an access key id'
     scopes: ['deploy:site', 'read:site', 'rollback:site'],
   });
 });
+
+function connectionJsonRequest(token, pathname, body) {
+  return new Request(`https://api-staging.pages.xd.team${pathname}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+async function seedConnectionSite(store, { id, slug, ownerType, ownerId, ownerUserId }) {
+  await store.createSite({
+    id,
+    slug,
+    ownerType,
+    ownerId,
+    ownerUserId,
+    siteUuid: `uuid_${id}`,
+    defaultVisibility: 'org',
+    environment: 'staging',
+    routeId: `route_${id}`,
+    hostname: `${slug}-staging.workers.xd.team`,
+  });
+}
+
+function createSnapshotStore() {
+  const values = new Map();
+  return {
+    put: async (key, value) => values.set(key, value),
+    get: async (key) => values.get(key) || null,
+    delete: async (key) => values.delete(key),
+    list: async ({ prefix = '' } = {}) => ({
+      keys: [...values.keys()].filter((key) => key.startsWith(prefix)).map((name) => ({ name })),
+      list_complete: true,
+    }),
+  };
+}

@@ -62,7 +62,7 @@ test('owner transfer restores an older owner at P+2 after the first pointer writ
       target: { ownerType: 'team', ownerId: 'team_1', ownerUserId: 'usr_old' },
       compensateSnapshotFailure: true,
     }),
-    (error) => error.code === 'ROUTE_SNAPSHOT_WRITE_FAILED'
+    (error) => error.code === 'ROUTE_POLICY_REPAIR_REQUIRED' && error.cause?.code === 'ROUTE_SNAPSHOT_WRITE_FAILED'
   );
 
   assert.equal(state.site.ownerType, 'user');

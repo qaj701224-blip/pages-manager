@@ -35,6 +35,8 @@ test('buildPagesCli copies runtime files and package metadata without tests', as
     assert.deepEqual(packageJson.bin, { 'xd-cell': './main.js' });
     const readme = await readFile(path.join(outDir, 'README.md'), 'utf8');
     assert.match(readme, /^# @xd-cell\/cli/m);
+    assert.match(readme, /已有团队站点随发布转移归属时，要求源团队 admin/);
+    assert.match(readme, /Team Access Token（TAT）只能继续发布其自身团队站点，不能改变 Owner/);
     for (const command of [
       'xd-cell logout',
       'xd-cell whoami --json',

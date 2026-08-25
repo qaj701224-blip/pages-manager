@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 import { fetchJson } from '../api.js';
 import { Sidebar } from '../components/Sidebar.jsx';
@@ -7,10 +8,18 @@ import { buildTeamFilterOptions } from '../team-list-model.js';
 import { PageHeading, SiteWaterfall } from './SitesDirectory.jsx';
 
 export function WorkspaceSites({ owner = 'personal', sessionState }) {
+  const location = useLocation();
+  const navigate = useNavigate();
   const [state, setState] = useState({ status: 'loading', sites: [], error: null });
   const [teamsState, setTeamsState] = useState({ status: 'idle', teams: [], error: null });
   const [teamId, setTeamId] = useState('');
   const ownerLabel = owner === 'team' ? '团队站点' : '个人站点';
+  const [notice] = useState(() => (location.state?.notice === '站点归属已转移。' ? location.state.notice : ''));
+
+  useEffect(() => {
+    if (!notice || location.state?.notice !== notice) return;
+    navigate(`${location.pathname}${location.search}`, { replace: true, state: null });
+  }, [location.pathname, location.search, location.state, navigate, notice]);
 
   useEffect(() => {
     let active = true;
@@ -63,6 +72,11 @@ export function WorkspaceSites({ owner = 'personal', sessionState }) {
         ) : (
           <PageHeading title={ownerLabel} meta="工作台" />
         )}
+        {notice ? (
+          <div className="form-note success" role="status">
+            {notice}
+          </div>
+        ) : null}
         <SiteWaterfall state={state} />
       </main>
     </div>

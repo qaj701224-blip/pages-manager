@@ -123,16 +123,16 @@ deleted
 
 历史 Site Publishing 生命周期（当前不再推进）：
 
-| Action         | 规则                                                                |
-| -------------- | ------------------------------------------------------------------- |
-| create         | 已冻结；历史流程为 Slack / API 创建任务后进入 issue / PR / preview  |
-| update         | 自动入口已冻结；历史规则为修改同一个站点目录和同一个 active PR      |
-| archive        | 管理员 / owner 操作，保留历史 deploy                                |
-| restore        | 管理员 / owner 操作                                                 |
-| delete         | 软删除，不立即释放 hostname                                         |
-| rename         | 显式操作，不能由普通内容修改隐式触发                                |
-| transfer owner | 站点管理操作；要求 actor 对源 owner 和目标 owner 都具备站点管理权限 |
-| rollback       | 后续通过 `DeployRecord` 实现                                        |
+| Action         | 规则                                                                                 |
+| -------------- | ------------------------------------------------------------------------------------ |
+| create         | 已冻结；历史流程为 Slack / API 创建任务后进入 issue / PR / preview                   |
+| update         | 自动入口已冻结；历史规则为修改同一个站点目录和同一个 active PR                       |
+| archive        | 管理员 / owner 操作，保留历史 deploy                                                 |
+| restore        | 管理员 / owner 操作                                                                  |
+| delete         | 软删除，不立即释放 hostname                                                          |
+| rename         | 显式操作，不能由普通内容修改隐式触发                                                 |
+| transfer owner | 个人源站点要求当前 Owner，团队源站点要求 `admin`；目标团队要求 `publisher` / `admin` |
+| rollback       | 后续通过 `DeployRecord` 实现                                                         |
 
 ## Quota
 

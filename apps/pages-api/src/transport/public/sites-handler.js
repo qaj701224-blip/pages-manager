@@ -9,6 +9,7 @@ import {
 import {
   actorCanManageSite,
   actorCanReadSitesApi,
+  actorCanTransferSiteOwnership,
   actorHasPublishScope,
 } from '../../domain/sites/authorization.js';
 import { siteMetadataRoutingStatus } from '../../domain/sites/metadata.js';
@@ -17,14 +18,8 @@ import { nextId } from '../../id.js';
 import { emitSiteDisabledWebhook } from '../../lifecycle-webhooks.js';
 import { createSiteCreationApplication, siteCreateErrorResponse } from '../shared/site-creation-application.js';
 import { createSiteLifecycleApplication, siteDeleteErrorResponse } from '../shared/site-lifecycle-application.js';
-import {
-  createSiteMetadataApplication,
-  runSiteMetadataRoutingReconciliation,
-} from '../shared/site-metadata-application.js';
-import {
-  createSiteOwnershipApplication,
-  siteTransferErrorResponse,
-} from '../shared/site-ownership-application.js';
+import { createSiteMetadataApplication, runSiteMetadataRoutingReconciliation } from '../shared/site-metadata-application.js';
+import { createSiteOwnershipApplication, siteTransferErrorResponse } from '../shared/site-ownership-application.js';
 import { mutateUserSiteAccessPolicy } from '../shared/site-policy-application.js';
 import {
   normalizeSiteAclInput,
@@ -177,7 +172,7 @@ async function updateSiteMetadata(request, env, config, store, actor, siteId, ct
       'SITE_METADATA_MUTATIONS_DISABLED',
       'Site metadata mutations are temporarily disabled.',
       503,
-      'Retry after the feature is enabled.',
+      'Retry after the feature is enabled.'
     );
   }
 
@@ -210,9 +205,7 @@ async function updateSiteMetadata(request, env, config, store, actor, siteId, ct
   const responseSite = formatSiteMetadata({ ...mutation.site, route: mutation.route });
   if (Object.hasOwn(patch, 'slug') && mutation.routingStatus === 'pending') {
     if (typeof ctx?.waitUntil === 'function') {
-      ctx.waitUntil(
-        runSiteMetadataRoutingReconciliation(env, config, store, { limit: 50 }).catch(() => {}),
-      );
+      ctx.waitUntil(runSiteMetadataRoutingReconciliation(env, config, store, { limit: 50 }).catch(() => {}));
     }
     return jsonOk(
       {
@@ -223,7 +216,7 @@ async function updateSiteMetadata(request, env, config, store, actor, siteId, ct
           action: 'Retry this request or wait for routing reconciliation.',
         },
       },
-      202,
+      202
     );
   }
   return jsonOk({ site: responseSite });
@@ -254,8 +247,8 @@ async function transferSiteOwner(request, env, config, store, actor, siteId) {
     return jsonError('SITE_TRANSFER_UNSUPPORTED', 'Site transfer is unavailable.', 503, 'Retry later.');
   }
 
-  const site = await getOwnerSite(store, actor, siteId, config.environment);
-  if (site instanceof Response) return site;
+  const site = await store.getSiteForUser(siteId, actor.userId, actor, config.environment);
+  if (!site) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
 
   let body;
   try {
@@ -267,6 +260,22 @@ async function transferSiteOwner(request, env, config, store, actor, siteId) {
   const exposureError = rejectUserExposureMutation(body);
   if (exposureError) return exposureError;
 
+  if (sameOwner(site, requestedOwnerAuthority(body))) {
+    return jsonError(
+      'SITE_TRANSFER_INVALID',
+      'Site transfer target is invalid.',
+      400,
+      'Choose an owner different from the current owner.'
+    );
+  }
+  if (!actorCanTransferSiteOwnership(actor, site)) {
+    return jsonError(
+      'SITE_TRANSFER_FORBIDDEN',
+      'Actor cannot transfer this site.',
+      403,
+      'Use the personal owner or source team admin account.'
+    );
+  }
   const target = await resolveSiteTransferTarget(store, actor, site, body, config.environment);
   if (target instanceof Response) return target;
   const currentVisibility = site.route?.visibility || site.defaultVisibility;
@@ -301,6 +310,19 @@ async function transferSiteOwner(request, env, config, store, actor, siteId) {
 
   const visible = await store.getSiteForUser(updated.id, actor.userId, actor, config.environment);
   return jsonOk({ site: formatSite({ ...(visible || updated), route }) });
+}
+
+function sameOwner(site, target) {
+  return (
+    Boolean(target) && (site.ownerType || 'user') === target.ownerType && (site.ownerId || site.ownerUserId) === target.ownerId
+  );
+}
+
+function requestedOwnerAuthority(body) {
+  const ownerType = body?.ownerType === 'team' || body?.ownerType === 'user' ? body.ownerType : null;
+  if (!ownerType) return null;
+  const ownerId = normalizeRequiredString(ownerType === 'team' ? body.teamId || body.ownerId : body.ownerId || body.userId);
+  return ownerId ? { ownerType, ownerId } : null;
 }
 
 async function resolveSiteTransferTarget(store, actor, site, body, environment) {
@@ -688,7 +710,7 @@ function siteMetadataErrorResponse(error) {
       'SITE_TITLE_INVALID',
       'Site title is invalid.',
       400,
-      'Use 1-80 visible Unicode characters, or null to clear the title.',
+      'Use 1-80 visible Unicode characters, or null to clear the title.'
     );
   }
   if (code === 'SITE_SLUG_INVALID') {
@@ -696,7 +718,7 @@ function siteMetadataErrorResponse(error) {
       'SITE_SLUG_INVALID',
       'Site slug is invalid.',
       400,
-      'Use 2-50 lowercase letters, numbers, and hyphens; the first and last characters must be alphanumeric.',
+      'Use 2-50 lowercase letters, numbers, and hyphens; the first and last characters must be alphanumeric.'
     );
   }
   if (code === 'SITE_SLUG_RESERVED') {

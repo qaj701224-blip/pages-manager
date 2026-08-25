@@ -66,15 +66,18 @@ function usePreservedDialogScroll(open) {
     });
   }, [canRestoreScroll]);
 
-  const restoreFocusAndScroll = useCallback((event) => {
-    if (openRef.current || !canRestoreScroll()) return;
-    event.preventDefault();
-    const opener = canRestoreFocus() ? openerRef.current : null;
-    if (opener && typeof opener.focus === 'function') {
-      opener.focus({ preventScroll: true });
-    }
-    restoreScroll();
-  }, [canRestoreFocus, canRestoreScroll, restoreScroll]);
+  const restoreFocusAndScroll = useCallback(
+    (event) => {
+      if (openRef.current || !canRestoreScroll()) return;
+      event.preventDefault();
+      const opener = canRestoreFocus() ? openerRef.current : null;
+      if (opener && typeof opener.focus === 'function') {
+        opener.focus({ preventScroll: true });
+      }
+      restoreScroll();
+    },
+    [canRestoreFocus, canRestoreScroll, restoreScroll]
+  );
 
   return { restoreScroll, restoreFocusAndScroll };
 }
@@ -85,7 +88,11 @@ export function SelectField({ label, value, options, disabled = false, className
   return (
     <label className={className ? `field ${className}` : 'field'}>
       {label ? <span>{label}</span> : null}
-      <Select.Root value={rootValue} disabled={disabled} onValueChange={(nextValue) => onChange(radixValueToSelectValue(nextValue))}>
+      <Select.Root
+        value={rootValue}
+        disabled={disabled}
+        onValueChange={(nextValue) => onChange(radixValueToSelectValue(nextValue))}
+      >
         <Select.Trigger className="radix-select-trigger" aria-label={label}>
           <Select.Value placeholder={selected?.label} />
           <Select.Icon>
@@ -96,7 +103,11 @@ export function SelectField({ label, value, options, disabled = false, className
           <Select.Content className="radix-select-content" position="popper" sideOffset={6}>
             <Select.Viewport>
               {options.map((option) => (
-                <Select.Item className="radix-select-item" key={`${option.value}:${option.label}`} value={selectValueToRadixValue(option.value)}>
+                <Select.Item
+                  className="radix-select-item"
+                  key={`${option.value}:${option.label}`}
+                  value={selectValueToRadixValue(option.value)}
+                >
                   <Select.ItemIndicator className="radix-select-item__indicator">
                     <Check size={13} />
                   </Select.ItemIndicator>
@@ -156,14 +167,17 @@ export function MenuItem({ active = false, icon, children, onSelect }) {
 
 export function AppDialog({ open, title, eyebrow, children, footer, initialFocusRef, onOpenChange }) {
   const { restoreScroll, restoreFocusAndScroll } = usePreservedDialogScroll(open);
-  const handleOpenAutoFocus = useCallback((event) => {
-    const target = initialFocusRef?.current;
-    if (target?.isConnected && typeof target.focus === 'function') {
-      event.preventDefault();
-      target.focus({ preventScroll: true });
-    }
-    restoreScroll();
-  }, [initialFocusRef, restoreScroll]);
+  const handleOpenAutoFocus = useCallback(
+    (event) => {
+      const target = initialFocusRef?.current;
+      if (target?.isConnected && typeof target.focus === 'function') {
+        event.preventDefault();
+        target.focus({ preventScroll: true });
+      }
+      restoreScroll();
+    },
+    [initialFocusRef, restoreScroll]
+  );
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -205,6 +219,7 @@ export function ConfirmDialog({
   cancelLabel = '取消',
   confirming = false,
   error,
+  errorAction,
   icon,
   onOpenChange,
   onCancel,
@@ -218,13 +233,16 @@ export function ConfirmDialog({
   };
 
   return (
-    <AlertDialog.Root open={open} onOpenChange={(nextOpen) => {
-      if (nextOpen) {
-        onOpenChange?.(true);
-        return;
-      }
-      close();
-    }}>
+    <AlertDialog.Root
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (nextOpen) {
+          onOpenChange?.(true);
+          return;
+        }
+        close();
+      }}
+    >
       <AlertDialog.Portal>
         <AlertDialog.Overlay className="radix-dialog-overlay" />
         <AlertDialog.Content
@@ -247,7 +265,12 @@ export function ConfirmDialog({
               </span>
             </div>
             {description ? <AlertDialog.Description className="dialog-description">{description}</AlertDialog.Description> : null}
-            {error ? <div className="form-error">{error.code || error.message || error}</div> : null}
+            {error ? (
+              <div className="dialog-error" role="alert">
+                <div className="form-error">{error.code || error.message || error}</div>
+                {errorAction}
+              </div>
+            ) : null}
             <div className="dialog-actions">
               <AlertDialog.Cancel asChild>
                 <button className="secondary-button" type="button" disabled={confirming}>

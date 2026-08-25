@@ -157,7 +157,7 @@ test('transfer owner use case restores the previous owner with a newer policy sn
       target: { ownerType: 'team', ownerId: 'team_1', ownerUserId: 'usr_1' },
       compensateSnapshotFailure: true,
     }),
-    (error) => error.code === 'ROUTE_SNAPSHOT_WRITE_FAILED'
+    (error) => error.code === 'ROUTE_POLICY_REPAIR_REQUIRED' && error.cause?.code === 'ROUTE_SNAPSHOT_WRITE_FAILED'
   );
   assert.equal(transfers.length, 2);
   assert.equal(transfers[0].bumpPolicyVersion, true);
@@ -365,6 +365,99 @@ test('transfer owner use case rejects stale transport authority after entering t
       target: { ownerType: 'team', ownerId: 'team_target', ownerUserId: 'usr_old' },
     }),
     (error) => error.code === 'SITE_POLICY_CONFLICT'
+  );
+  assert.equal(mutated, false);
+});
+
+test('transfer owner rejects the current owner inside the lock without mutating policy or snapshots', async () => {
+  let mutated = false;
+  let routeRead = false;
+  let snapshotWritten = false;
+  const currentSite = {
+    id: 'site_1',
+    slug: 'docs',
+    environment: 'production',
+    ownerType: 'user',
+    ownerId: 'usr_owner',
+    ownerUserId: 'usr_owner',
+  };
+  const transfer = createTransferSiteOwner({
+    siteOwnership: {
+      ...ownershipSupport(),
+      async withSiteCommitLock(_environment, _siteId, callback) {
+        return callback({ lockId: 'lock_1', fencingToken: 2 });
+      },
+      async getSiteForUser() {
+        return currentSite;
+      },
+      async transferSiteOwner() {
+        mutated = true;
+      },
+      async getRouteBySiteId() {
+        routeRead = true;
+      },
+    },
+    routeSnapshots: {
+      async refreshActive() {
+        snapshotWritten = true;
+      },
+    },
+    clock: { now: () => '2027-01-15T08:00:00.000Z' },
+  });
+
+  await assert.rejects(
+    transfer({
+      environment: 'production',
+      site: currentSite,
+      actor: { type: 'user', userId: 'usr_owner' },
+      target: { ownerType: 'user', ownerId: 'usr_owner', ownerUserId: 'usr_owner' },
+    }),
+    (error) => error.code === 'SITE_TRANSFER_INVALID'
+  );
+  assert.equal(mutated, false);
+  assert.equal(routeRead, false);
+  assert.equal(snapshotWritten, false);
+});
+
+test('transfer owner requires source team admin after entering the lock', async () => {
+  let mutated = false;
+  const currentSite = {
+    id: 'site_1',
+    slug: 'docs',
+    environment: 'production',
+    ownerType: 'team',
+    ownerId: 'team_source',
+    ownerUserId: 'usr_publisher',
+    managementRole: 'publisher',
+  };
+  const transfer = createTransferSiteOwner({
+    siteOwnership: {
+      ...ownershipSupport(),
+      async withSiteCommitLock(_environment, _siteId, callback) {
+        return callback({ lockId: 'lock_1', fencingToken: 2 });
+      },
+      async getSiteForUser() {
+        return currentSite;
+      },
+      async transferSiteOwner() {
+        mutated = true;
+      },
+      async getRouteBySiteId() {
+        assert.fail('route must not be read');
+      },
+    },
+    routeSnapshots: { async refreshActive() {} },
+    clock: { now: () => '2027-01-15T08:00:00.000Z' },
+  });
+
+  await assert.rejects(
+    transfer({
+      environment: 'production',
+      site: currentSite,
+      actor: { type: 'user', userId: 'usr_publisher' },
+      target: { ownerType: 'user', ownerId: 'usr_target', ownerUserId: 'usr_target' },
+    }),
+    (error) => error.code === 'SITE_NOT_FOUND'
   );
   assert.equal(mutated, false);
 });

@@ -41,6 +41,7 @@ test('refreshes idle expiration without passing absolute expiration', () => {
 
   assert.equal(refreshed.lastSeenAt, now + 250);
   assert.equal(refreshed.expiresAt, now + 300);
+  assert.equal(refreshed.authTime, now);
 });
 
 test('rejects refresh after idle expiration, absolute expiration, or revocation', () => {

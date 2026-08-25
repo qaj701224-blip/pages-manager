@@ -6,20 +6,20 @@
 
 站点策略由网络 exposure 与身份 access mode 两个正交维度组成：
 
-| exposure | 含义 |
-| -------- | ---- |
-| `internal` | 请求必须命中公司网络 IP allowlist |
-| `public` | 互联网可达，但仍执行身份与 ACL 门禁 |
+| exposure   | 含义                                |
+| ---------- | ----------------------------------- |
+| `internal` | 请求必须命中公司网络 IP allowlist   |
+| `public`   | 互联网可达，但仍执行身份与 ACL 门禁 |
 
 现有 CLI/API 继续使用 visibility，并由兼容层映射到 access mode：
 
-| visibility | access mode | 是否需要登录 | 典型用途 |
-| ---------- | ----------- | ------------ | -------- |
-| `internal` | `anonymous` | 否 | 免登录报告、demo |
-| `org` | `org` | 是 | 企业成员站点 |
-| `acl` | `acl` | 是 | 项目私有预览 |
-| `owner` | `owner` | 是 | 管理预览、敏感站点 |
-| `disabled` | `disabled` | 不适用 | 下线、风控、事故处理 |
+| visibility | access mode | 是否需要登录 | 典型用途             |
+| ---------- | ----------- | ------------ | -------------------- |
+| `internal` | `anonymous` | 否           | 免登录报告、demo     |
+| `org`      | `org`       | 是           | 企业成员站点         |
+| `acl`      | `acl`       | 是           | 项目私有预览         |
+| `owner`    | `owner`     | 是           | 管理预览、敏感站点   |
+| `disabled` | `disabled`  | 不适用       | 下线、风控、事故处理 |
 
 发布权限与访问权限必须分开：
 
@@ -116,6 +116,21 @@ absolute TTL: 30 天
 - 修改 owner、collaborators 或 ACL。
 - 将站点 access mode 改为匿名，或修改高风险网络 exposure。当前 Admin exposure 操作要求平台管理员、理由和确认，但暂不强制 recent login。
 
+站点归属转移已经落实 recent login，并以 `AuthSessionDO.authTime` 作为唯一权威验证时间。该时间沿可信链路传递：
+
+```text
+AuthSessionDO.authTime
+  -> Console one-time code
+  -> internal console exchange
+  -> host-only console_session JWT
+  -> pages-console BFF X-Console-Auth-Time
+  -> pages-api validated console session
+```
+
+`pages-api` 要求 `authTime` 距当前时间不超过 900 秒，并只容忍最多 30 秒的未来时钟偏差；缺失、非整数、过期或超出未来偏差都返回 `401 CONSOLE_RECENT_LOGIN_REQUIRED`。旧 Console cookie 仍可读取普通页面，但不能执行归属转移。校验不得用 Console JWT `iat`、one-time code `issuedAt` 或 session `lastSeenAt` 代替 `authTime`。
+
+Console 收到该错误后，引导浏览器访问 `/api/console/auth/login?reauth=1&returnTo=<当前设置页>`。`reauth=1` 会让 `pages-auth` 跳过本地 `auth_session` 快捷授权，并向上游 SSO authorize 传递 `prompt=login`；只有重新完成 SSO callback 后才生成新的 `authTime`。回跳参数只允许受控的 Workspace/Admin 相对路径，且不携带待转移目标；用户需要重新选择并确认，避免重认证前的意图被静默执行。
+
 Cindy(原 XDMaker)插件 `xd-sites` 的请求不走换证：Cindy Desktop 宿主为每个 `/.xd-pages/api/*` 请求携带短时效 connection 断言(RS256 JWT,`typ=connection`,TTL 30 分钟),`pages-api` 逐请求经 Cindy JWKS 验签并按 `sub`(membershipId)映射/落库用户。断言 actor 只持有 `deploy:site`、`read:site`、`rollback:site` scope,不能创建或查看 access key;Console 创建/查看 key 的 recent-login 语义不因此改变。详见 `docs/api-boundary.md` 的「Cindy Connections 断言鉴权」。
 
 ### site_session
@@ -185,14 +200,14 @@ CLI 使用 XD Cell 平台签发的 access key，不直接持有心动 SSO `acces
 
 凭证边界：
 
-| 凭证            | 使用者           | 典型存储                          | 权限模型                           |
-| --------------- | ---------------- | --------------------------------- | ---------------------------------- |
-| `auth_session`  | 浏览器平台登录   | auth host HttpOnly cookie         | 用户登录态，不直接用于 CLI deploy  |
-| `site_session`  | 浏览器访问子站   | 子站 host HttpOnly cookie         | 子站访问，不用于管理 API           |
-| `CLI login access key` | 本地 CLI  | OS secret store                   | 用户身份 + `*` scope + env         |
-| `access key`    | CI / agent       | CI secret 或用户显式保存的 secret | PAT / TAT + 权限 + 作用范围 + expiry |
-| `service token` | 未来机器人身份   | 组织级 secret store / CI secret   | 暂不进入 MVP                       |
-| `internal JWT`  | router -> Worker | 请求内短期 header                 | 请求身份 envelope，不是 capability |
+| 凭证                   | 使用者           | 典型存储                          | 权限模型                             |
+| ---------------------- | ---------------- | --------------------------------- | ------------------------------------ |
+| `auth_session`         | 浏览器平台登录   | auth host HttpOnly cookie         | 用户登录态，不直接用于 CLI deploy    |
+| `site_session`         | 浏览器访问子站   | 子站 host HttpOnly cookie         | 子站访问，不用于管理 API             |
+| `CLI login access key` | 本地 CLI         | OS secret store                   | 用户身份 + `*` scope + env           |
+| `access key`           | CI / agent       | CI secret 或用户显式保存的 secret | PAT / TAT + 权限 + 作用范围 + expiry |
+| `service token`        | 未来机器人身份   | 组织级 secret store / CI secret   | 暂不进入 MVP                         |
+| `internal JWT`         | router -> Worker | 请求内短期 header                 | 请求身份 envelope，不是 capability   |
 
 CLI 本地状态分三层：
 
@@ -241,8 +256,7 @@ xd-cell deploy ./dist foo --token <token> --json
 本地 CLI 不应自动从环境变量或普通命令持久化 access key。只有用户明确执行 `xd-cell login --token <token>` 这类登录命令时，才允许在 `whoami` 验证后写入 secret store，并且输出不得回显 key 明文。普通 API 命令传 `--token <token>` 时，只用于本次请求，不读取本地 secret store，也不写入 profile。
 
 access key 创建站点只允许发生在部署事务内。当前 owner-scoped 个人 access key 已支持在首次 deploy 事务中创建个人站点，也支持按现有团队 membership 向团队发布。deploy
-复合归属转移、selected sites 多选范围和独立 transfer API 仍是后续模型，后续实现时必须同步 API、CLI、Console
-和测试。Access Token 分为 Personal Access Token（PAT）和
+复合归属转移和独立 transfer API 已实现；selected sites 多选范围仍是后续模型。Access Token 分为 Personal Access Token（PAT）和
 Team Access Token（TAT）；`site-scoped` 只是 Token 的作用范围，不是第三种 Token 类型。
 
 - PAT 默认代表用户本人。`xd-cell deploy <entry> <new-site>` 不带 `teamId` 时创建个人站点；显式带
@@ -250,8 +264,9 @@ Team Access Token（TAT）；`site-scoped` 只是 Token 的作用范围，不是
   通过后创建团队站点。
 - TAT 代表团队。它创建的新站点归属该团队；如果部署请求显式带 `teamId`，必须与 TAT 归属团队一致。
 - 作用范围为 `selected_sites` 的 Token 只能部署选中的站点，不能创建新站点，也不能隐式转移未选中站点。
-- deploy 可以复合站点归属变更：当已有站点 owner 与请求目标 owner 不一致时，API 必须校验 actor 对
-  源 owner 和目标 owner 都具备站点管理权限，通过后才允许先转移归属再发布，并写审计。
+- deploy 可以复合站点归属变更：当已有站点 owner 与请求目标 owner 不一致时，个人源站点要求当前
+  Owner，团队源站点要求源团队 `admin`；目标团队仍要求 actor 是 `publisher` / `admin`。通过后在最终
+  route activation 的 D1 事务中转移归属并发布，同时写审计。TAT 可以部署自身团队站点，但不能改变 Owner。
 
 普通 `POST /.xd-pages/api/sites` 建站 API 仍只接受 `cli_login` 用户 access key 或受控 console session，不对
 普通 PAT/TAT 开放。access key 的权限、作用范围、owner 归属、过期时间和 environment 仍以 `pages-api`
@@ -388,8 +403,9 @@ API 设计必须保持这些架构约束：
 - 用户和 AI agent 通过 `xd-cell` CLI / skill 使用平台，不手写部署 HTTP 请求。
 - 所有部署、回滚和 mutation 类请求必须有强认证、权限校验和幂等保护。
 - access key 权限和作用范围必须在 API 层强制执行；`read` 和 `publish` 不能互相越权。
-- `publish` 表示站点管理能力，可以覆盖发布、访问控制、运行配置、删除和归属转移；团队成员、团队角色、
-  Team Access Token、团队设置和团队删除等 admin 操作仍只允许 Console 登录态。
+- `publish` 表示发布、访问控制、运行配置和删除等站点管理能力；归属转移还要求个人 Owner 或源团队
+  `admin`，不能仅凭团队 `publisher` 或 TAT 完成。团队成员、团队角色、Team Access Token、团队设置和
+  团队删除等 admin 操作仍只允许 Console 登录态。
 - v2 pages-api 不公开 `/openapi.json`；v1 `apps/server` 的 `/openapi.json` 只属于旧 `workers.xd.team` 链路。
 
 `pages-auth` 的 `/.xd-pages/internal/consume-site-code` 不是公开 API，只能通过 Worker service binding 访问，并要求请求 host 为 `pages-auth.internal`；公网 `auth.pages.xd.team` / `auth-staging.pages.xd.team` 的同路径必须返回 404。CLI login poll 通过单向 `PAGES_API` binding 调用 `pages-api.internal/.xd-pages/internal/cli-access-keys` 换发 access key；历史 CLI JWT 已停止验证，`pages-api` 不再持有反向 `PAGES_AUTH` binding。`pages-api` 的 users、department hydration、CLI access key 和 hostname claim internal endpoints 同样只接受 `pages-api.internal` host，不能暴露公网。SSO callback 目前仍由 `pages-auth` 直接写共享 D1 身份元数据。

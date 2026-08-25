@@ -183,10 +183,7 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
     'Create a personal access key, optionally scoped to one site'
   );
   assert.ok(body.components.schemas.CliManagedDeploymentRequest);
-  assert.equal(
-    body.components.schemas.CliManagedDeploymentRequest.properties.metadata.contentMediaType,
-    'application/json'
-  );
+  assert.equal(body.components.schemas.CliManagedDeploymentRequest.properties.metadata.contentMediaType, 'application/json');
   assert.equal(
     body.components.schemas.CliManagedDeploymentRequest.properties.metadata.contentSchema.$ref,
     '#/components/schemas/DeploymentMetadata'
@@ -304,14 +301,27 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
     'HOSTNAME_CLAIM_CONFLICT',
     'SITE_CREATE_UNAVAILABLE',
   ]);
-  assert.ok(body.paths['/.xd-pages/api/sites/{id}/transfer'].post['x-error-codes'].includes('SITE_POLICY_CONFLICT'));
-  assert.ok(body.paths['/.xd-pages/api/sites/{id}/transfer'].post['x-error-codes'].includes('ROUTE_SNAPSHOT_WRITE_FAILED'));
+  assert.deepEqual(body.paths['/.xd-pages/api/sites/{id}/transfer'].post['x-error-codes'], [
+    'INVALID_JSON',
+    'SITE_TRANSFER_INVALID',
+    'SITE_VISIBILITY_INVALID',
+    'SITE_POLICY_CONFLICT',
+    'SITE_TRANSFER_FORBIDDEN',
+    'TEAM_REQUIRED',
+    'TEAM_NOT_FOUND',
+    'SITE_NOT_FOUND',
+    'SITE_TRANSFER_UNSUPPORTED',
+    'ROUTE_POLICY_REPAIR_REQUIRED',
+  ]);
+  assert.match(body.paths['/.xd-pages/api/sites/{id}/transfer'].post.description, /admin of the source team/);
+  assert.match(body.paths['/.xd-pages/api/sites/{id}/transfer'].post.description, /Team access tokens cannot change ownership/);
+  assert.match(body.paths['/.xd-pages/api/deployments'].post.description, /team site where the actor is an admin/);
   assert.ok(body.paths['/.xd-pages/api/sites/{id}/transfer'].post['x-error-codes'].includes('ROUTE_POLICY_REPAIR_REQUIRED'));
   assert.deepEqual(body.paths['/.xd-pages/api/sites/{id}/transfer'].post.responses[409], {
     description: 'Site changed concurrently',
   });
   assert.deepEqual(body.paths['/.xd-pages/api/sites/{id}/transfer'].post.responses[503], {
-    description: 'Site transfer store, route snapshot write, or recovery unavailable',
+    description: 'Site transfer store or route policy repair unavailable',
   });
   assert.equal(
     body.paths['/.xd-pages/api/sites/{site}/secrets'].put.requestBody.content['application/json'].schema.$ref,

@@ -95,6 +95,10 @@ test('buildCellSkill assembles xd-cell skill with bundled CLI and SDK dependency
     assert.match(docs, /node tools\/xd-cell-cli\/main\.js help deploy/);
     assert.match(docs, /tools\/xd-cell-cli\/main\.js help deploy/);
     assert.match(docs, /不要把 API token 写入本地状态/);
+    assert.match(docs, /用户登录凭证、Cindy Connection JWT 和 Personal Access Token（PAT）/);
+    assert.match(docs, /Public transfer API/);
+    assert.match(docs, /源团队 `admin`/);
+    assert.match(docs, /Team Access Token（TAT）只能继续发布其自身团队站点，不能改变 Owner/);
     assert.doesNotMatch(docs, /--access-key/);
     assert.match(docs, /@xd-cell\/cli/);
     assert.match(docs, /@xd-cell\/worker-sdk/);
@@ -141,7 +145,10 @@ test('buildCellSkill assembles xd-cell skill with bundled CLI and SDK dependency
     assert.match(docs, /不要从 skill 构建产物中寻找 `tools\/worker-sdk`/);
     assert.doesNotMatch(docs, /生成或复制本地 helper/);
     assert.doesNotMatch(docs, /xd-skill publish|publish --help|发布能力|发布用法/);
-    assert.doesNotMatch(docs, /优先使用当前环境里的 `xd-cell`|优先 `xd-cell`|确认适用后优先使用仓库版本|确认版本适用后使用项目版本/);
+    assert.doesNotMatch(
+      docs,
+      /优先使用当前环境里的 `xd-cell`|优先 `xd-cell`|确认适用后优先使用仓库版本|确认版本适用后使用项目版本/
+    );
     assert.doesNotMatch(
       docs,
       /npm i -g @xd\/pages-cli|pnpm add -g @xd\/pages-cli|npm i -g @xd-cell\/cli|pnpm add -g @xd-cell\/cli/
@@ -191,10 +198,7 @@ async function readPackageVersion() {
 }
 
 async function writeFixturePackage({ cliDistDir, workerSdkPackageDir }) {
-  await writeFile(
-    path.join(cliDistDir, 'main.js'),
-    "#!/usr/bin/env node\nconsole.log('pages fixture');\n"
-  );
+  await writeFile(path.join(cliDistDir, 'main.js'), "#!/usr/bin/env node\nconsole.log('pages fixture');\n");
   await writeFile(
     path.join(cliDistDir, 'package.json'),
     JSON.stringify(

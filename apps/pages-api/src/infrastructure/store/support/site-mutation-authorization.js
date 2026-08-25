@@ -35,8 +35,16 @@ export function siteMutationExpectedStateStatements(store, { siteId, environment
 }
 
 export function siteTransferInvariantStatements(store, { siteId, environment, target, expectedRoute, targetVisibility }) {
-  const clauses = ['id = ?', 'environment = ?', 'deleted_at IS NULL'];
-  const binds = [siteId, environment];
+  const clauses = [
+    'id = ?',
+    'environment = ?',
+    'deleted_at IS NULL',
+    `NOT (
+      COALESCE(owner_type, 'user') = ?
+      AND COALESCE(owner_id, owner_user_id) = ?
+    )`,
+  ];
+  const binds = [siteId, environment, target.ownerType, target.ownerId];
   if (target.ownerType === 'user') {
     clauses.push(`EXISTS (
       SELECT 1 FROM users
@@ -86,7 +94,8 @@ function sourceAuthorizationClause(authorization, { environment, siteId, now }) 
   }
 
   const actorUserId = authorization.actorUserId;
-  const siteAccess = userSiteAccessClause(actorUserId, environment);
+  const requiresTeamAdmin = authorization.operation === 'site_owner_transfer';
+  const siteAccess = userSiteAccessClause(actorUserId, environment, { requiresTeamAdmin });
   if (authorization.kind === 'user') return siteAccess;
 
   if (authorization.kind === 'cli_login') {
@@ -134,6 +143,7 @@ function sourceAuthorizationClause(authorization, { environment, siteId, now }) 
       binds: [authorization.accessKeyId, environment, siteId, now, authorization.ownerType, authorization.ownerId, siteId],
     };
     if (authorization.ownerType === 'team') {
+      if (requiresTeamAdmin) return { sql: '0', binds: [] };
       return combineClauses(keyIsCurrent, {
         sql: `sites.owner_type = 'team' AND sites.owner_id = ? AND EXISTS (
           SELECT 1 FROM teams
@@ -152,14 +162,14 @@ function sourceAuthorizationClause(authorization, { environment, siteId, now }) 
         )`,
         binds: [authorization.ownerId],
       },
-      userSiteAccessClause(authorization.ownerId, environment)
+      userSiteAccessClause(authorization.ownerId, environment, { requiresTeamAdmin })
     );
   }
 
   return { sql: '0', binds: [] };
 }
 
-function userSiteAccessClause(userId, environment) {
+function userSiteAccessClause(userId, environment, { requiresTeamAdmin = false } = {}) {
   return {
     sql: `EXISTS (
       SELECT 1 FROM users
@@ -176,7 +186,8 @@ function userSiteAccessClause(userId, environment) {
         AND EXISTS (
           SELECT 1 FROM team_members
           WHERE team_members.team_id = sites.owner_id AND team_members.user_id = ?
-            AND team_members.removed_at IS NULL AND team_members.role IN ('publisher', 'admin')
+            AND team_members.removed_at IS NULL
+            AND team_members.role ${requiresTeamAdmin ? "= 'admin'" : "IN ('publisher', 'admin')"}
         )
       )
     )`,
