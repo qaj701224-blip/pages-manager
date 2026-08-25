@@ -585,9 +585,9 @@ v2 runtime secret 注入使用 `scripts/put-pages-v2-secrets.sh <app>`。它会�
 
 `SLACK_PAGES_ALERT_MENTION_USER_ID` 是 `pages-api` wrangler template 中固定的非敏感告警接收人 id，用于 legacy slot 容量告警正文里的单次 Slack mention。`PAGES_NORMAL_WORKER_SLOT_EXPAND_BY` 只作为历史兼容配置和测试输入保留，当前 router 部署不再用它新增 slot。
 
-`SITE_METADATA_MUTATIONS_ENABLED` 是两个 pages-api 环境模板中 Git 可审查的止损开关，默认均为 `false`，且只有精确 `true` 才开放名称/URL mutation；显式携带 `title` 的部署（包括 replay）同样受此开关限制，省略 `title` 的部署不受影响。它不是 GitHub Environment Var，也不影响 metadata 读取、兼容 writer 或 scheduled reconciliation。本期缩略图延期，不新增 R2 binding。
+`SITE_METADATA_MUTATIONS_ENABLED` 是两个 pages-api 环境模板中 Git 可审查的止损开关，当前默认均为 `true`，且只有精确 `true` 才开放名称/URL mutation；显式携带 `title` 的部署（包括 replay）同样受此开关限制，省略 `title` 的部署不受影响。它不是 GitHub Environment Var，也不影响 metadata 读取、兼容 writer 或 scheduled reconciliation。紧急止损时在对应环境模板中改为 `false` 并重新部署 pages-api。本期缩略图延期，不新增 R2 binding。
 
-站点 metadata 首次 rollout 必须拆成两阶段：先应用 `0021_site_metadata.sql`，依次部署兼容的 kv-gateway、pages-router、flag 关闭的 pages-api、pages-console 与 CLI；在 staging 验证 v2/v3/v4 reader、连续 rename、旧地址不跳转且经过 pointer 清理与 5 分钟 hold 后可复用、runtime data 和 deploy/rollback 后，再分别修改对应环境模板打开 flag。production 仍只通过 `Deploy XD Cell Production` 手动发布。新版 pages-api 上线后，任意 deploy、rollback、访问策略或 runtime config snapshot 刷新都可能写出首个 schema v4 pointer；从这一刻起，即使尚未发生 slug rename，也不得降级到不认识 schema v4 / namespace v2 的旧 pages-router 或 pages-kv-gateway。若尚未发生 slug rename 且必须回滚 producer，只回滚 pages-api，并保留新版 pages-router 和 pages-kv-gateway。首次 slug rename 后 pages-api、pages-router 与 pages-kv-gateway 均只能 roll forward；异常时关闭 flag，不能恢复不认识 `dataNamespace` 或旧 pointer 清理状态的旧 writer。
+站点 metadata rollout 必须先应用 `0021_site_metadata.sql`，再由 `component=all` workflow 依次部署兼容的 kv-gateway、pages-router、pages-api、pages-auth 与 pages-console，保持 consumer-before-producer；当前 CLI 不发送 `title`，无需随该开关部署。当前 production 与 staging 模板均已打开 flag；新建或重建环境若尚未完成 v2/v3/v4 reader、连续 rename、旧地址不跳转且经过 pointer 清理与 5 分钟 hold 后可复用、runtime data 和 deploy/rollback 验收，必须先在对应模板中关闭 flag。production 仍只通过 `Deploy XD Cell Production` 手动发布。新版 pages-api 上线后，任意 deploy、rollback、访问策略或 runtime config snapshot 刷新都可能写出首个 schema v4 pointer；从这一刻起，即使尚未发生 slug rename，也不得降级到不认识 schema v4 / namespace v2 的旧 pages-router 或 pages-kv-gateway。若尚未发生 slug rename 且必须回滚 producer，只回滚 pages-api，并保留新版 pages-router 和 pages-kv-gateway。首次 slug rename 后 pages-api、pages-router 与 pages-kv-gateway 均只能 roll forward；异常时关闭 flag，不能恢复不认识 `dataNamespace` 或旧 pointer 清理状态的旧 writer。
 
 ### 配置校验
 
@@ -604,7 +604,7 @@ v2 runtime secret 注入使用 `scripts/put-pages-v2-secrets.sh <app>`。它会�
 - signing key registry 中的 active kid 必须能找到对应 secret。
 - `CINDY_CONNECTION_ISSUERS` 必须是逗号分隔的 https origin 列表；`CINDY_CONNECTION_AUDIENCE` 必须是 `<orgSlug>:<plugin-slug>` 格式；production 的 issuer 列表不得包含 dev issuer(`auth-dev.*`)。renderer 必须 fail closed。
 - `PAGES_EXECUTION_MODE` 必须在 `pages-api` 和 `pages-router` 对应环境 template 中各出现一次，只能是 `normal-worker-slot` 或 `wfp`；不得从 GitHub Environment Vars 注入。
-- `SITE_METADATA_MUTATIONS_ENABLED` 必须在 production/staging pages-api template 中显式存在并默认关闭；启用时必须按上述 consumer-before-producer 顺序完成当前环境验收。
+- `SITE_METADATA_MUTATIONS_ENABLED` 必须在 production/staging pages-api template 中显式存在；当前默认启用，紧急止损或新环境尚未完成上述 consumer-before-producer 验收时改为 `false`。
 - `WFP_DISPATCH_NAMESPACE` 必须与 `PAGES_ENV` 匹配，不能 staging/prod 串用。
 - `PAGES_USER_WORKER_VPC_TUNNEL_ID` 是 `pages-api` / `pages-auth` 的可选渲染 token，必须从 GitHub Environment Variable 注入；未配置时渲染为空字符串，且不会渲染 `XD_OFFICE_NET` VPC Network binding。
 - `XDS_OPENAI_TOKEN` 必须作为 GitHub Environment secret 注入 `pages-api` 和 `pages-auth` runtime；真实值不得写入 vars、wrangler template、日志或文档示例值。

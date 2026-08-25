@@ -22,7 +22,7 @@
 - `title: null` 清空展示名称；`displayName` 在 title 为空时回退到 slug。`xd-cell.config.json.name` 仍表示部署定位用的 slug，不表示展示名称。
 - 受控集成可在部署 multipart metadata 中显式传 `title`：省略时不修改既有站点名称，字符串经同一 metadata 规则规范化后设置，`null` 清空；新站点在创建事务中写入该值。当前 `xd-cell` CLI 不发送 `title`，也不新增对应 CLI 参数或配置字段。
 - slug 改名不创建 deployment 或 version，也不改变站点 ID、权限、active version、runtime config 或 runtime data。旧 URL 不跳转：旧 pointer 确认删除后进入 5 分钟安全期，到期后旧 slug 可被其它站点使用。
-- 含 `slug` 的 mutation 在路由同步未完成时返回 `202` 与 `routingStatus: pending`；title-only 成功响应固定为 `200`，但既有 slug 同步尚未完成时仍可能携带 `routingStatus: pending`。调用方应轮询当前站点直到 `ready`。紧急止损使用默认关闭的 `SITE_METADATA_MUTATIONS_ENABLED`：它也拦截显式携带 `title` 的部署（包括 replay），但省略 `title` 的既有部署不受影响。
+- 含 `slug` 的 mutation 在路由同步未完成时返回 `202` 与 `routingStatus: pending`；title-only 成功响应固定为 `200`，但既有 slug 同步尚未完成时仍可能携带 `routingStatus: pending`。调用方应轮询当前站点直到 `ready`。`SITE_METADATA_MUTATIONS_ENABLED` 当前在 production 与 staging 模板中默认启用；紧急止损时可在对应模板中改为 `false`。关闭后它也拦截显式携带 `title` 的部署（包括 replay），但省略 `title` 的既有部署不受影响。
 - 缩略图上传与托管延期；当前请求、响应和 Console 均不暴露缩略图字段，也不为该能力新增 R2 binding。
 
 ## 真相源

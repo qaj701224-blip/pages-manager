@@ -110,8 +110,8 @@ test('production and staging templates preserve the pages-api Cloudflare topolog
   assert.equal(tomlString(STAGING_TEMPLATE, 'PAGES_ENV'), 'staging');
   assert.equal(tomlString(PRODUCTION_TEMPLATE, 'WFP_DISPATCH_NAMESPACE'), 'xd-cell-workers-production');
   assert.equal(tomlString(STAGING_TEMPLATE, 'WFP_DISPATCH_NAMESPACE'), 'xd-cell-workers-staging');
-  assert.equal(tomlString(PRODUCTION_TEMPLATE, 'SITE_METADATA_MUTATIONS_ENABLED'), 'false');
-  assert.equal(tomlString(STAGING_TEMPLATE, 'SITE_METADATA_MUTATIONS_ENABLED'), 'false');
+  assert.equal(tomlString(PRODUCTION_TEMPLATE, 'SITE_METADATA_MUTATIONS_ENABLED'), 'true');
+  assert.equal(tomlString(STAGING_TEMPLATE, 'SITE_METADATA_MUTATIONS_ENABLED'), 'true');
   assert.notEqual(tomlString(PRODUCTION_TEMPLATE, 'database_name'), tomlString(STAGING_TEMPLATE, 'database_name'));
 });
 
