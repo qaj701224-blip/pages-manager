@@ -217,6 +217,7 @@ test('directory proxies to pages-api internal service binding without forged con
       headers: {
         'X-Console-Admin': 'true',
         'X-Console-User-Id': 'attacker',
+        'X-Console-Auth-Time': String(NOW),
       },
     }),
     env({
@@ -227,6 +228,7 @@ test('directory proxies to pages-api internal service binding without forged con
           bff: apiRequest.headers.get('X-Console-BFF'),
           userId: apiRequest.headers.get('X-Console-User-Id'),
           admin: apiRequest.headers.get('X-Console-Admin'),
+          authTime: apiRequest.headers.get('X-Console-Auth-Time'),
         });
         return Response.json({ sites: [] }, { status: 200, headers: { 'Cache-Control': 'private' } });
       }),
@@ -242,6 +244,7 @@ test('directory proxies to pages-api internal service binding without forged con
       bff: 'pages-console',
       userId: null,
       admin: null,
+      authTime: null,
     },
   ]);
 });
@@ -251,7 +254,7 @@ test('workspace proxy forwards only signed session identity to pages-api', async
   const response = await worker.fetch(
     request('https://workers.xd.team/api/console/workspace/sites?owner=personal', {
       cookie,
-      headers: { 'X-Console-User-Id': 'attacker' },
+      headers: { 'X-Console-User-Id': 'attacker', 'X-Console-Auth-Time': String(NOW) },
     }),
     env({
       PAGES_API: apiBinding(async (apiRequest) => {
@@ -259,6 +262,7 @@ test('workspace proxy forwards only signed session identity to pages-api', async
         assert.equal(apiRequest.headers.get('X-Console-User-Id'), 'user-1');
         assert.equal(apiRequest.headers.get('X-Console-Email'), 'user@example.com');
         assert.equal(apiRequest.headers.get('X-Console-Admin'), null);
+        assert.equal(apiRequest.headers.get('X-Console-Auth-Time'), null);
         return Response.json({ sites: [] }, { status: 200 });
       }),
     })
@@ -425,11 +429,20 @@ test('site management proxy forwards access and runtime config writes to pages-a
     }),
     apiEnv
   );
+  const metadataResponse = await worker.fetch(
+    request('https://workers.xd.team/api/console/sites/site_1/metadata', {
+      method: 'PATCH',
+      headers: writeHeaders,
+      body: JSON.stringify({ title: '产品文档' }),
+    }),
+    apiEnv
+  );
 
   assert.equal(accessResponse.status, 200, await accessResponse.clone().text());
   assert.equal(varResponse.status, 200, await varResponse.clone().text());
   assert.equal(secretResponse.status, 200, await secretResponse.clone().text());
   assert.equal(settingsResponse.status, 200, await settingsResponse.clone().text());
+  assert.equal(metadataResponse.status, 200, await metadataResponse.clone().text());
   assert.deepEqual(calls, [
     {
       url: 'https://pages-api.internal/.xd-pages/api/console/sites/site_1/access',
@@ -462,6 +475,14 @@ test('site management proxy forwards access and runtime config writes to pages-a
       bff: 'pages-console',
       contentType: 'application/json',
       body: { ownerType: 'team', teamId: 'team_1' },
+    },
+    {
+      url: 'https://pages-api.internal/.xd-pages/api/console/sites/site_1/metadata',
+      method: 'PATCH',
+      userId: 'user-1',
+      bff: 'pages-console',
+      contentType: 'application/json',
+      body: { title: '产品文档' },
     },
   ]);
 });
@@ -589,6 +610,7 @@ test('auth callback exchanges code, sets host-only console cookie, and redirects
   assert.equal(verified.email, 'user@example.com');
   assert.equal(verified.employeeStatus, 'active');
   assert.equal(verified.sessionVersion, 2);
+  assert.equal(verified.authTime, undefined);
   assert.equal(verified.exp - verified.iat, 7 * 24 * 60 * 60);
 });
 

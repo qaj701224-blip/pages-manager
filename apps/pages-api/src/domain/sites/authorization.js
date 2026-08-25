@@ -13,6 +13,18 @@ export function actorCanManageSite(actor, site) {
   return (site.ownerId || site.ownerUserId) === actor.userId;
 }
 
+export function actorCanTransferSiteOwnership(actor, site) {
+  if (!actor || !site) return false;
+  if (actor.type === 'access_key') {
+    if (actor.siteId && actor.siteId !== site.id) return false;
+    if (!actorHasPublishScope(actor)) return false;
+    if ((actor.ownerType || 'user') === 'team') return false;
+  }
+  if ((site.ownerType || 'user') === 'team') return site.managementRole === 'admin';
+  const actorOwnerId = actor.type === 'access_key' ? actor.ownerId || actor.userId : actor.userId;
+  return (site.ownerId || site.ownerUserId) === actorOwnerId;
+}
+
 export function actorHasPublishScope(actor) {
   return actor?.type !== 'access_key' || actor.scopes.includes('deploy:site') || actor.scopes.includes('*');
 }

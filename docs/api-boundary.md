@@ -8,12 +8,30 @@
 
 - `apps/pages-api` 不公开 `/openapi.json` 或 `/.xd-pages/api/openapi.json`。
 - `apps/pages-api/src/openapi.js` 是开发期 API 合约源码，只服务实现、测试和受控内部集成。
-- 受控集成可使用经过认证的站点级 vars/secrets read/mutation API；读取与写入都要求站点管理权限，vars 读取返回非敏感明文值，secret 读取只返回名称、revision 和更新时间；普通用户和 agent 仍通过 `xd-cell` 操作，OpenAPI 不因此成为公开入口。
+- 受控集成可使用经过认证的站点级 vars/secrets read/mutation API 和名称/URL mutation API；运行配置读取与写入都要求站点管理权限，vars 读取返回非敏感明文值，secret 读取只返回名称、revision 和更新时间；普通用户和 agent 仍优先通过 `xd-cell` 与 Console 操作，OpenAPI 不因此成为公开入口。
 - 站点 `visibility` 继续是 CLI/API 兼容字段，其中 `internal` 映射为匿名 access mode；网络 `exposure` 是独立的 Platform Admin 能力，普通用户 visibility、ACL、deploy 和 rollback 请求不得修改它。
 - API 文档不复刻不完整 endpoint 清单；需要改 API 行为时，以 handler、`apps/pages-api/src/openapi.js` 和 focused `node:test` 一起更新为准。
 - 用户可见发布、状态、访问控制和回滚流程以 CLI help 与 `apps/pages-skill/skill/SKILL.md` 为准。
 - v1 `apps/server` 已进入墓碑模式；除精确的 `GET/HEAD /health` 外，`/deploy`、`/list`、`/site/:name`、`/openapi.json`、Markdown 路由和未知路径都返回 `410 LEGACY_API_RETIRED`，不再提供旧 OpenAPI 或管理能力。
 - Cindy 客户端使用 `xd-sites` 插件；若找不到插件，先更新 Cindy 客户端。非 Cindy 客户端使用 `https://skills.xindong.com/skills/xd-cell` 的 skill。
+
+## 站点名称与 URL
+
+- 认证 Public API 使用 `PATCH /.xd-pages/api/sites/{id}/metadata` 独立修改可选展示名称 `title` 或 canonical URL `slug`；Workspace Console 与 Admin Console 复用同一 application use case 和输入校验，但三个入口分别执行自己的授权边界。
+- Public API mutation 要求站点管理权限；access key 还必须具备 `deploy:site` 或 `*` scope，无权访问或管理时统一返回 `404 SITE_NOT_FOUND`。Workspace Console mutation 要求个人站点 Owner 或团队 publisher/admin；可见但无发布权限时返回 `403 SITE_PUBLISHER_REQUIRED`，非成员仍返回 `404 SITE_NOT_FOUND`。Admin Console mutation 要求 `platform admin`，不要求站点成员关系。
+- `title: null` 清空展示名称；`displayName` 在 title 为空时回退到 slug。`xd-cell.config.json.name` 仍表示部署定位用的 slug，不表示展示名称。
+- 受控集成可在部署 multipart metadata 中显式传 `title`：省略时不修改既有站点名称，字符串经同一 metadata 规则规范化后设置，`null` 清空；新站点在创建事务中写入该值。当前 `xd-cell` CLI 不发送 `title`，也不新增对应 CLI 参数或配置字段。
+- slug 改名不创建 deployment 或 version，也不改变站点 ID、权限、active version、runtime config 或 runtime data。旧 URL 不跳转：旧 pointer 确认删除后进入 5 分钟安全期，到期后旧 slug 可被其它站点使用。
+- 含 `slug` 的 mutation 在路由同步未完成时返回 `202` 与 `routingStatus: pending`；title-only 成功响应固定为 `200`，但既有 slug 同步尚未完成时仍可能携带 `routingStatus: pending`。调用方应轮询当前站点直到 `ready`。`SITE_METADATA_MUTATIONS_ENABLED` 当前在 production 与 staging 模板中默认启用；紧急止损时可在对应模板中改为 `false`。关闭后它也拦截显式携带 `title` 的部署（包括 replay），但省略 `title` 的既有部署不受影响。
+- 缩略图上传与托管延期；当前请求、响应和 Console 均不暴露缩略图字段，也不为该能力新增 R2 binding。
+
+## 站点归属转移
+
+- Public transfer API `POST /.xd-pages/api/sites/{id}/transfer` 只允许当前个人 Owner，或源团队 `admin` 发起；团队 `publisher` 可以继续管理和发布团队站点，但不能转移其资产归属。
+- Public API 转给个人时仍只能转给已认证 actor 自己；转给团队时，actor 必须是目标团队的 `publisher` 或 `admin`。Team access token（TAT）不能改变 Owner；部署自身团队的既有站点不视为归属转移。
+- `xd-cell deploy --team <teamId>` 创建团队站点时仍接受目标团队 `publisher/admin`。若既有站点需要随部署转移，个人源站点要求当前 Owner，团队源站点要求源团队 `admin`，并在 route activation 的 D1 事务内再次复核。
+- 与当前 Owner 相同的 transfer 请求返回 `400 SITE_TRANSFER_INVALID`，不会递增 `policyVersion`、刷新 route snapshot 或写入 `site.owner.transfer` 审计。
+- Workspace Console 的归属转移要求个人 Owner 或源团队 `admin`，Admin Console 要求 platform admin；两者使用有效 Console session、可信 BFF 身份、CSRF 校验和显式二次确认，不额外要求 recent login，也不依赖 `authTime` 或 `reauth=1`。
 
 ## 真相源
 

@@ -201,12 +201,13 @@ async function handleSet(body, claims, env, route) {
   const wrappedMetadata = {
     user: metadata ?? null,
     __xd_pages: {
-      schemaVersion: 1,
+      schemaVersion: claims.namespaceVersion === 2 ? 2 : 1,
       siteId: claims.siteId,
       type,
       updatedAt: new Date().toISOString(),
     },
   };
+  if (claims.namespaceVersion === 2) wrappedMetadata.__xd_pages.dataNamespace = claims.dataNamespace;
 
   if (route.dataScope === 'user') {
     wrappedMetadata.__xd_pages.userId = claims.sub;
@@ -314,8 +315,10 @@ async function handleList(body, claims, env, route) {
 
 function listCursorContext({ claims, dataScope, prefix, limit }) {
   return {
+    cursorVersion: claims.namespaceVersion === 2 ? 2 : 1,
     env: claims.env,
     siteId: claims.siteId,
+    dataNamespace: claims.dataNamespace,
     siteUuid: claims.siteUuid,
     dataScope,
     sub: dataScope === 'user' ? claims.sub : null,
@@ -330,18 +333,16 @@ async function encodeListCursor(providerCursor, context, env) {
   if (!firstKey) throw new Error('Capability key registry is empty');
 
   const [kid, key] = firstKey;
-  const payload = cursorEncoder.encode(
-    JSON.stringify({
-      v: 1,
-      c: providerCursor,
-      ...context,
-    })
-  );
+  const cursorVersion = context.cursorVersion;
+  const payloadContext = { ...context };
+  delete payloadContext.cursorVersion;
+  if (cursorVersion === 1) delete payloadContext.dataNamespace;
+  const payload = cursorEncoder.encode(JSON.stringify({ v: cursorVersion, c: providerCursor, ...payloadContext }));
   const nonce = crypto.getRandomValues(new Uint8Array(12));
   const ciphertext = await encryptListCursor(key.secret, nonce, payload);
 
   return [
-    'v1',
+    `v${cursorVersion}`,
     base64UrlEncodeBytes(cursorEncoder.encode(kid)),
     base64UrlEncodeBytes(nonce),
     base64UrlEncodeBytes(ciphertext),
@@ -353,9 +354,9 @@ async function decodeListCursor(cursor, context, env) {
 
   try {
     const parts = cursor.split('.');
-    if (parts.length !== 4 || parts[0] !== 'v1') return invalidListCursor();
+    if (parts.length !== 4 || (parts[0] !== 'v1' && parts[0] !== 'v2')) return invalidListCursor();
 
-    const [, encodedKid, encodedNonce, encodedCiphertext] = parts;
+    const [encodedVersion, encodedKid, encodedNonce, encodedCiphertext] = parts;
     const kid = cursorDecoder.decode(base64UrlDecodeBytes(encodedKid));
     const key = parseKeyRegistry(env).get(kid);
     if (!key) return invalidListCursor();
@@ -366,6 +367,7 @@ async function decodeListCursor(cursor, context, env) {
       base64UrlDecodeBytes(encodedCiphertext)
     );
     const payload = JSON.parse(cursorDecoder.decode(plaintext));
+    if (encodedVersion !== `v${payload?.v}`) return invalidListCursor();
     if (!isValidListCursorPayload(payload, context)) return invalidListCursor();
 
     return { value: payload.c };
@@ -403,15 +405,21 @@ async function importListCursorAesKey(secret) {
 }
 
 function isValidListCursorPayload(payload, context) {
+  const namespaceMatches =
+    payload?.v === 1
+      ? payload.siteId === context.dataNamespace
+      : payload?.v === 2 &&
+        payload.siteId === context.siteId &&
+        payload.dataNamespace === context.dataNamespace;
   return (
     payload &&
     typeof payload === 'object' &&
     !Array.isArray(payload) &&
-    payload.v === 1 &&
+    (payload.v === 1 || payload.v === 2) &&
     typeof payload.c === 'string' &&
     payload.c !== '' &&
     payload.env === context.env &&
-    payload.siteId === context.siteId &&
+    namespaceMatches &&
     payload.siteUuid === context.siteUuid &&
     payload.dataScope === context.dataScope &&
     payload.sub === context.sub &&
@@ -451,21 +459,21 @@ function base64UrlDecodeBytes(value) {
 function storageKeyForClaims(claims, key, dataScope) {
   if (dataScope === 'user') {
     return buildUserStorageKey({
-      siteSlug: claims.siteId,
+      siteSlug: claims.dataNamespace,
       siteUuid: claims.siteUuid,
       userId: claims.sub,
       userKey: key,
     });
   }
 
-  return buildStorageKey({ siteSlug: claims.siteId, siteUuid: claims.siteUuid, userKey: key });
+  return buildStorageKey({ siteSlug: claims.dataNamespace, siteUuid: claims.siteUuid, userKey: key });
 }
 
 function storageRootPrefixForClaims(claims, dataScope) {
   if (dataScope === 'user') {
-    return `s/${claims.siteId}--${claims.siteUuid}/u/${claims.sub}/k/`;
+    return `s/${claims.dataNamespace}--${claims.siteUuid}/u/${claims.sub}/k/`;
   }
-  return `s/${claims.siteId}--${claims.siteUuid}/k/`;
+  return `s/${claims.dataNamespace}--${claims.siteUuid}/k/`;
 }
 
 function resolveStorageKeyForClaims(claims, key, dataScope) {

@@ -6,14 +6,14 @@
 
 production 和 staging 使用显式环境域名，不通过 query、header 或同一个 API host 切环境：
 
-| 用途               | production             | staging                        |
-| ------------------ | ---------------------- | ------------------------------ |
-| 控制面 API         | `api.pages.xd.team`    | `api-staging.pages.xd.team`    |
-| 认证服务           | `auth.pages.xd.team`   | `auth-staging.pages.xd.team`   |
-| 新建子站默认域名  | `{name}.workers.xd.team` | `{name}-staging.workers.xd.team` |
-| 既有 v2 子站域名  | `{name}.pages.xd.team` | `{name}-staging.pages.xd.team` |
-| 目标 WFP namespace | `xd-cell-workers-production` | `xd-cell-workers-staging`      |
-| 普通 Worker slot   | `pages-v2-production-slot-*` | `pages-v2-staging-slot-*` |
+| 用途               | production                   | staging                          |
+| ------------------ | ---------------------------- | -------------------------------- |
+| 控制面 API         | `api.pages.xd.team`          | `api-staging.pages.xd.team`      |
+| 认证服务           | `auth.pages.xd.team`         | `auth-staging.pages.xd.team`     |
+| 新建子站默认域名   | `{name}.workers.xd.team`     | `{name}-staging.workers.xd.team` |
+| 既有 v2 子站域名   | `{name}.pages.xd.team`       | `{name}-staging.pages.xd.team`   |
+| 目标 WFP namespace | `xd-cell-workers-production` | `xd-cell-workers-staging`        |
+| 普通 Worker slot   | `pages-v2-production-slot-*` | `pages-v2-staging-slot-*`        |
 
 长期路由目标：
 
@@ -52,14 +52,14 @@ foo-staging.workers.xd.team -> environment=staging
 
 `pages-edge-router-thin` 的 hostname 分流必须使用显式 allowlist 和严格 parser：
 
-| host pattern                                  | target                               |
-| --------------------------------------------- | ------------------------------------ |
-| `api.pages.xd.team` / `auth.pages.xd.team`    | fail closed，应该由 exact route 处理 |
-| `api-staging.pages.xd.team` / `auth-staging.pages.xd.team` | fail closed，应该由 exact route 处理 |
-| workers family 平台保留 host                  | fail closed，应该由 exact route 或 v1 处理 |
-| `{slug}-staging.pages.xd.team` / `{slug}-staging.workers.xd.team` | `pages-router-staging` |
-| `{slug}.pages.xd.team` / `{slug}.workers.xd.team` | `pages-router`                    |
-| 保留 slug、非法 host、非受信后缀              | fail closed                          |
+| host pattern                                                      | target                                     |
+| ----------------------------------------------------------------- | ------------------------------------------ |
+| `api.pages.xd.team` / `auth.pages.xd.team`                        | fail closed，应该由 exact route 处理       |
+| `api-staging.pages.xd.team` / `auth-staging.pages.xd.team`        | fail closed，应该由 exact route 处理       |
+| workers family 平台保留 host                                      | fail closed，应该由 exact route 或 v1 处理 |
+| `{slug}-staging.pages.xd.team` / `{slug}-staging.workers.xd.team` | `pages-router-staging`                     |
+| `{slug}.pages.xd.team` / `{slug}.workers.xd.team`                 | `pages-router`                             |
+| 保留 slug、非法 host、非受信后缀                                  | fail closed                                |
 
 thin router 不能根据 query、header、cookie 或用户输入切环境。
 
@@ -148,23 +148,23 @@ production 还应保留 `-staging` 后缀，避免用户创建看起来像 stagi
 
 系统 API 和平台 callback 使用固定 host + 固定路径，避免 CLI、router 和 v1 文档各自发明路径：
 
-| host                         | endpoint                     | 用途                        | 公开性                         |
-| ---------------------------- | ---------------------------- | --------------------------- | ------------------------------ |
-| `api.pages.xd.team`          | `/skill.md`、`/readme.md`    | agent / 用户文档            | public-docs                    |
-| `api.pages.xd.team`          | `/.xd-pages/api/session`     | 浏览器态 API session 换发   | auth-flow，需 auth 一次性 code |
-| `api.pages.xd.team`          | `/.xd-pages/api/sites`       | 站点列表和管理              | user-api                       |
-| `api.pages.xd.team`          | `/.xd-pages/api/deployments` | 发布、版本、回滚            | deploy-api                     |
-| `api.pages.xd.team`          | `/.xd-pages/api/access-keys` | access key 创建、吊销       | user-api，创建/查看需 recent   |
-| `api.pages.xd.team`          | `/.xd-pages/api/admin/*`     | 审计、管理员操作            | admin-api                      |
-| `auth.pages.xd.team`         | `/.xd-pages/auth/login`      | 浏览器登录入口              | auth-flow                      |
-| `auth.pages.xd.team`         | `/.xd-pages/auth/callback`   | SSO OAuth callback          | auth-flow                      |
-| `auth.pages.xd.team`         | `/.xd-pages/auth/logout`     | 平台登出                    | auth-flow                      |
-| `auth.pages.xd.team`         | `/.xd-pages/cli/login/start` | CLI login transaction 创建  | auth-flow                      |
-| `auth.pages.xd.team`         | `/.xd-pages/cli/login/poll`  | CLI login 轮询              | auth-flow，需 login secret     |
+| host                                              | endpoint                     | 用途                        | 公开性                         |
+| ------------------------------------------------- | ---------------------------- | --------------------------- | ------------------------------ |
+| `api.pages.xd.team`                               | `/skill.md`、`/readme.md`    | agent / 用户文档            | public-docs                    |
+| `api.pages.xd.team`                               | `/.xd-pages/api/session`     | 浏览器态 API session 换发   | auth-flow，需 auth 一次性 code |
+| `api.pages.xd.team`                               | `/.xd-pages/api/sites`       | 站点列表和管理              | user-api                       |
+| `api.pages.xd.team`                               | `/.xd-pages/api/deployments` | 发布、版本、回滚            | deploy-api                     |
+| `api.pages.xd.team`                               | `/.xd-pages/api/access-keys` | access key 创建、吊销       | user-api，创建/查看需 recent   |
+| `api.pages.xd.team`                               | `/.xd-pages/api/admin/*`     | 审计、管理员操作            | admin-api                      |
+| `auth.pages.xd.team`                              | `/.xd-pages/auth/login`      | 浏览器登录入口              | auth-flow                      |
+| `auth.pages.xd.team`                              | `/.xd-pages/auth/callback`   | SSO OAuth callback          | auth-flow                      |
+| `auth.pages.xd.team`                              | `/.xd-pages/auth/logout`     | 平台登出                    | auth-flow                      |
+| `auth.pages.xd.team`                              | `/.xd-pages/cli/login/start` | CLI login transaction 创建  | auth-flow                      |
+| `auth.pages.xd.team`                              | `/.xd-pages/cli/login/poll`  | CLI login 轮询              | auth-flow，需 login secret     |
 | `{slug}.workers.xd.team` / `{slug}.pages.xd.team` | `/.xd-pages/auth/callback`   | 子站 site_session 补发      | auth-flow，由 router 处理      |
 | `{slug}.workers.xd.team` / `{slug}.pages.xd.team` | `/.xd-pages/runtime/*`       | generated runtime / SDK API | subsite runtime，平台优先      |
-| `api-staging.pages.xd.team`  | 同 production API path       | staging API                 | 只能返回 staging 环境配置      |
-| `auth-staging.pages.xd.team` | 同 production auth path      | staging auth                | 只能使用 staging SSO redirect  |
+| `api-staging.pages.xd.team`                       | 同 production API path       | staging API                 | 只能返回 staging 环境配置      |
+| `auth-staging.pages.xd.team`                      | 同 production auth path      | staging auth                | 只能使用 staging SSO redirect  |
 
 v2 CLI 只使用 `/.xd-pages/api/*`。开发期 API 合约源码位于 `apps/pages-api/src/openapi.js`，不作为 public route 暴露。`/deploy`、`/list`、`/site` 等路径属于 v1 `api.workers.xd.team`，不在 v2 `api.pages.xd.team` 上兼容或转发。
 
@@ -179,14 +179,14 @@ v2 CLI 只使用 `/.xd-pages/api/*`。开发期 API 合约源码位于 `apps/pag
 
 系统 API 按等级处理：
 
-| 等级           | 示例                                                            | 认证                                    | 额外要求                                                                       |
-| -------------- | --------------------------------------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------ |
-| `public-docs`  | `/skill.md`、`/readme.md`、`/.xd-pages/health` | 无                                      | 只返回非敏感配置，不能暴露 secret、token、内部资源 id，不能返回串环境 API 地址 |
-| `auth-flow`    | `/.xd-pages/auth/*`、`/.xd-pages/cli/login/*`                   | SSO state / auth_session / login secret | redirect allowlist、CSRF state、一次性 code、poll/consume 限流                 |
-| `user-api`     | `/.xd-pages/api/sites`、`/.xd-pages/api/access-keys`            | CLI token、access key 或 api_session    | scope + owner/collaborator 校验                                                |
-| `deploy-api`   | `/.xd-pages/api/deployments`、`/.xd-pages/api/versions`         | CLI token 或 access key                 | scope、site 权限、payload 限制、idempotency、审计                              |
-| `admin-api`    | `/.xd-pages/api/admin/*`、`/.xd-pages/api/audit/*`              | admin session                           | recent login、管理员角色、强审计                                               |
-| `internal-api` | service binding only                                            | service binding 或内部签名              | 不暴露公网路由                                                                 |
+| 等级           | 示例                                                    | 认证                                    | 额外要求                                                                       |
+| -------------- | ------------------------------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------ |
+| `public-docs`  | `/skill.md`、`/readme.md`、`/.xd-pages/health`          | 无                                      | 只返回非敏感配置，不能暴露 secret、token、内部资源 id，不能返回串环境 API 地址 |
+| `auth-flow`    | `/.xd-pages/auth/*`、`/.xd-pages/cli/login/*`           | SSO state / auth_session / login secret | redirect allowlist、CSRF state、一次性 code、poll/consume 限流                 |
+| `user-api`     | `/.xd-pages/api/sites`、`/.xd-pages/api/access-keys`    | CLI token、access key 或 api_session    | scope + owner/collaborator 校验                                                |
+| `deploy-api`   | `/.xd-pages/api/deployments`、`/.xd-pages/api/versions` | CLI token 或 access key                 | scope、site 权限、payload 限制、idempotency、审计                              |
+| `admin-api`    | `/.xd-pages/api/admin/*`、`/.xd-pages/api/audit/*`      | admin session                           | 管理员角色、强审计；recent login 按高风险操作单独启用，当前 Owner 转移不要求   |
+| `internal-api` | service binding only                                    | service binding 或内部签名              | 不暴露公网路由                                                                 |
 
 `public-docs` 端点必须根据请求 host 动态生成环境相关地址。`api-staging.pages.xd.team/skill.md` 和 `/readme.md` 只能返回 staging API、auth 和子站域名示例；production 端点只能返回 production 地址。
 
@@ -197,20 +197,21 @@ access key 的建站边界收口在 `deploy-api`。以下为目标安全边界�
 TAT（Team Access Token）；站点限定只是 Token 的作用范围。PAT 带 `teamId` 时必须重新校验 Token
 所属用户当前是否为该团队 `publisher` / `admin`，TAT 带 `teamId` 时必须与 Token 归属团队一致。
 限定站点范围的 Token 只能部署选中的站点，不能创建新站点。`deploy-api` 可以在同一事务内完成
-“归属转移 + 发布”，但必须同时校验源 owner 和目标 owner 的站点管理权限，并写审计。`user-api`
-的普通建站 endpoint 不接受 access key；团队成员、角色、Team Access Token、团队设置和团队删除等
-admin 操作不通过 access key 暴露。
+“归属转移 + 发布”，但个人源站点必须由当前 Owner 发起，团队源站点必须由源团队 `admin` 发起；
+目标团队仍要求 actor 是 `publisher` / `admin`，并写审计。TAT 可以部署自身团队站点，但不能改变
+Owner。`user-api` 的普通建站 endpoint 不接受 access key；团队成员、角色、Team Access Token、团队
+设置和团队删除等 admin 操作不通过 access key 暴露。
 
 ### Router IP Allowlist
 
-站点网络范围由 route snapshot 的 `exposure` 决定：`internal` 继续受公司网络 IP allowlist 保护，只有可信的 schema v3 snapshot 显式声明 `exposure=public` 时才允许从公网继续访问。旧 v2 snapshot、字段缺失或非法 exposure 一律按 `internal` 处理，不能绕过 IP 门禁。
+站点网络范围由最终 serve route snapshot 的 `exposure` 决定：`internal` 继续受公司网络 IP allowlist 保护，只有可信的 schema v3/v4 serve snapshot 显式声明 `exposure=public` 时才允许从公网继续访问。旧 v2 snapshot、字段缺失或非法 exposure 一律按 `internal` 处理，不能绕过 IP 门禁。
 
 执行顺序：
 
 ```text
 1. 校验 environment、hostname 和平台保留路径。
 2. 读取并验证 route pointer / snapshot，只解析决定网络范围所需的可信策略。
-3. schema v3 且 exposure=public：跳过公司网络 IP allowlist；其它情况必须命中当前环境 allowlist。
+3. schema v3/v4 serve 且 exposure=public：跳过公司网络 IP allowlist；其它情况必须命中当前环境 allowlist。
 4. 通过网络范围判断后，再校验 route 可用性、accessMode、SSO/ACL 和 dispatch target。
 5. snapshot 缺失、损坏、版本未知或 accessMode 非法时 fail closed，不 dispatch 到 User Worker。
 ```
@@ -229,22 +230,24 @@ IP allowlist 规则：
 
 子站访问由 `pages-router` 根据 route snapshot 和必要的 strict check 决策：
 
-| exposure | 网络范围 |
-| -------- | -------- |
-| `internal` | 仅公司内网、VPN、办公出口或明确允许的公司代理出口可达 |
-| `public` | 互联网可达；仍继续执行 accessMode、SSO、ACL 和 disabled 判断 |
+| exposure   | 网络范围                                                     |
+| ---------- | ------------------------------------------------------------ |
+| `internal` | 仅公司内网、VPN、办公出口或明确允许的公司代理出口可达        |
+| `public`   | 互联网可达；仍继续执行 accessMode、SSO、ACL 和 disabled 判断 |
 
 外部 CLI/API 继续使用 visibility，Router 内部按以下兼容映射执行 accessMode：
 
-| visibility | accessMode | router 行为 |
-| ---------- | ---------- | ----------- |
-| `internal` | `anonymous` | 在允许的网络范围内免登录访问 |
-| `org` | `org` | 需要有效 `site_session`，且用户 employee status 为 active；没有时走 SSO |
-| `acl` | `acl` | 需要有效 `site_session`，并命中 allow-only 邮箱或部门 ACL；active owner 隐式可访问 |
-| `owner` | `owner` | 需要 active owner 身份 |
-| `disabled` | `disabled` | 直接拒绝，不 dispatch 到 User Worker |
+| visibility | accessMode  | router 行为                                                                        |
+| ---------- | ----------- | ---------------------------------------------------------------------------------- |
+| `internal` | `anonymous` | 在允许的网络范围内免登录访问                                                       |
+| `org`      | `org`       | 需要有效 `site_session`，且用户 employee status 为 active；没有时走 SSO            |
+| `acl`      | `acl`       | 需要有效 `site_session`，并命中 allow-only 邮箱或部门 ACL；active owner 隐式可访问 |
+| `owner`    | `owner`     | 需要 active owner 身份                                                             |
+| `disabled` | `disabled`  | 直接拒绝，不 dispatch 到 User Worker                                               |
 
-router 必须先处理网络范围和身份门禁，再 dispatch 到 User Worker。User Worker 不能自行决定是否绕过平台门禁。未知 visibility，包括旧的 public，必须 fail closed；schema v3 accessMode 缺失、非法或与 visibility 投影不一致也必须 fail closed。
+Router 继续兼容 schema v2/v3 serve snapshot；对 schema v4 只接受 `kind=serve`，`redirect` 或其它 kind 一律 fail closed，不签 session、不执行 User Worker，也不返回 3xx。slug 改名由控制面删除旧 hostname pointer；删除确认前 hostname claim 无限期保留，确认后才进入 reuse hold。
+
+router 必须先处理网络范围和身份门禁，再 dispatch 到 User Worker。User Worker 不能自行决定是否绕过平台门禁。未知 visibility，包括旧的 public，必须 fail closed；schema v3/v4 serve snapshot 的 accessMode 缺失、非法或与 visibility 投影不一致也必须 fail closed。
 
 推荐判定顺序：
 

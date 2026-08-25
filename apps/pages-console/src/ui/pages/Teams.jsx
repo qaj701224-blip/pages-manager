@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, KeyRound, Pencil, Plus, Save, Search, Settings, Trash2, UserPlus, UsersRound, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
@@ -467,6 +467,7 @@ function TeamMemberActions({ team, member, teamApi, onReload }) {
 }
 
 function AddTeamMemberDialog({ open, team, members, teamApi, onOpenChange, onReload }) {
+  const searchInputRef = useRef(null);
   const [query, setQuery] = useState('');
   const [role, setRole] = useState('viewer');
   const [state, setState] = useState({ status: 'idle', users: [], error: null });
@@ -517,17 +518,17 @@ function AddTeamMemberDialog({ open, team, members, teamApi, onOpenChange, onRel
   };
 
   return (
-    <AppDialog open={open} title="添加成员" onOpenChange={onOpenChange}>
+    <AppDialog open={open} title="添加成员" initialFocusRef={searchInputRef} onOpenChange={onOpenChange}>
       <div className="member-picker">
         <label className="field">
           <span>公司用户</span>
           <span className="member-search-input">
             <Search size={16} />
             <input
+              ref={searchInputRef}
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder="搜索姓名、邮箱或 SSO ID"
-              autoFocus
             />
           </span>
         </label>

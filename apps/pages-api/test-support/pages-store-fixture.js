@@ -48,9 +48,26 @@ export async function updateTestSitePolicy(store, siteId, { defaultExposure, def
 
 export async function updateTestSite(store, siteId, patch) {
   const columns = {
+    deletedAt: 'deleted_at',
     executionModeOverride: 'execution_mode_override',
+    slugRevision: 'slug_revision',
   };
   await updateTestRecord(store, 'sites', siteId, patch, columns);
+}
+
+export async function updateTestUser(store, userId, patch) {
+  const columns = {
+    sessionVersion: 'session_version',
+  };
+  await updateTestRecord(store, 'users', userId, patch, columns, 'user_id');
+}
+
+export async function updateTestTeam(store, teamId, patch) {
+  const columns = {
+    deletedAt: 'deleted_at',
+    status: 'status',
+  };
+  await updateTestRecord(store, 'teams', teamId, patch, columns);
 }
 
 export async function updateTestSiteVersion(store, versionId, patch) {
@@ -253,7 +270,7 @@ function databaseFor(store) {
   return db;
 }
 
-async function updateTestRecord(store, table, id, patch, columns) {
+async function updateTestRecord(store, table, id, patch, columns, idColumn = 'id') {
   const updates = [];
   const values = [];
   for (const [field, value] of Object.entries(patch)) {
@@ -264,7 +281,7 @@ async function updateTestRecord(store, table, id, patch, columns) {
   }
   if (updates.length === 0) return;
   await databaseFor(store)
-    .prepare(`UPDATE ${table} SET ${updates.join(', ')} WHERE id = ?`)
+    .prepare(`UPDATE ${table} SET ${updates.join(', ')} WHERE ${idColumn} = ?`)
     .bind(...values, id)
     .run();
 }

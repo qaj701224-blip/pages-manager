@@ -416,6 +416,22 @@ test('internal endpoint creates console login authorize URL', async () => {
   assert.equal(body.authorizeUrl, 'https://auth.pages.xd.team/.xd-pages/auth/authorize?console=1&return_to=%2Fworkspace');
 });
 
+test('internal console login rejects an unsafe return path', async () => {
+  const bindings = {
+    ...testJwtEnv(),
+    SSO_AUTHORIZATION_URL: 'https://sso.example.test/oauth/authorize',
+    SSO_CLIENT_ID: 'xd_pages_test',
+  };
+  const unsafeResponse = await worker.fetch(
+    jsonRequest('https://pages-auth.internal/.xd-pages/internal/console/login-code', {
+      returnTo: 'https://evil.example/workspace',
+    }),
+    bindings
+  );
+
+  assert.equal(unsafeResponse.status, 400);
+});
+
 test('internal endpoint exchanges console login code once', async () => {
   const env = {
     ...testJwtEnv(),
@@ -629,7 +645,12 @@ test('OAuthStateDO creates and consumes console login code without leaking secre
   const createConsoleCodeResponse = await durableObject.fetch(
     jsonRequest('https://oauth-state-do/create-console-code', {
       stateId: 'ost_console',
-      user: { userId: 'usr_1', email: 'user@example.com', employeeStatus: 'active', sessionVersion: 2 },
+      user: {
+        userId: 'usr_1',
+        email: 'user@example.com',
+        employeeStatus: 'active',
+        sessionVersion: 2,
+      },
       now: 1_800_000_002,
       ttlSeconds: 60,
       codeSecret: 'console-secret',
@@ -783,7 +804,9 @@ test('AuthSessionDO creates, refreshes, and revokes session records', async () =
   );
 
   assert.equal(refreshResponse.status, 200);
-  assert.equal((await refreshResponse.json()).expiresAt, 1_800_000_220);
+  const refreshed = await refreshResponse.json();
+  assert.equal(refreshed.expiresAt, 1_800_000_220);
+  assert.equal(refreshed.authTime, 1_800_000_000);
 
   const revokeResponse = await durableObject.fetch(
     jsonRequest('https://auth-session-do/revoke', {

@@ -14,6 +14,7 @@ import { workerSlotsRepositoryMethods } from './repositories/worker-slots-reposi
 import { routeActivationMethods } from './transactions/route-activation.js';
 import { runtimeConfigMutationMethods } from './transactions/runtime-config-mutation.js';
 import { siteLifecycleMethods } from './transactions/site-lifecycle.js';
+import { siteMetadataMethods } from './transactions/site-metadata.js';
 import { sitePolicyMethods } from './transactions/site-policy.js';
 
 const storeMethodCollections = [
@@ -30,6 +31,7 @@ const storeMethodCollections = [
   accessKeysRepositoryMethods,
   deploymentsRepositoryMethods,
   siteLifecycleMethods,
+  siteMetadataMethods,
   sitePolicyMethods,
   routeActivationMethods,
 ];

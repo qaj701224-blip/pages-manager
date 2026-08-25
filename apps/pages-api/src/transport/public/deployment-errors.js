@@ -69,9 +69,7 @@ export function runtimeConfigFailurePatch({
 }
 
 export function runtimeConfigResolutionErrorMessage(errorCode) {
-  return errorCode === 'RUNTIME_CONFIG_UNSUPPORTED'
-    ? 'Runtime configuration is unavailable.'
-    : 'Runtime bindings are invalid.';
+  return errorCode === 'RUNTIME_CONFIG_UNSUPPORTED' ? 'Runtime configuration is unavailable.' : 'Runtime bindings are invalid.';
 }
 
 export function deploymentOperationFailurePatch({ errorCode, errorMessage, operatorAction = 'retry_deploy' }) {
@@ -170,6 +168,16 @@ export function deploymentOperationError(code, { message, action, cause } = {}) 
       action: 'Retry the deployment with a new Idempotency-Key.',
       status: 409,
     },
+    SITE_POLICY_CONFLICT: {
+      message: 'Site ownership or metadata changed while deployment was uploading.',
+      action: 'Check the latest site status and retry the deployment with a new Idempotency-Key.',
+      status: 409,
+    },
+    SITE_NOT_FOUND: {
+      message: 'Site access changed while deployment was uploading.',
+      action: 'Check your access and retry the deployment with a new Idempotency-Key.',
+      status: 404,
+    },
     ROUTE_ACTIVATION_CONFLICT: {
       message: 'Route changed while deployment was activating.',
       action: 'Check the latest site status and retry the deployment with a new Idempotency-Key.',
@@ -232,4 +240,62 @@ export function idempotencyConflict() {
     409,
     'Retry with the original request or use a new Idempotency-Key.'
   );
+}
+
+export function siteTitleInvalid() {
+  return jsonError(
+    'SITE_TITLE_INVALID',
+    'Site title is invalid.',
+    400,
+    'Use 1-80 visible Unicode characters, or null to clear the title.'
+  );
+}
+
+export function siteMetadataMutationsDisabled() {
+  return jsonError(
+    'SITE_METADATA_MUTATIONS_DISABLED',
+    'Site metadata mutations are temporarily disabled.',
+    503,
+    'Retry after the feature is enabled.'
+  );
+}
+
+export function deploymentSiteMetadataFailure(error) {
+  const inputCode = error?.code || error?.message;
+  const failure =
+    inputCode === 'SITE_NOT_FOUND'
+      ? {
+          code: 'SITE_NOT_FOUND',
+          message: 'Site not found.',
+          status: 404,
+          causeClass: 'site_metadata_authorization_error',
+        }
+      : inputCode === 'SITE_METADATA_CONFLICT'
+        ? {
+            code: 'SITE_METADATA_CONFLICT',
+            message: 'Site metadata changed concurrently.',
+            status: 409,
+            causeClass: 'site_metadata_conflict',
+          }
+        : {
+            code: 'SITE_METADATA_UPDATE_FAILED',
+            message: 'Site metadata could not be updated.',
+            status: 500,
+            causeClass: 'site_metadata_error',
+          };
+  const action = 'Check the current site state and retry the deployment with a new Idempotency-Key.';
+  return {
+    response: jsonError(failure.code, failure.message, failure.status, action),
+    patch: {
+      errorCode: failure.code,
+      errorMessage: failure.message,
+      failureStage: 'site_metadata',
+      failureDiagnostics: buildDeploymentFailureDiagnostics({
+        stage: 'site_metadata',
+        executionProvider: 'unknown',
+        operatorAction: 'check_site_then_retry_deploy',
+        cause: { code: failure.code, class: failure.causeClass },
+      }),
+    },
+  };
 }

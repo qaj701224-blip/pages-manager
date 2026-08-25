@@ -44,9 +44,22 @@ node tools/xd-cell-cli/main.js help login
 - 不要打印、持久化、提交、截图或引用 API token、CLI access key、CLI token（legacy）、cookie、SSO code 或 secret。
 - 不要把凭证发送到用户未确认的自定义 endpoint。
 
+## 站点归属与凭证边界
+
+CLI 当前不提供独立的归属转移命令。交互用户应使用 Console；只有受控集成才使用 Public transfer API，并由服务端执行以下授权边界：
+
+- 用户登录凭证、Cindy Connection JWT 和 Personal Access Token（PAT）只允许当前个人 Owner 或源团队 `admin` 发起转移。转给个人时只能转给已认证 actor 自己；转给团队时，actor 必须是目标团队的 `publisher` 或 `admin`。
+- Team Access Token（TAT）不能通过 Public transfer API 改变 Owner，也不能通过向相同 Owner 提交请求来绕过限制。
+- `xd-cell deploy --team <teamId>` 创建团队站点时，目标团队的 `publisher/admin` 可以发布。既有站点随发布隐式转移时，个人源站点要求当前 Owner，团队源站点要求源团队 `admin`；目标团队仍要求 `publisher/admin`。
+- Team Access Token（TAT）只能继续发布其自身团队站点，不能改变 Owner；不得用它把个人站点或其他团队站点转入该团队，也不得转到其他团队。
+
+不要为了归属转移猜测 API 请求、认证 header 或内部路由；普通用户与 agent 按 Console 和 CLI 已公开能力操作。
+
 ## 配置
 
 `--config <file>` 是一次性输入，只能包含 CLI help 允许的非敏感发布模板字段。默认模板名是 `xd-cell.config.json`。
+
+配置中的 `name` 始终表示站点 URL slug，不是展示名称。站点 URL 在 Console 或认证 API 中改名后，旧 slug 不再定位原站点；安全期内会因 hostname claim 冲突而拒绝发布，安全期结束后可被其它站点使用。CLI 不会自动修改配置文件；继续发布前应先告知用户并同步本地 `name`。CLI 当前不提供名称、URL 或缩略图编辑命令。
 
 `vars` 只能保存非敏感 Worker runtime 配置。它是站点级当前 runtime config，由 Worker deploy 同步；配置省略 `vars` 时沿用站点当前值，显式 `{}` 会在下一次 Worker deploy 清空。secret value 使用 `xd-cell secrets put/delete`，不要写入配置文件，也不要枚举远端 runtime 配置。
 

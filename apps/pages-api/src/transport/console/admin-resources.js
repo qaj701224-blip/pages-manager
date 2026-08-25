@@ -24,14 +24,8 @@ import { jsonError, jsonOk, readJsonBody } from '../../http.js';
 import { newId, nextId } from '../../id.js';
 import { buildRouteSnapshot, clearRoutePointerIfCurrent, readRouteSnapshotState } from '../../route-snapshot.js';
 import { formatAclEntry } from './site-projections.js';
-import {
-  createSiteOwnershipApplication,
-  siteTransferErrorResponse,
-} from '../shared/site-ownership-application.js';
-import {
-  refreshCurrentRouteSnapshot,
-  restoreSiteVisibilityAfterSnapshotFailure,
-} from '../shared/site-route-snapshots.js';
+import { createSiteOwnershipApplication, siteTransferErrorResponse } from '../shared/site-ownership-application.js';
+import { refreshCurrentRouteSnapshot, restoreSiteVisibilityAfterSnapshotFailure } from '../shared/site-route-snapshots.js';
 import { ensurePublicWorkerOfficeNetAbsent } from '../shared/public-office-net-application.js';
 import { normalizeNullableString, normalizeRequiredString, readNow } from './admin-support.js';
 
@@ -50,7 +44,6 @@ export async function listAdminUsers(url, config, store) {
   });
   return jsonOk(result);
 }
-
 
 export async function listAdminSites(url, config, store) {
   const exposure = normalizeNullableString(url.searchParams.get('exposure'));
@@ -124,10 +117,12 @@ export async function updateAdminSiteExposure(request, env, config, store, sessi
     );
   }
   if (result.reason === 'repair_required') {
-    return adminExposureErrorResponse(Object.assign(new Error('ROUTE_POLICY_REPAIR_REQUIRED'), {
-      code: 'ROUTE_POLICY_REPAIR_REQUIRED',
-      cause: result.error,
-    }));
+    return adminExposureErrorResponse(
+      Object.assign(new Error('ROUTE_POLICY_REPAIR_REQUIRED'), {
+        code: 'ROUTE_POLICY_REPAIR_REQUIRED',
+        cause: result.error,
+      })
+    );
   }
   return adminExposureErrorResponse(result.error);
 }
@@ -205,23 +200,19 @@ function createExposureSnapshotFinalizationApplication({ store, env }) {
     snapshots: {
       commit: ({ site, route, environment }) => writeAdminExposureSnapshot(env, store, site, route, environment),
       clearFailed: async ({ site, route, version, aclEntries }) => {
-        const state = await readRouteSnapshotState(
-          env,
-          buildRouteSnapshot({ site, route, version, aclEntries })
-        );
-        if (state.pointer) await clearRoutePointerIfCurrent(env, state.pointer);
+        const state = await readRouteSnapshotState(env, buildRouteSnapshot({ site, route, version, aclEntries }));
+        if (state.pointer) {
+          await clearRoutePointerIfCurrent(env, {
+            ...state.pointer,
+            siteId: site.id,
+            routeId: route.id,
+          });
+        }
       },
     },
     policies: {
       restore: ({ siteId, currentSite, currentRoute, committedRoute, environment }) =>
-        restoreSiteVisibilityAfterSnapshotFailure(
-          store,
-          siteId,
-          currentSite,
-          currentRoute,
-          committedRoute,
-          environment
-        ),
+        restoreSiteVisibilityAfterSnapshotFailure(store, siteId, currentSite, currentRoute, committedRoute, environment),
     },
     sites: { get: (siteId, environment) => store.getAdminSiteById(siteId, environment) },
     routes: { get: (siteId, environment) => store.getRouteBySiteId(siteId, environment) },
@@ -366,13 +357,15 @@ export async function updateAdminSiteSettings(request, env, config, store, sessi
     const result = await createSiteOwnershipApplication({ store, env })({
       environment: config.environment,
       site,
+      actor: { type: 'user', userId: session.userId },
+      capability: 'platform_admin',
       target: { ...target, ownerUserId: target.ownerUserId || session.userId },
-      buildAuditEvent: (updatedAt) =>
+      buildAuditEvent: (updatedAt, currentSite) =>
         buildSiteOwnerTransferAuditEvent({
           id: nextId(env, 'aud'),
           environment: config.environment,
           actor: { type: 'user', userId: session.userId },
-          site,
+          site: currentSite,
           target,
           source: 'console-admin',
           createdAt: updatedAt,
@@ -573,9 +566,7 @@ function createAdminTeamManagement(store) {
               }),
           }
         : {}),
-      ...(typeof store.deleteCustomTeam === 'function'
-        ? { deleteCustom: (command) => store.deleteCustomTeam(command) }
-        : {}),
+      ...(typeof store.deleteCustomTeam === 'function' ? { deleteCustom: (command) => store.deleteCustomTeam(command) } : {}),
     },
     members: { get: (query) => store.getTeamMember(query) },
   });

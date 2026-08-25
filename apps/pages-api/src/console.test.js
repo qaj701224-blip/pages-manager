@@ -81,7 +81,10 @@ test('unauthenticated directory returns only internal sites with minimal metadat
   assert.deepEqual(body.sites, [
     {
       id: 'site_internal',
+      title: null,
+      displayName: 'internal-demo',
       slug: 'internal-demo',
+      routingStatus: 'ready',
       hostname: 'internal-demo.workers.xd.team',
       owner: { type: 'user', displayName: 'Owner Name' },
       visibility: 'internal',
@@ -322,7 +325,10 @@ test('unauthenticated directory shows team owner display name without team id', 
   assert.deepEqual(body.sites, [
     {
       id: 'site_team_internal',
+      title: null,
+      displayName: 'team-internal',
       slug: 'team-internal',
+      routingStatus: 'ready',
       hostname: 'team-internal.workers.xd.team',
       owner: { type: 'team', displayName: 'XD/Platform/Web', teamType: 'department' },
       visibility: 'internal',
@@ -642,7 +648,10 @@ test('workspace personal and team sites use owner model and team membership', as
     sites: [
       {
         id: 'site_mine',
+        title: null,
+        displayName: 'mine',
         slug: 'mine',
+        routingStatus: 'ready',
         hostname: 'mine.workers.xd.team',
         owner: { type: 'user', displayName: '徐天麒' },
         visibility: 'org',
@@ -657,7 +666,10 @@ test('workspace personal and team sites use owner model and team membership', as
     sites: [
       {
         id: 'site_team',
+        title: null,
+        displayName: 'team-owned',
         slug: 'team-owned',
+        routingStatus: 'ready',
         hostname: 'team-owned.workers.xd.team',
         owner: { type: 'team', displayName: 'Console Team', teamType: 'custom' },
         visibility: 'org',
@@ -758,7 +770,10 @@ test('console creates personal and team-owned sites without browser upload', asy
   assert.deepEqual(await personal.json(), {
     site: {
       id: 'site_1',
+      title: null,
+      displayName: 'personal-console',
       slug: 'personal-console',
+      routingStatus: 'ready',
       hostname: 'personal-console.workers.xd.team',
       owner: { type: 'user', displayName: 'usr_owner@example.com' },
       visibility: 'internal',
@@ -784,7 +799,10 @@ test('console creates personal and team-owned sites without browser upload', asy
   assert.deepEqual(await teamSite.json(), {
     site: {
       id: 'site_2',
+      title: null,
+      displayName: 'team-console',
       slug: 'team-console',
+      routingStatus: 'ready',
       hostname: 'team-console.workers.xd.team',
       owner: { type: 'team', displayName: 'Console Team', teamType: 'custom' },
       visibility: 'org',
@@ -855,10 +873,15 @@ test('site detail computes permissions from team role for team-owned site', asyn
   await seedConsoleUsers(store, ['usr_admin', 'usr_publisher', 'usr_other']);
   const team = await store.createTeam({
     environment: 'production',
-    teamType: 'custom',
-    name: 'Console Team',
-    description: null,
-    createdByUserId: 'usr_admin',
+    teamType: 'department',
+    departmentPath: 'XD/Platform',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_admin',
+    role: 'admin',
+    membershipSource: 'directory',
+    departmentPath: 'XD/Platform',
   });
   await store.addTeamMember({
     teamId: team.id,
@@ -880,6 +903,10 @@ test('site detail computes permissions from team role for team-owned site', asyn
     internalConsoleRequest('/.xd-pages/api/console/sites/site_team', { userId: 'usr_publisher' }),
     env(store)
   );
+  const adminDetail = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/sites/site_team', { userId: 'usr_admin' }),
+    env(store)
+  );
   const forbidden = await worker.fetch(
     internalConsoleRequest('/.xd-pages/api/console/sites/site_team', { userId: 'usr_other' }),
     env(store)
@@ -890,10 +917,13 @@ test('site detail computes permissions from team role for team-owned site', asyn
 
   const body = await detail.json();
   assert.equal(body.site.owner.type, 'team');
-  assert.equal(body.site.owner.displayName, 'Console Team');
+  assert.equal(body.site.owner.displayName, 'XD/Platform');
+  assert.equal(body.site.owner.departmentPath, 'XD/Platform');
   assert.equal(body.site.permissions.role, 'publisher');
   assert.equal(body.site.permissions.canManage, true);
   assert.equal(body.site.permissions.canManageAccess, true);
+  assert.equal(body.site.permissions.canTransferOwnership, false);
+  assert.equal((await adminDetail.json()).site.permissions.canTransferOwnership, true);
   assertNoSensitiveConsoleFields(body);
 });
 
@@ -938,7 +968,12 @@ test('site detail and subresources are internal-only, permission checked, and re
   const detailBody = await detail.json();
   assert.equal(detailBody.site.slug, 'mine');
   assert.equal(detailBody.site.hostname, 'mine.workers.xd.team');
-  assert.deepEqual(detailBody.site.owner, { type: 'user', id: 'usr_me', displayName: '徐天麒' });
+  assert.deepEqual(detailBody.site.owner, {
+    type: 'user',
+    id: 'usr_me',
+    email: 'usr_me@example.com',
+    displayName: '徐天麒',
+  });
   assert.equal(detailBody.site.access.visibility, 'acl');
   assert.deepEqual(await deployments.json(), { deployments: [] });
   assert.deepEqual(await access.json(), { access: { visibility: 'acl', aclEntries: [] } });
@@ -2241,7 +2276,10 @@ test('console delete does not emit site.deleted when the deleted route snapshot 
   );
 
   assert.equal(response.status, 503, await response.clone().text());
-  assert.equal((await response.json()).error.code, 'ROUTE_SNAPSHOT_WRITE_FAILED');
+  assert.equal((await response.json()).error.code, 'ROUTE_POLICY_REPAIR_REQUIRED');
+  assert.equal((await store.getSite('site_mine')).deletedAt, null);
+  assert.equal((await store.getRouteBySiteId('site_mine', 'production')).routeStatus, 'active');
+  assert.equal((await store.getHostnameClaim('mine.workers.xd.team')).status, 'active');
   assert.equal(requests.length, 0);
 });
 
@@ -2294,7 +2332,7 @@ test('console missing and repeated deletes do not emit site.deleted', async () =
   assert.equal(requests.length, 1);
 });
 
-test('site publisher can transfer site owner from console settings to an active user', async () => {
+test('personal site owner can transfer site ownership without recent-login metadata', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   await seedSite(store, {
     id: 'site_mine',
@@ -2325,13 +2363,445 @@ test('site publisher can transfer site owner from console settings to an active 
     displayName: '目标用户',
   });
   assert.equal(body.site.permissions.canManage, false);
+  assert.equal(body.site.permissions.canTransferOwnership, false);
   const site = await store.getSite('site_mine');
   assert.equal(site.ownerType, 'user');
   assert.equal(site.ownerId, 'usr_target');
   assert.equal(site.ownerUserId, 'usr_target');
 });
 
-test('site publisher owner transfer rolls back when route snapshot cannot refresh', async () => {
+test('console rejects transferring a site to its current owner without side effects', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedSite(store, {
+    id: 'site_mine',
+    slug: 'mine',
+    ownerUserId: 'usr_me',
+    visibility: 'org',
+  });
+  const routeBefore = await store.getRouteBySiteId('site_mine', 'production');
+
+  const response = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/settings', {
+      userId: 'usr_me',
+      method: 'PATCH',
+      body: { ownerType: 'user', ownerId: 'usr_me' },
+    }),
+    env(store)
+  );
+
+  assert.equal(response.status, 400, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'SITE_TRANSFER_INVALID');
+  assert.equal((await store.getSite('site_mine')).ownerId, 'usr_me');
+  assert.equal((await store.getRouteBySiteId('site_mine', 'production')).policyVersion, routeBefore.policyVersion);
+  assert.equal((await store.listAuditEvents()).filter((event) => event.eventType === 'site.owner.transfer').length, 0);
+});
+
+test('workspace ownership transfer allows source team admins and rejects source team publishers', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedConsoleUsers(store, ['usr_admin', 'usr_publisher', 'usr_target']);
+  const team = await store.createTeam({
+    id: 'team_source',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Source Team',
+    createdByUserId: 'usr_admin',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_publisher',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  await seedSite(store, {
+    id: 'site_team',
+    slug: 'team-site',
+    ownerUserId: 'usr_admin',
+    ownerType: 'team',
+    ownerId: team.id,
+    visibility: 'org',
+  });
+
+  const publisher = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_team/settings', {
+      userId: 'usr_publisher',
+      method: 'PATCH',
+      body: { ownerType: 'user', ownerId: 'usr_target' },
+    }),
+    env(store)
+  );
+  assert.equal(publisher.status, 403, await publisher.clone().text());
+  assert.equal((await publisher.json()).error.code, 'SITE_ADMIN_REQUIRED');
+  assert.equal((await store.getSite('site_team')).ownerId, team.id);
+
+  const admin = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_team/settings', {
+      userId: 'usr_admin',
+      method: 'PATCH',
+      body: { ownerType: 'user', ownerId: 'usr_target' },
+    }),
+    env(store)
+  );
+  assert.equal(admin.status, 200, await admin.clone().text());
+  assert.equal((await store.getSite('site_team')).ownerId, 'usr_target');
+});
+
+test('workspace ownership transfer D1 guard rejects a source team admin downgraded after locked authorization', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedConsoleUsers(store, ['usr_admin', 'usr_backup', 'usr_target']);
+  const team = await store.createTeam({
+    id: 'team_source',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Source Team',
+    createdByUserId: 'usr_admin',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_backup',
+    role: 'admin',
+    membershipSource: 'manual',
+  });
+  await seedSite(store, {
+    id: 'site_team',
+    slug: 'team-site',
+    ownerUserId: 'usr_admin',
+    ownerType: 'team',
+    ownerId: team.id,
+    visibility: 'org',
+  });
+  const routeBefore = await store.getRouteBySiteId('site_team', 'production');
+  const transferSiteOwner = store.transferSiteOwner.bind(store);
+  store.transferSiteOwner = async (...args) => {
+    await store.addTeamMember({
+      teamId: team.id,
+      userId: 'usr_admin',
+      role: 'publisher',
+      membershipSource: 'manual',
+      actorUserId: 'usr_backup',
+    });
+    return transferSiteOwner(...args);
+  };
+
+  const response = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_team/settings', {
+      userId: 'usr_admin',
+      method: 'PATCH',
+      body: { ownerType: 'user', ownerId: 'usr_target' },
+    }),
+    env(store)
+  );
+
+  assert.equal(response.status, 404, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'SITE_NOT_FOUND');
+  assert.equal((await store.getSite('site_team')).ownerId, team.id);
+  assert.equal((await store.getRouteBySiteId('site_team', 'production')).policyVersion, routeBefore.policyVersion);
+  assert.equal((await store.listAuditEvents()).filter((event) => event.eventType === 'site.owner.transfer').length, 0);
+});
+
+test('workspace publisher updates site name and URL through independent metadata fields', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedConsoleUser(store, 'usr_me');
+  await seedSite(store, {
+    id: 'site_mine',
+    slug: 'mine',
+    ownerUserId: 'usr_me',
+    visibility: 'org',
+  });
+  await activateSite(store, 'site_mine');
+  const snapshots = createSnapshotStore();
+  const metadataEnvironment = envWithSequencedIds(store, {
+    SITE_METADATA_MUTATIONS_ENABLED: 'true',
+    ROUTE_SNAPSHOTS: snapshots,
+  });
+
+  const titleResponse = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/metadata', {
+      userId: 'usr_me',
+      method: 'PATCH',
+      body: { title: '我的站点' },
+    }),
+    metadataEnvironment
+  );
+  const slugResponse = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/metadata', {
+      userId: 'usr_me',
+      method: 'PATCH',
+      body: { slug: 'my-site' },
+    }),
+    metadataEnvironment
+  );
+
+  assert.equal(titleResponse.status, 200, await titleResponse.clone().text());
+  assert.equal((await titleResponse.json()).site.displayName, '我的站点');
+  assert.equal(slugResponse.status, 200, await slugResponse.clone().text());
+  const body = await slugResponse.json();
+  assert.equal(body.site.title, '我的站点');
+  assert.equal(body.site.slug, 'my-site');
+  assert.equal(body.site.hostname, 'my-site.workers.xd.team');
+  assert.equal(body.site.routingStatus, 'ready');
+});
+
+test('workspace metadata projects the committed result without a post-commit detail reload', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedConsoleUser(store, 'usr_me');
+  await seedSite(store, {
+    id: 'site_mine',
+    slug: 'mine',
+    ownerUserId: 'usr_me',
+    visibility: 'org',
+  });
+  const readDetail = store.getConsoleSiteDetail.bind(store);
+  let detailReads = 0;
+  store.getConsoleSiteDetail = async (input) => {
+    detailReads += 1;
+    if (detailReads > 1) throw new Error('detail refresh unavailable');
+    return readDetail(input);
+  };
+
+  const response = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/metadata', {
+      userId: 'usr_me',
+      method: 'PATCH',
+      body: { title: '已提交名称' },
+    }),
+    envWithSequencedIds(store, { SITE_METADATA_MUTATIONS_ENABLED: 'true' })
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.site.title, '已提交名称');
+  assert.equal(body.site.displayName, '已提交名称');
+  assert.equal(body.site.permissions.canManage, true);
+  assert.equal((await store.getSite('site_mine')).title, '已提交名称');
+  assert.equal(detailReads, 1);
+});
+
+test('workspace metadata response stays on its committed revision when a newer mutation follows', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedConsoleUser(store, 'usr_me');
+  await seedSite(store, {
+    id: 'site_mine',
+    slug: 'mine',
+    ownerUserId: 'usr_me',
+    visibility: 'org',
+  });
+  const commitSiteMetadata = store.commitSiteMetadata.bind(store);
+  let injectNewerRevision = true;
+  store.commitSiteMetadata = async (input) => {
+    const committed = await commitSiteMetadata(input);
+    if (injectNewerRevision) {
+      injectNewerRevision = false;
+      await commitSiteMetadata({
+        ...input,
+        title: '更新的并发版本',
+        expected: {
+          slugRevision: committed.site.slugRevision,
+          routeGeneration: committed.route.routeGeneration,
+          policyVersion: committed.route.policyVersion,
+          activeVersionId: committed.route.activeVersionId,
+          runtimeConfigGeneration: committed.route.runtimeConfigGeneration,
+        },
+        auditEvent: undefined,
+        updatedAt: '2026-06-15T00:00:01.000Z',
+      });
+    }
+    return committed;
+  };
+
+  const response = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/metadata', {
+      userId: 'usr_me',
+      method: 'PATCH',
+      body: { title: '本次提交版本' },
+    }),
+    envWithSequencedIds(store, { SITE_METADATA_MUTATIONS_ENABLED: 'true' })
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.equal((await response.json()).site.title, '本次提交版本');
+  assert.equal((await store.getSite('site_mine')).title, '更新的并发版本');
+});
+
+test('workspace metadata warning and site projection describe the same committed routing revision', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedConsoleUser(store, 'usr_me');
+  await seedSite(store, {
+    id: 'site_mine',
+    slug: 'mine',
+    ownerUserId: 'usr_me',
+    visibility: 'org',
+  });
+  await activateSite(store, 'site_mine');
+  const withSiteCommitLock = store.withSiteCommitLock.bind(store);
+  store.withSiteCommitLock = (environment, siteId, work, options) =>
+    withSiteCommitLock(
+      environment,
+      siteId,
+      async (lease) => {
+        const committed = await work(lease);
+        for (const claim of committed.retiringClaims) {
+          await store.completeSiteSlugRelease({
+            environment,
+            siteId,
+            routeId: committed.route.id,
+            hostname: claim.hostname,
+            slugRevision: committed.site.slugRevision,
+            cleanupToken: claim.releasedAt,
+            reuseHoldUntil: '2026-06-15T00:05:01.000Z',
+            lease,
+            completedAt: '2026-06-15T00:00:01.000Z',
+          });
+        }
+        await store.markSiteSlugRoutingSynced({
+          environment,
+          siteId,
+          slugRevision: committed.site.slugRevision,
+          lease,
+          syncedAt: '2026-06-15T00:00:01.000Z',
+        });
+        return committed;
+      },
+      options
+    );
+
+  const response = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/metadata', {
+      userId: 'usr_me',
+      method: 'PATCH',
+      body: { slug: 'mine-renamed' },
+    }),
+    envWithSequencedIds(store, {
+      SITE_METADATA_MUTATIONS_ENABLED: 'true',
+      ROUTE_SNAPSHOTS: failingSnapshotStore(),
+    })
+  );
+
+  assert.equal(response.status, 202, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.site.slug, 'mine-renamed');
+  assert.equal(body.site.routingStatus, 'pending');
+  assert.equal(body.warning.code, 'SITE_METADATA_ROUTING_PENDING');
+  const latest = await store.getSite('site_mine');
+  assert.equal(latest.slugRoutingSyncedRevision, latest.slugRevision);
+});
+
+test('workspace metadata allows team admins and publishers while rejecting team viewers', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedConsoleUsers(store, ['usr_admin', 'usr_publisher', 'usr_viewer']);
+  const team = await store.createTeam({
+    id: 'team_metadata',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Metadata Team',
+    createdByUserId: 'usr_admin',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_publisher',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_viewer',
+    role: 'viewer',
+    membershipSource: 'manual',
+  });
+  await seedSite(store, {
+    id: 'site_team_metadata',
+    slug: 'team-metadata',
+    ownerUserId: 'usr_admin',
+    ownerType: 'team',
+    ownerId: team.id,
+    visibility: 'org',
+  });
+  const endpoint = '/.xd-pages/api/console/sites/site_team_metadata/metadata';
+  const metadataEnvironment = envWithSequencedIds(store, { SITE_METADATA_MUTATIONS_ENABLED: 'true' });
+
+  const admin = await worker.fetch(
+    internalConsoleJsonRequest(endpoint, {
+      userId: 'usr_admin',
+      method: 'PATCH',
+      body: { title: 'Admin title' },
+    }),
+    metadataEnvironment
+  );
+  const publisher = await worker.fetch(
+    internalConsoleJsonRequest(endpoint, {
+      userId: 'usr_publisher',
+      method: 'PATCH',
+      body: { title: 'Publisher title' },
+    }),
+    metadataEnvironment
+  );
+  const viewer = await worker.fetch(
+    internalConsoleJsonRequest(endpoint, {
+      userId: 'usr_viewer',
+      method: 'PATCH',
+      body: { title: 'Viewer title' },
+    }),
+    metadataEnvironment
+  );
+
+  assert.equal(admin.status, 200, await admin.clone().text());
+  assert.equal(publisher.status, 200, await publisher.clone().text());
+  assert.equal(viewer.status, 403, await viewer.clone().text());
+  assert.equal((await viewer.json()).error.code, 'SITE_PUBLISHER_REQUIRED');
+  assert.equal((await store.getSite('site_team_metadata')).title, 'Publisher title');
+});
+
+test('workspace metadata rechecks team publisher membership inside the site lease', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedConsoleUsers(store, ['usr_admin', 'usr_publisher']);
+  const team = await store.createTeam({
+    id: 'team_metadata_race',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Metadata Race Team',
+    createdByUserId: 'usr_admin',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_publisher',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  await seedSite(store, {
+    id: 'site_team_metadata_race',
+    slug: 'team-metadata-race',
+    ownerUserId: 'usr_admin',
+    ownerType: 'team',
+    ownerId: team.id,
+    visibility: 'org',
+  });
+  const withSiteCommitLock = store.withSiteCommitLock.bind(store);
+  store.withSiteCommitLock = (environment, siteId, work, options) =>
+    withSiteCommitLock(
+      environment,
+      siteId,
+      async (lease) => {
+        await store.removeTeamMember({ teamId: team.id, userId: 'usr_publisher', actorUserId: 'usr_admin' });
+        return work(lease);
+      },
+      options
+    );
+
+  const response = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_team_metadata_race/metadata', {
+      userId: 'usr_publisher',
+      method: 'PATCH',
+      body: { title: 'Must not commit' },
+    }),
+    envWithSequencedIds(store, { SITE_METADATA_MUTATIONS_ENABLED: 'true' })
+  );
+
+  assert.equal(response.status, 404, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'SITE_NOT_FOUND');
+  assert.equal((await store.getSite('site_team_metadata_race')).title, null);
+  assert.equal((await store.listAuditEvents()).filter((event) => event.eventType === 'site_metadata_updated').length, 0);
+});
+
+test('site owner transfer rolls back when route snapshot cannot refresh', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   await seedSite(store, {
     id: 'site_mine',
@@ -2351,18 +2821,18 @@ test('site publisher owner transfer rolls back when route snapshot cannot refres
       method: 'PATCH',
       body: { ownerType: 'user', ownerId: 'usr_target' },
     }),
-    env(store, { ROUTE_SNAPSHOTS: failingSnapshotStore() })
+    env(store, { ROUTE_SNAPSHOTS: failFirstSnapshotStore() })
   );
 
   assert.equal(response.status, 503, await response.clone().text());
-  assert.equal((await response.json()).error.code, 'ROUTE_SNAPSHOT_WRITE_FAILED');
+  assert.equal((await response.json()).error.code, 'ROUTE_POLICY_REPAIR_REQUIRED');
   const site = await store.getSite('site_mine');
   assert.equal(site.ownerType, 'user');
   assert.equal(site.ownerId, 'usr_me');
   assert.equal(site.ownerUserId, 'usr_me');
 });
 
-test('site publisher cannot transfer site owner from console settings to a disabled user', async () => {
+test('site owner cannot transfer site ownership from console settings to a disabled user', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   await seedConsoleUser(store, 'usr_owner');
   await seedConsoleUser(store, 'usr_disabled', { employeeStatus: 'disabled' });
@@ -2389,7 +2859,7 @@ test('site publisher cannot transfer site owner from console settings to a disab
   assert.equal(site.ownerId, 'usr_owner');
 });
 
-test('site publisher can transfer site owner from console settings to a manageable team', async () => {
+test('personal site owner can transfer site ownership from console settings to a manageable team', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   await seedSite(store, {
     id: 'site_mine',
@@ -2439,6 +2909,100 @@ test('site publisher can transfer site owner from console settings to a manageab
   const snapshot = snapshots.read(pointer.snapshotKey);
   assert.equal(snapshot.visibility, 'org');
   assert.equal(snapshot.ownerUserId, null);
+});
+
+test('workspace owner transfer rechecks target team membership inside the site lease', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedConsoleUser(store, 'usr_me');
+  await seedSite(store, {
+    id: 'site_mine',
+    slug: 'mine',
+    ownerUserId: 'usr_me',
+    visibility: 'org',
+  });
+  const team = await store.createTeam({
+    id: 'team_transfer_target',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Transfer Target',
+    createdByUserId: 'usr_admin',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_me',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  const withSiteCommitLock = store.withSiteCommitLock.bind(store);
+  store.withSiteCommitLock = (environment, siteId, work, options) =>
+    withSiteCommitLock(
+      environment,
+      siteId,
+      async (lease) => {
+        await store.removeTeamMember({ teamId: team.id, userId: 'usr_me', actorUserId: 'usr_admin' });
+        return work(lease);
+      },
+      options
+    );
+
+  const response = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/settings', {
+      userId: 'usr_me',
+      method: 'PATCH',
+      body: { ownerType: 'team', teamId: team.id },
+    }),
+    env(store)
+  );
+
+  assert.equal(response.status, 404, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'SITE_NOT_FOUND');
+  const site = await store.getSite('site_mine');
+  assert.equal(site.ownerType, 'user');
+  assert.equal(site.ownerId, 'usr_me');
+  assert.equal((await store.listAuditEvents()).filter((event) => event.eventType === 'site.owner.transfer').length, 0);
+});
+
+test('workspace owner transfer rechecks current route visibility after acquiring the site lease', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedConsoleUser(store, 'usr_me');
+  await seedSite(store, {
+    id: 'site_mine',
+    slug: 'mine',
+    ownerUserId: 'usr_me',
+    visibility: 'org',
+  });
+  await store.createTeam({
+    id: 'team_transfer_visibility',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Visibility Target',
+    createdByUserId: 'usr_me',
+  });
+  await store.addTeamMember({
+    teamId: 'team_transfer_visibility',
+    userId: 'usr_me',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  const withSiteCommitLock = store.withSiteCommitLock.bind(store);
+  store.withSiteCommitLock = async (environment, siteId, work, options) => {
+    await updateTestRoute(store, 'route_site_mine', { visibility: 'owner' });
+    return withSiteCommitLock(environment, siteId, work, options);
+  };
+
+  const response = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/settings', {
+      userId: 'usr_me',
+      method: 'PATCH',
+      body: { ownerType: 'team', teamId: 'team_transfer_visibility' },
+    }),
+    env(store)
+  );
+
+  assert.equal(response.status, 409, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'SITE_POLICY_CONFLICT');
+  assert.equal((await store.getSite('site_mine')).ownerType, 'user');
+  assert.equal((await store.listAuditEvents()).filter((event) => event.eventType === 'site.owner.transfer').length, 0);
 });
 
 test('console rejects transferring owner-visible sites to teams', async () => {
@@ -2644,6 +3208,7 @@ async function activateSite(store, siteId, { workerName = 'pages-v2-site-ver-1',
 function createSnapshotStore() {
   const values = new Map();
   return {
+    get: async (key) => (values.has(key) ? JSON.stringify(values.get(key)) : null),
     put: async (key, value) => values.set(key, JSON.parse(value)),
     read: (key) => values.get(key),
   };
@@ -2653,6 +3218,19 @@ function failingSnapshotStore() {
   return {
     put: async () => {
       throw new Error('snapshot write failed');
+    },
+  };
+}
+
+function failFirstSnapshotStore() {
+  const snapshots = createSnapshotStore();
+  let writes = 0;
+  return {
+    ...snapshots,
+    async put(key, value) {
+      writes += 1;
+      if (writes === 1) throw new Error('snapshot write failed');
+      return snapshots.put(key, value);
     },
   };
 }

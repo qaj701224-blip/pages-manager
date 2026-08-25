@@ -34,12 +34,14 @@ test('site settings expose guarded site deletion', () => {
   assert.match(siteDetailSource, /仅站点 owner 或团队 admin 可删除/);
 });
 
-test('site settings expose edit mode for owner transfer without unsupported placeholder', () => {
-  assert.match(siteDetailSource, /className="info-list site-settings-card"/);
+test('site settings expose a dedicated ownership transfer card without unsupported placeholder', () => {
+  assert.match(siteDetailSource, /className="info-list site-ownership-card"/);
+  assert.match(siteDetailSource, /<h2>站点归属<\/h2>/);
   assert.match(siteDetailSource, /<SiteOwnerEditor/);
-  assert.match(siteDetailSource, /updateSettings: updateSiteSettings/);
-  assert.match(siteDetailSource, /listOwnerUsers: \(\{ query \} = \{\}\) => listAdminUsers\(\{ query \}\)/);
+  assert.match(siteDetailSource, /transferOwnership: transferSiteOwnership/);
+  assert.match(siteDetailSource, /listOwnerUsers: \(\{ query \} = \{\}\) => listAdminUsers\(\{ query, status: 'active' \}\)/);
   assert.match(siteDetailSource, /listOwnerUsers: \(\{ query \} = \{\}\) => listConsoleUsers\(\{ query \}\)/);
+  assert.match(siteDetailSource, /site\.permissions\?\.canTransferOwnership/);
   assert.doesNotMatch(siteDetailSource, /暂不支持控制台修改站点设置/);
 });
 

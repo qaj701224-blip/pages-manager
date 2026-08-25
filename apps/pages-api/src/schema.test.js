@@ -31,7 +31,7 @@ test('schema defines all v2 authority tables', () => {
     'webhook_deliveries',
   ];
 
-  assert.equal(SCHEMA_VERSION, 20);
+  assert.equal(SCHEMA_VERSION, 21);
   for (const table of tables) {
     assert.match(sql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}\\b`));
   }
@@ -51,7 +51,7 @@ test('schema defines the Cindy connection membership identity column', () => {
 test('schema defines XDMaker identity and access-key source columns without S2S guard tables', () => {
   const sql = createSchemaSql().join('\n');
 
-  assert.equal(SCHEMA_VERSION, 20);
+  assert.equal(SCHEMA_VERSION, 21);
   assert.match(sql, /feishu_open_id TEXT/);
   assert.match(sql, /created_source TEXT NOT NULL DEFAULT 'xd_sso'/);
   assert.match(sql, /issued_source TEXT NOT NULL DEFAULT 'legacy'/);
@@ -68,6 +68,13 @@ test('schema includes authority indexes for routing, idempotency, and access key
   const sql = createSchemaSql().join('\n');
 
   assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_sites_environment_slug/);
+  assert.match(sql, /title TEXT/);
+  assert.match(sql, /data_namespace TEXT/);
+  assert.match(sql, /slug_revision INTEGER NOT NULL DEFAULT 1/);
+  assert.match(sql, /slug_routing_synced_revision INTEGER NOT NULL DEFAULT 1/);
+  assert.match(sql, /slug_routing_reconcile_attempted_at TEXT/);
+  assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_sites_slug_routing_reconciliation/);
+  assert.doesNotMatch(sql, /site_slug_aliases/);
   assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_site_routes_hostname_live/);
   assert.match(sql, /WHERE route_status != 'deleted'/);
   assert.match(

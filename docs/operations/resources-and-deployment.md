@@ -81,17 +81,17 @@ WFP 是最终执行面目标；router template 始终静态声明当前环境的
 
 production 和 staging 分开申请或创建：
 
-| 类型                       | production                                                    | staging                                                                                       | 说明                                          |
-| -------------------------- | ------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | --------------------------------------------- |
-| Workers                    | `pages-api`、`pages-auth`、`pages-router`、`pages-kv-gateway` | `pages-api-staging`、`pages-auth-staging`、`pages-router-staging`、`pages-kv-gateway-staging` | 系统 Worker 物理隔离                          |
-| WFP dispatch namespace     | `xd-cell-workers-production`                                  | `xd-cell-workers-staging`                                                                     | 当前默认执行面；router 静态绑定对应环境 namespace |
-| 普通 Worker slot 池        | `pages-v2-production-slot-001..N`                             | `pages-v2-staging-slot-001..N`                                                                | 历史兼容执行面，只保留旧 route 排空和管理员删除 |
-| D1 database                | `pages_metadata_production`                                   | `pages_metadata_staging`                                                                      | 权威业务库                                    |
-| KV namespace               | `pages_router_cache_production`                               | `pages_router_cache_staging`                                                                  | route/policy/JWKS snapshot                    |
-| KV namespace               | `pages-shared-data`                                           | `pages-shared-data-staging`                                                                   | v2 Pages KV 站点数据；现有空 namespace 直接划归 v2 |
-| Durable Object namespaces  | production bindings                                           | staging bindings                                                                              | OAuth、CLI login、session、policy 协调        |
+| 类型                       | production                                                                            | staging                                                                                                               | 说明                                                                                                       |
+| -------------------------- | ------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Workers                    | `pages-api`、`pages-auth`、`pages-router`、`pages-kv-gateway`                         | `pages-api-staging`、`pages-auth-staging`、`pages-router-staging`、`pages-kv-gateway-staging`                         | 系统 Worker 物理隔离                                                                                       |
+| WFP dispatch namespace     | `xd-cell-workers-production`                                                          | `xd-cell-workers-staging`                                                                                             | 当前默认执行面；router 静态绑定对应环境 namespace                                                          |
+| 普通 Worker slot 池        | `pages-v2-production-slot-001..N`                                                     | `pages-v2-staging-slot-001..N`                                                                                        | 历史兼容执行面，只保留旧 route 排空和管理员删除                                                            |
+| D1 database                | `pages_metadata_production`                                                           | `pages_metadata_staging`                                                                                              | 权威业务库                                                                                                 |
+| KV namespace               | `pages_router_cache_production`                                                       | `pages_router_cache_staging`                                                                                          | route/policy/JWKS snapshot                                                                                 |
+| KV namespace               | `pages-shared-data`                                                                   | `pages-shared-data-staging`                                                                                           | v2 Pages KV 站点数据；现有空 namespace 直接划归 v2                                                         |
+| Durable Object namespaces  | production bindings                                                                   | staging bindings                                                                                                      | OAuth、CLI login、session、policy 协调                                                                     |
 | Routes / custom domains    | `api.pages.xd.team`、`auth.pages.xd.team`、`*.workers.xd.team/*`、`*.pages.xd.team/*` | `api-staging.pages.xd.team`、`auth-staging.pages.xd.team`、`*-staging.workers.xd.team/*`、`*-staging.pages.xd.team/*` | 由 v2 wrangler template 声明，部署创建/更新 Cloudflare 绑定；`workers` wildcard 必须让 v1 exact route 优先 |
-| Advanced certificate / DCV | `*.workers.xd.team`、`*.pages.xd.team`                        | 同证书覆盖或独立策略                                                                          | 参考 partial zone 约束，单独验证 `workers` 与 `pages` 子域 |
+| Advanced certificate / DCV | `*.workers.xd.team`、`*.pages.xd.team`                                                | 同证书覆盖或独立策略                                                                                                  | 参考 partial zone 约束，单独验证 `workers` 与 `pages` 子域                                                 |
 
 需要在阶段 0 做 Cloudflare route / DNS / certificate spike，验证 `workers` / `pages` wildcard、DCV、`*-staging.workers.xd.team/*` 和 `*-staging.pages.xd.team/*` route 优先级。API/Auth 固定域名和 router wildcard route 写入 v2 wrangler template，系统 Worker 部署时创建/更新 Cloudflare 绑定；partial zone 下 DNSPod CNAME、DCV 委派和证书状态仍需人工确认。新增 `*.workers.xd.team/*` v2 wildcard 时，必须确认 v1 exact route 仍优先。
 
@@ -112,10 +112,10 @@ production 和 staging 分开申请或创建：
 
 平台内部支持两种 execution mode：
 
-| mode | 用途 | 用户可见性 | 上线建议 |
-| ---- | ---- | ---------- | -------- |
-| `wfp` | 目标模式，部署到 Workers for Platforms dispatch namespace | 不可见 | production / staging 当前默认 |
-| `normal-worker-slot` | 兼容模式，部署到预创建普通 Worker slot，并由 router 通过静态 service binding 调用 | 不可见 | 仅用于历史 route 排空 |
+| mode                 | 用途                                                                              | 用户可见性 | 上线建议                      |
+| -------------------- | --------------------------------------------------------------------------------- | ---------- | ----------------------------- |
+| `wfp`                | 目标模式，部署到 Workers for Platforms dispatch namespace                         | 不可见     | production / staging 当前默认 |
+| `normal-worker-slot` | 兼容模式，部署到预创建普通 Worker slot，并由 router 通过静态 service binding 调用 | 不可见     | 仅用于历史 route 排空         |
 
 唯一核心开关是 wrangler template 中随 Git 提交的运行时 var：
 
@@ -185,16 +185,16 @@ scripts/provision-pages-v2-slots.mjs <environment> bindings
 
 slot 状态由 D1 权威表管理：
 
-| 状态 | 含义 | 是否可分配 |
-| ---- | ---- | ---------- |
-| `provisioning` | 历史扩容流程正在创建普通 Worker | 否 |
-| `available_pending_router` | Worker 已创建，但 router 尚未部署包含对应 service binding 的版本 | 否 |
-| `available` | Worker 和 router binding 均就绪 | 是 |
-| `assigned` | 已被某个站点版本占用，通常是 active 版本；非 active 旧版本会尽快进入清理 | 否 |
-| `disabled` | 手动停用或健康检查失败 | 否 |
-| `cleanup_pending` | 站点删除后等待清理或保留期结束 | 否 |
-| `delete_pending` | Cloudflare 删除受当前绑定关系阻挡，等待下一次 router deploy 后重试 | 否 |
-| `retired` | 已由管理员删除或退役，保留审计记录 | 否 |
+| 状态                       | 含义                                                                     | 是否可分配 |
+| -------------------------- | ------------------------------------------------------------------------ | ---------- |
+| `provisioning`             | 历史扩容流程正在创建普通 Worker                                          | 否         |
+| `available_pending_router` | Worker 已创建，但 router 尚未部署包含对应 service binding 的版本         | 否         |
+| `available`                | Worker 和 router binding 均就绪                                          | 是         |
+| `assigned`                 | 已被某个站点版本占用，通常是 active 版本；非 active 旧版本会尽快进入清理 | 否         |
+| `disabled`                 | 手动停用或健康检查失败                                                   | 否         |
+| `cleanup_pending`          | 站点删除后等待清理或保留期结束                                           | 否         |
+| `delete_pending`           | Cloudflare 删除受当前绑定关系阻挡，等待下一次 router deploy 后重试       | 否         |
+| `retired`                  | 已由管理员删除或退役，保留审计记录                                       | 否         |
 
 `pages-api` 不再为新的部署分配 `available` slot。`available` 只表示历史 Worker 仍存在且当前没有 active route 引用，可由管理员删除。
 
@@ -312,17 +312,17 @@ GET /cas/oauth2.0/profile?access_token=...
 
 `pages-auth` 第一版只把 profile 归一化为平台身份所需的最小字段：
 
-| 平台字段 | SSO 来源 | 说明 |
-| -------- | -------- | ---- |
-| `user_id` | `userId`，后备 `id` / `sub` | `users` 表主键，优先使用稳定且不可复用的 SSO `userId`；不要优先用邮箱。 |
-| `email` | `email` | 统一转小写，用于展示、审计和邮箱 ACL。 |
-| `realname` | `realname` / `name` | 员工姓名，仅用于管理展示、审计可读性和问题排查，不作为权限判断。 |
-| `account` | `account` | 当前系统推送帐号，受 SSO 后台应用设置影响；用于身份排查和后续目录对齐，不作为权限判断。 |
-| `account_id` | `accountId` / `account_id` | 当前系统推送帐号对应 ID；用于身份排查和后续目录对齐，不作为权限判断。 |
-| `employeenum` | `employeenum` / `employeeNum` / `employee_num` | 员工账号；用于身份排查和后续组织目录对齐，不作为权限判断。 |
-| `employeeStatus` | `employee_status` / `employeeStatus` | `1` / `active` 映射为 `active`；`0` / `disabled` / `inactive` 映射为 `disabled`；`left` / `leave` / `departed` 映射为 `left`；其它为 `unknown`。 |
-| `departments` | `departments` | 仅接受完整部门路径数组，并在目录 hydration 不可用时作为 site code / session 的回退；原始 `departmentIds` / `department_ids` 不作为部门 ACL 路径。 |
-| `sessionVersion` | `sessionVersion` / `session_version` | 缺失时平台默认 `1`。 |
+| 平台字段         | SSO 来源                                       | 说明                                                                                                                                              |
+| ---------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `user_id`        | `userId`，后备 `id` / `sub`                    | `users` 表主键，优先使用稳定且不可复用的 SSO `userId`；不要优先用邮箱。                                                                           |
+| `email`          | `email`                                        | 统一转小写，用于展示、审计和邮箱 ACL。                                                                                                            |
+| `realname`       | `realname` / `name`                            | 员工姓名，仅用于管理展示、审计可读性和问题排查，不作为权限判断。                                                                                  |
+| `account`        | `account`                                      | 当前系统推送帐号，受 SSO 后台应用设置影响；用于身份排查和后续目录对齐，不作为权限判断。                                                           |
+| `account_id`     | `accountId` / `account_id`                     | 当前系统推送帐号对应 ID；用于身份排查和后续目录对齐，不作为权限判断。                                                                             |
+| `employeenum`    | `employeenum` / `employeeNum` / `employee_num` | 员工账号；用于身份排查和后续组织目录对齐，不作为权限判断。                                                                                        |
+| `employeeStatus` | `employee_status` / `employeeStatus`           | `1` / `active` 映射为 `active`；`0` / `disabled` / `inactive` 映射为 `disabled`；`left` / `leave` / `departed` 映射为 `left`；其它为 `unknown`。  |
+| `departments`    | `departments`                                  | 仅接受完整部门路径数组，并在目录 hydration 不可用时作为 site code / session 的回退；原始 `departmentIds` / `department_ids` 不作为部门 ACL 路径。 |
+| `sessionVersion` | `sessionVersion` / `session_version`           | 缺失时平台默认 `1`。                                                                                                                              |
 
 `account`、`account_id`、`employeenum`、`realname` 可以进入 `users` 表，因为它们是常用身份排查字段，且不改变权限判断。`users` 表不再同时保存 `id` 和 `sso_subject` 两个等价字段，避免同一 SSO `userId` 出现两套名字。`fs_id`、`wechat_work`、`ad_account`、`job_number` 暂不进入核心 `users` 表；如果后续要长期使用，应单独设计 `user_identities` 或组织目录同步表。`st`、`tgtId` 是 CAS ticket 类敏感字段，不能持久化到平台业务库，也不能透传给 User Worker。
 
@@ -370,7 +370,7 @@ secrets:
 
 `CF_ACCOUNT_ID` 和 `CF_API_TOKEN` 是 `pages-api` 运行时调用 Cloudflare API / Workers for Platforms API 或 ordinary Worker deploy API 的配置，只能注入 `pages-api`。`CF_API_TOKEN` 不得注入 router、auth、user Worker、CLI、`--config` 文件或公开文档。`CLOUDFLARE_API_TOKEN` 只用于 Wrangler / GitHub Actions 部署，不能作为 Worker runtime secret 注入。
 
-`pages-api` 的 API 路由不按来源 IP 限制，所有 API 请求都必须使用 HTTPS，并由各 handler 执行 token、access key、session、scope 和 owner/team 校验。`IP_ALLOWLIST` 仍由现有模板注入 `pages-api` 作为兼容配置，部署期间继续要求提供，但 Worker 不读取它，也不把它作为请求门禁。子站默认/internal exposure 的 IP 门禁由 `pages-router` 的 `ROUTER_IP_ALLOWLIST_CIDRS` 执行；只有可信 schema v3 public snapshot 绕过该门禁。`pages-console` 继续读取 `IP_ALLOWLIST`，在 session、管理员权限和 CSRF 校验之外先限制公司网络来源。
+`pages-api` 的 API 路由不按来源 IP 限制，所有 API 请求都必须使用 HTTPS，并由各 handler 执行 token、access key、session、scope 和 owner/team 校验。`IP_ALLOWLIST` 仍由现有模板注入 `pages-api` 作为兼容配置，部署期间继续要求提供，但 Worker 不读取它，也不把它作为请求门禁。子站默认/internal exposure 的 IP 门禁由 `pages-router` 的 `ROUTER_IP_ALLOWLIST_CIDRS` 执行；只有可信 schema v3/v4 serve snapshot 显式声明 public 才绕过该门禁。`pages-console` 继续读取 `IP_ALLOWLIST`，在 session、管理员权限和 CSRF 校验之外先限制公司网络来源。
 
 `WFP_DISPATCH_NAMESPACE` 必须与 `PAGES_ENV` 强绑定：production 只能是 `xd-cell-workers-production`，staging 只能是 `xd-cell-workers-staging`。`packages/wfp-client` 的 `readWfpConfig` 会在运行时做这层校验，部署脚本也应做静态校验。`WFP_COMPATIBILITY_DATE` 当前在 wrangler template 中固定为 `2026-06-15`，保证 Worker 模块语义可复现；需要升级时走 PR 修改模板。`CF_API_BASE_URL` 默认是 `https://api.cloudflare.com/client/v4`；production / staging 即使配置该值，也必须保持 host 为 `api.cloudflare.com`，避免把 `CF_API_TOKEN` 发往非 Cloudflare API host。local/test 才允许使用其它 HTTPS host 做 mock。
 
@@ -559,31 +559,35 @@ Cloudflare account id、zone id、D1/KV namespace id 不是凭证，v2 workflow 
 
 当前 `deploy-pages-v2.yml` / `deploy-pages-v2-staging.yml` 的 GitHub Environment 配置应按 workflow 实际名称填写：
 
-| 名称                                  | 类型    | 使用方                         | 说明 |
-| ------------------------------------- | ------- | ------------------------------ | ---- |
-| `CLOUDFLARE_ACCOUNT_ID`               | var     | v2 系统 Worker wrangler 渲染和部署 | 用于 `account_id` 与 Wrangler 部署 env；workflow 会把同一个值作为 runtime secret `CF_ACCOUNT_ID` 注入 `pages-api` |
-| `IP_ALLOWLIST`                        | var     | `pages-console` / `pages-api` wrangler 渲染 | Console 公司网络门禁；注入 `pages-api` 时仅为兼容配置，API Worker 不读取 |
-| `PAGES_V2_D1_DATABASE_ID`             | var     | `pages-api` / `pages-auth` wrangler 渲染 | 当前环境的 D1 metadata database id |
-| `PAGES_V2_ROUTE_SNAPSHOTS_KV_ID`      | var     | `pages-api` / `pages-router` wrangler 渲染 | 当前环境的 route snapshot KV namespace id |
-| `PAGES_V2_SITE_DATA_KV_ID`            | var     | `pages-kv-gateway` wrangler 渲染 | 当前环境的 Pages KV site data namespace id；production / staging 必须不同 |
-| `PAGES_USER_WORKER_VPC_TUNNEL_ID`     | var     | `pages-api` / `pages-auth` wrangler 渲染 | 当前环境的办公网 Tunnel ID；用于 User Worker VPC binding，也用于 `pages-api` / `pages-auth` 通过 `XD_OFFICE_NET` 调用 XDS / OA |
-| `ROUTER_IP_ALLOWLIST_CIDRS`           | var     | `pages-router` wrangler 渲染   | 必填，router 缺失或无效时 fail closed |
-| `CLOUDFLARE_API_TOKEN`                | secret  | Wrangler 部署                  | 只能用于 GitHub Actions / Wrangler，不注入 Worker runtime；权限需覆盖 Worker 部署、Worker route 和 custom domain 绑定 |
-| `CF_API_TOKEN`                        | secret  | `pages-api` runtime            | 通过 `scripts/put-pages-v2-secrets.sh apps/pages-api` 注入，供 Cloudflare Workers / WFP API 调用 |
-| `PAGES_V1_SITES_KV_NAMESPACE_ID`      | secret  | `pages-api` runtime            | 当前环境 v1 SITES KV namespace id；可选，缺失时 v1 盘点返回 `V1_SITES_UNSUPPORTED`，production / staging 必须不同 |
-| `SLACK_PAGES_ALERT_WEBHOOK_URL`       | secret  | `pages-api` runtime            | Slack Incoming Webhook URL；用于 slot 容量耗尽等平台运维告警，只注入 `pages-api`，不能写入 wrangler template、GitHub Vars 或文档 |
-| `WEBHOOK_URL_ENCRYPTION_KEY`          | secret  | `pages-api` runtime            | 平台 Webhook 订阅目标 URL 加密 key；独立于站点级 secret key，只注入 `pages-api` |
-| `XDS_OPENAI_TOKEN`                    | secret  | `pages-api` / `pages-auth` runtime | XDS / OA `list-by-email` 签名 token，只注入需要部门 hydration 的系统 Worker；请求必须通过 `XD_OFFICE_NET` VPC Network binding |
-| `SSO_CLIENT_SECRET`                   | secret  | `pages-auth` runtime           | OAuth token exchange secret，只注入 auth Worker |
-| `ACCESS_KEY_PEPPER_*`                 | secret  | `pages-api` runtime            | 必须覆盖 `ACCESS_KEY_PEPPERS` registry 中每个 `secretEnvName` |
-| `PAGES_SESSION_JWT_SECRET_*`          | secret  | `pages-auth` / `pages-router` runtime | 必须覆盖 `PAGES_SESSION_JWT_KEYS` registry 中每个 `secretEnvName` |
-| `PAGES_CAP_JWT_SECRET_*`              | secret  | `pages-router` / `pages-kv-gateway` runtime | 必须覆盖 `PAGES_CAP_JWT_KEYS` registry 中每个 `secretEnvName` |
+| 名称                              | 类型   | 使用方                                      | 说明                                                                                                                             |
+| --------------------------------- | ------ | ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `CLOUDFLARE_ACCOUNT_ID`           | var    | v2 系统 Worker wrangler 渲染和部署          | 用于 `account_id` 与 Wrangler 部署 env；workflow 会把同一个值作为 runtime secret `CF_ACCOUNT_ID` 注入 `pages-api`                |
+| `IP_ALLOWLIST`                    | var    | `pages-console` / `pages-api` wrangler 渲染 | Console 公司网络门禁；注入 `pages-api` 时仅为兼容配置，API Worker 不读取                                                         |
+| `PAGES_V2_D1_DATABASE_ID`         | var    | `pages-api` / `pages-auth` wrangler 渲染    | 当前环境的 D1 metadata database id                                                                                               |
+| `PAGES_V2_ROUTE_SNAPSHOTS_KV_ID`  | var    | `pages-api` / `pages-router` wrangler 渲染  | 当前环境的 route snapshot KV namespace id                                                                                        |
+| `PAGES_V2_SITE_DATA_KV_ID`        | var    | `pages-kv-gateway` wrangler 渲染            | 当前环境的 Pages KV site data namespace id；production / staging 必须不同                                                        |
+| `PAGES_USER_WORKER_VPC_TUNNEL_ID` | var    | `pages-api` / `pages-auth` wrangler 渲染    | 当前环境的办公网 Tunnel ID；用于 User Worker VPC binding，也用于 `pages-api` / `pages-auth` 通过 `XD_OFFICE_NET` 调用 XDS / OA   |
+| `ROUTER_IP_ALLOWLIST_CIDRS`       | var    | `pages-router` wrangler 渲染                | 必填，router 缺失或无效时 fail closed                                                                                            |
+| `CLOUDFLARE_API_TOKEN`            | secret | Wrangler 部署                               | 只能用于 GitHub Actions / Wrangler，不注入 Worker runtime；权限需覆盖 Worker 部署、Worker route 和 custom domain 绑定            |
+| `CF_API_TOKEN`                    | secret | `pages-api` runtime                         | 通过 `scripts/put-pages-v2-secrets.sh apps/pages-api` 注入，供 Cloudflare Workers / WFP API 调用                                 |
+| `PAGES_V1_SITES_KV_NAMESPACE_ID`  | secret | `pages-api` runtime                         | 当前环境 v1 SITES KV namespace id；可选，缺失时 v1 盘点返回 `V1_SITES_UNSUPPORTED`，production / staging 必须不同                |
+| `SLACK_PAGES_ALERT_WEBHOOK_URL`   | secret | `pages-api` runtime                         | Slack Incoming Webhook URL；用于 slot 容量耗尽等平台运维告警，只注入 `pages-api`，不能写入 wrangler template、GitHub Vars 或文档 |
+| `WEBHOOK_URL_ENCRYPTION_KEY`      | secret | `pages-api` runtime                         | 平台 Webhook 订阅目标 URL 加密 key；独立于站点级 secret key，只注入 `pages-api`                                                  |
+| `XDS_OPENAI_TOKEN`                | secret | `pages-api` / `pages-auth` runtime          | XDS / OA `list-by-email` 签名 token，只注入需要部门 hydration 的系统 Worker；请求必须通过 `XD_OFFICE_NET` VPC Network binding    |
+| `SSO_CLIENT_SECRET`               | secret | `pages-auth` runtime                        | OAuth token exchange secret，只注入 auth Worker                                                                                  |
+| `ACCESS_KEY_PEPPER_*`             | secret | `pages-api` runtime                         | 必须覆盖 `ACCESS_KEY_PEPPERS` registry 中每个 `secretEnvName`                                                                    |
+| `PAGES_SESSION_JWT_SECRET_*`      | secret | `pages-auth` / `pages-router` runtime       | 必须覆盖 `PAGES_SESSION_JWT_KEYS` registry 中每个 `secretEnvName`                                                                |
+| `PAGES_CAP_JWT_SECRET_*`          | secret | `pages-router` / `pages-kv-gateway` runtime | 必须覆盖 `PAGES_CAP_JWT_KEYS` registry 中每个 `secretEnvName`                                                                    |
 
-v2 平台部署使用独立 workflow：`deploy-pages-v2.yml` 在 GitHub Actions 中显示为 `Deploy XD Cell Production`，只允许 `workflow_dispatch` 手动部署 production；`deploy-pages-v2-staging.yml` 显示为 `Deploy XD Cell Staging`，支持手动部署，也可以在 `staging` 分支的 v2 app / package / render script 相关文件变更时自动部署。它们只处理 v2 系统 Worker：`pages-api`、`pages-auth`、`pages-router`、`pages-kv-gateway`、`pages-console`，不部署 v1 `apps/server`、ACK、用户站点或发布执行器。`component=all` 的依赖顺序必须是：先执行 D1 migrations，再部署 `pages-api`，随后部署持有 `PAGES_API` service binding 的 `pages-auth`，再部署 `pages-kv-gateway`，最后 provision slot 并部署 `pages-router`，并在系统 Worker 可用后构建部署 `pages-console`。
+v2 平台部署使用独立 workflow：`deploy-pages-v2.yml` 在 GitHub Actions 中显示为 `Deploy XD Cell Production`，只允许 `workflow_dispatch` 手动部署 production；`deploy-pages-v2-staging.yml` 显示为 `Deploy XD Cell Staging`，支持手动部署，也可以在 `staging` 分支的 v2 app / package / render script 相关文件变更时自动部署。它们只处理 v2 系统 Worker：`pages-api`、`pages-auth`、`pages-router`、`pages-kv-gateway`、`pages-console`，不部署 v1 `apps/server`、ACK、用户站点或发布执行器。`component=all` 的依赖顺序必须是：先执行 D1 migrations，再部署 `pages-kv-gateway` 和 `pages-router` 两个协议 consumer，然后部署 `pages-api` producer，随后部署持有 `PAGES_API` service binding 的 `pages-auth`，最后构建部署 `pages-console`。为避免单组件操作绕过协议顺序，选择 `component=pages-api` 时也会先从同一 commit 重新部署 `pages-kv-gateway` 和 `pages-router`；选择 consumer 本身仍只部署所选组件。
 
 v2 runtime secret 注入使用 `scripts/put-pages-v2-secrets.sh <app>`。它会在部署前用 `DRY_RUN=1` 校验 registry 和必需 secret 是否齐全，部署后再写入 Worker secret。`pages-api` 注入 `CF_ACCOUNT_ID`、`CF_API_TOKEN`、`SLACK_PAGES_ALERT_WEBHOOK_URL`、`SITE_SECRET_ENCRYPTION_KEY`、`WEBHOOK_URL_ENCRYPTION_KEY`、`XDS_OPENAI_TOKEN` 和 `ACCESS_KEY_PEPPER_*`；如果配置了 `PAGES_V1_SITES_KV_NAMESPACE_ID`，也会作为可选 secret 注入，清空时脚本会删除 Worker 上的旧值；已废弃的 `PAGES_V1_ZONE_ID` 会被脚本持续清理残留。`pages-auth` 注入 `SSO_CLIENT_SECRET`、`XDS_OPENAI_TOKEN` 和 `PAGES_SESSION_JWT_SECRET_*`；`pages-router` 注入 `PAGES_SESSION_JWT_SECRET_*` 和 `PAGES_CAP_JWT_SECRET_*`；`pages-kv-gateway` 只注入 `PAGES_CAP_JWT_SECRET_*`；`pages-console` 注入 `PAGES_SESSION_JWT_SECRET_*`。
 
 `SLACK_PAGES_ALERT_MENTION_USER_ID` 是 `pages-api` wrangler template 中固定的非敏感告警接收人 id，用于 legacy slot 容量告警正文里的单次 Slack mention。`PAGES_NORMAL_WORKER_SLOT_EXPAND_BY` 只作为历史兼容配置和测试输入保留，当前 router 部署不再用它新增 slot。
+
+`SITE_METADATA_MUTATIONS_ENABLED` 是两个 pages-api 环境模板中 Git 可审查的止损开关，当前默认均为 `true`，且只有精确 `true` 才开放名称/URL mutation；显式携带 `title` 的部署（包括 replay）同样受此开关限制，省略 `title` 的部署不受影响。它不是 GitHub Environment Var，也不影响 metadata 读取、兼容 writer 或 scheduled reconciliation。紧急止损时在对应环境模板中改为 `false` 并重新部署 pages-api。本期缩略图延期，不新增 R2 binding。
+
+站点 metadata rollout 必须先应用 `0021_site_metadata.sql`，再由 `component=all` workflow 依次部署兼容的 kv-gateway、pages-router、pages-api、pages-auth 与 pages-console，保持 consumer-before-producer；当前 CLI 不发送 `title`，无需随该开关部署。当前 production 与 staging 模板均已打开 flag；新建或重建环境若尚未完成 v2/v3/v4 reader、连续 rename、旧地址不跳转且经过 pointer 清理与 5 分钟 hold 后可复用、runtime data 和 deploy/rollback 验收，必须先在对应模板中关闭 flag。production 仍只通过 `Deploy XD Cell Production` 手动发布。新版 pages-api 上线后，任意 deploy、rollback、访问策略或 runtime config snapshot 刷新都可能写出首个 schema v4 pointer；从这一刻起，即使尚未发生 slug rename，也不得降级到不认识 schema v4 / namespace v2 的旧 pages-router 或 pages-kv-gateway。若尚未发生 slug rename 且必须回滚 producer，只回滚 pages-api，并保留新版 pages-router 和 pages-kv-gateway。首次 slug rename 后 pages-api、pages-router 与 pages-kv-gateway 均只能 roll forward；异常时关闭 flag，不能恢复不认识 `dataNamespace` 或旧 pointer 清理状态的旧 writer。
 
 ### 配置校验
 
@@ -600,6 +604,7 @@ v2 runtime secret 注入使用 `scripts/put-pages-v2-secrets.sh <app>`。它会�
 - signing key registry 中的 active kid 必须能找到对应 secret。
 - `CINDY_CONNECTION_ISSUERS` 必须是逗号分隔的 https origin 列表；`CINDY_CONNECTION_AUDIENCE` 必须是 `<orgSlug>:<plugin-slug>` 格式；production 的 issuer 列表不得包含 dev issuer(`auth-dev.*`)。renderer 必须 fail closed。
 - `PAGES_EXECUTION_MODE` 必须在 `pages-api` 和 `pages-router` 对应环境 template 中各出现一次，只能是 `normal-worker-slot` 或 `wfp`；不得从 GitHub Environment Vars 注入。
+- `SITE_METADATA_MUTATIONS_ENABLED` 必须在 production/staging pages-api template 中显式存在；当前默认启用，紧急止损或新环境尚未完成上述 consumer-before-producer 验收时改为 `false`。
 - `WFP_DISPATCH_NAMESPACE` 必须与 `PAGES_ENV` 匹配，不能 staging/prod 串用。
 - `PAGES_USER_WORKER_VPC_TUNNEL_ID` 是 `pages-api` / `pages-auth` 的可选渲染 token，必须从 GitHub Environment Variable 注入；未配置时渲染为空字符串，且不会渲染 `XD_OFFICE_NET` VPC Network binding。
 - `XDS_OPENAI_TOKEN` 必须作为 GitHub Environment secret 注入 `pages-api` 和 `pages-auth` runtime；真实值不得写入 vars、wrangler template、日志或文档示例值。
@@ -666,11 +671,11 @@ staging 首次部署前必须完成：
 4. staging smoke 顺序：Cindy dev 实例（或手工签发的断言）直接携带 Bearer JWT 调 whoami / sites / deployments -> 首次断言自动落库（`created_source=cindy`，`cindy_membership_id` 绑定） -> 尝试用断言创建 access key 必须 403 -> 用户 `employee_status` 置非 active 后断言返回 403。
 5. 联调记录只保留脱敏的 membershipId、`jti`、内部 user id、状态码和时间；不得记录断言原文或 JWKS 之外的 payload 字段。
 
-production 首次部署前必须完成：
+production 发布或升级前必须完成：
 
 1. staging smoke checklist 全部通过，并确认 Cloudflare route / DNS / certificate 已覆盖 v2 `workers.xd.team` 新默认后缀和存量 `pages.xd.team` route，且 v1 exact route 优先级不变。
 2. GitHub `production` Environment 已配置独立 production D1/KV、执行面资源、SSO app、JWT secret、access key pepper、`SITE_SECRET_ENCRYPTION_KEY`、`WEBHOOK_URL_ENCRYPTION_KEY`、Console IP allowlist 和 router IP allowlist。production router template 必须固定绑定 `xd-cell-workers-production` dispatch namespace；production template 中的 `PAGES_EXECUTION_MODE` 必须为 `wfp`，router 只保留 active legacy route 仍需要的显式 slot binding。
 3. XD Cell production 部署 workflow（当前 workflow 文件为 `deploy-pages-v2.yml`）只能通过 `workflow_dispatch` 触发；push/PR 不得触发 production。
-4. 生产首次发布使用 `component=all`，由 workflow 按 D1 migration -> auth -> api -> kv-gateway -> router 的顺序创建依赖，避免 service binding 指向缺失 Worker；`0008_runtime_bindings.sql`、`0009_runtime_config_generation.sql` 和 `0010_site_vars.sql` 必须先于 `pages-api` 新版本生效。
+4. 已有 v2 production 环境的本次 metadata 协议升级使用 `component=all`，由 workflow 按 D1 migration -> kv-gateway -> router -> pages-api -> pages-auth -> pages-console 的顺序部署：先上线 route/runtime 协议 consumer，再上线写入 v4 snapshot 的 pages-api，同时保持 pages-api 先于依赖它的 pages-auth；`0008_runtime_bindings.sql`、`0009_runtime_config_generation.sql`、`0010_site_vars.sql` 和 `0021_site_metadata.sql` 必须先于 `pages-api` 新版本生效。该顺序假设现有 `pages-auth` 已可供 router service binding 使用，不是空账号的 bootstrap 流程；全新环境必须在关闭外部流量和 metadata flag 的前提下，先按 pages-api -> pages-auth、kv-gateway -> router 建立 service binding 目标，再运行 `component=all` 收敛到 consumer-before-producer 基线。
 5. 发布后先验证 `api.pages.xd.team/.xd-pages/health`、`auth.pages.xd.team` 登录入口和一个受控试点站点。
-6. 回滚策略是重新 dispatch 上一个已知好 commit 的 workflow，或按组件手动部署上一个 commit；不得通过修改 v1 `workers.xd.team` route 回滚 v2。
+6. metadata 兼容基线上线前，可重新 dispatch 协议兼容的已知好 commit。新版 pages-api 可能写出首个 schema v4 pointer 后，不得整套回滚旧 workflow，也不得单独回滚 pages-router 或 pages-kv-gateway；尚未发生 slug rename 时如需回滚 producer，只部署旧 pages-api 并保留新版 consumers，首次 slug rename 后三个组件均只允许 roll forward。pages-console 可独立回滚。任何情况都不得通过修改 v1 `workers.xd.team` route 回滚 v2。

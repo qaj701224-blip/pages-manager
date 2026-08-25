@@ -7,13 +7,15 @@ export function buildRouteSnapshot({ site, route, version, aclEntries = [] }) {
   const accessMode = accessModeFromVisibility(route.visibility);
   if (!accessMode) throw new Error('SITE_POLICY_INVALID');
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
+    kind: 'serve',
     routeId: route.id,
     hostname: route.hostname,
     environment: route.environment,
     siteId: site.id,
     siteUuid: site.siteUuid,
     slug: site.slug,
+    dataNamespace: site.dataNamespace || site.slug,
     ownerUserId: site.ownerType === 'team' ? null : site.ownerUserId,
     requiredSessionVersion: site.requiredSessionVersion || 1,
     runtime: route.runtime,
@@ -98,14 +100,21 @@ export async function clearRoutePointerIfCurrent(target, expectedPointer) {
   }
 
   const rawPointer = await routeSnapshots.get(pointerKey);
-  if (!rawPointer) return false;
+  if (!rawPointer) return hasExpectedPointerIdentity(expectedPointer);
   let pointer;
   try {
     pointer = parseSnapshotValue(rawPointer);
   } catch {
     return false;
   }
+  if (
+    hasExpectedPointerIdentity(expectedPointer) &&
+    !(await pointedSnapshotMatchesIdentity(routeSnapshots, pointer, expectedPointer))
+  ) {
+    return false;
+  }
   if (!routePointerCanBeCleared(pointer, expectedPointer)) {
+    if (hasExpectedPointerIdentity(expectedPointer)) return false;
     const publicAhead = await pointedSnapshotIsPublic(routeSnapshots, pointer);
     if (!publicAhead) return false;
   }
@@ -161,7 +170,7 @@ export async function writeRouteSnapshotUnlocked(routeSnapshots, snapshot) {
   if (!routeSnapshots || typeof routeSnapshots.put !== 'function') throw new Error('Route snapshot store is required');
 
   assertSnapshotEnvironment(snapshot.environment);
-  const snapshotKey = routeSnapshotKey(snapshot.environment, snapshot.hostname, snapshot.routeGeneration, snapshot.policyVersion);
+  const snapshotKey = routeSnapshotKeyForSnapshot(snapshot);
   await assertRoutePointerIsNotStale(routeSnapshots, snapshot);
   const pointer = routePointer(snapshot, snapshotKey);
   await routeSnapshots.put(snapshotKey, JSON.stringify(snapshot));
@@ -175,7 +184,7 @@ export async function readRouteSnapshotState(target, snapshot) {
     throw new Error('Route snapshot store is required');
   }
   const pointerKey = routePointerKey(snapshot.environment, snapshot.hostname);
-  const expectedKey = routeSnapshotKey(snapshot.environment, snapshot.hostname, snapshot.routeGeneration, snapshot.policyVersion);
+  const expectedKey = routeSnapshotKeyForSnapshot(snapshot);
   const rawPointer = await routeSnapshots.get(pointerKey);
   if (!rawPointer) return { state: 'missing', pointer: null, snapshot: null, snapshotKey: expectedKey };
 
@@ -230,15 +239,21 @@ export async function readRouteSnapshotState(target, snapshot) {
 export async function repairRouteSnapshot(target, snapshot) {
   const before = await readRouteSnapshotState(target, snapshot);
   if (before.state === 'invalid') throw new Error('ROUTE_POINTER_INVALID');
-  if (before.state === 'ahead') return { ...before, repaired: false, pointerConfirmed: false };
-  if (before.state === 'exact') return { ...before, repaired: false, pointerConfirmed: true };
+  const routeSnapshots = target?.ROUTE_SNAPSHOTS || target;
+  if (before.state === 'ahead' && !(await deletedRouteAllowsOwnerReplacement(routeSnapshots, before.pointer, snapshot))) {
+    return { ...before, repaired: false, pointerConfirmed: false };
+  }
+  const requiresDurableConfirmation = Boolean(target?.ROUTE_POINTER_LOCKS);
+  if (before.state === 'exact' && !requiresDurableConfirmation) {
+    return { ...before, repaired: false, pointerConfirmed: true };
+  }
 
-  await writeRouteSnapshot(target, snapshot);
+  const writeResult = await writeRouteSnapshot(target, snapshot);
   const after = await readRouteSnapshotState(target, snapshot);
   return {
     ...after,
-    repaired: true,
-    pointerConfirmed: after.state === 'exact',
+    repaired: before.state !== 'exact',
+    pointerConfirmed: after.state === 'exact' && (!requiresDurableConfirmation || writeResult?.durableStateConfirmed === true),
   };
 }
 
@@ -260,6 +275,7 @@ export class RoutePointerDO {
   constructor(state, env) {
     this.state = state;
     this.env = env;
+    this.pointerOperations = Promise.resolve();
   }
 
   async fetch(request) {
@@ -277,62 +293,85 @@ export class RoutePointerDO {
       return jsonResponse({ error: 'INVALID_JSON' }, 400);
     }
 
-    try {
-      if (deploymentRecoveryOperation) {
-        const response = await handleDeploymentFailureRecoveryRequest(this.state.storage, deploymentRecoveryOperation, body);
-        return response;
-      }
-      if (pathname === '/clear') {
-        const expectedPointer = body?.pointer;
-        assertRoutePointerShape(expectedPointer);
-        const pointerKey = routePointerKey(expectedPointer?.environment, expectedPointer?.hostname);
-        const rawPointer = await this.env.ROUTE_SNAPSHOTS.get(pointerKey);
-        if (rawPointer) {
-          let currentPointer;
-          try {
-            currentPointer = parseSnapshotValue(rawPointer);
-          } catch {
-            return jsonResponse({ cleared: false, reason: 'POINTER_INVALID' }, 409);
+    const handle = async () => {
+      try {
+        if (deploymentRecoveryOperation) {
+          const response = await handleDeploymentFailureRecoveryRequest(this.state.storage, deploymentRecoveryOperation, body);
+          return response;
+        }
+        if (pathname === '/clear') {
+          const expectedPointer = body?.pointer;
+          assertRoutePointerShape(expectedPointer);
+          const pointerKey = routePointerKey(expectedPointer?.environment, expectedPointer?.hostname);
+          const latestPointer = await this.state.storage.get('pointer');
+          if (!(await durablePointerCanBeCleared(this.env.ROUTE_SNAPSHOTS, latestPointer, expectedPointer))) {
+            return jsonResponse({ cleared: false, reason: 'POINTER_STATE_CHANGED' }, 409);
           }
-          if (!routePointerCanBeCleared(currentPointer, expectedPointer)) {
-            const publicAhead = await pointedSnapshotIsPublic(this.env.ROUTE_SNAPSHOTS, currentPointer);
-            if (!publicAhead) {
-              return jsonResponse({ cleared: false, reason: 'POINTER_CHANGED' }, 409);
+          const rawPointer = await this.env.ROUTE_SNAPSHOTS.get(pointerKey);
+          if (rawPointer) {
+            let currentPointer;
+            try {
+              currentPointer = parseSnapshotValue(rawPointer);
+            } catch {
+              return jsonResponse({ cleared: false, reason: 'POINTER_INVALID' }, 409);
+            }
+            if (
+              hasExpectedPointerIdentity(expectedPointer) &&
+              !(await pointedSnapshotMatchesIdentity(this.env.ROUTE_SNAPSHOTS, currentPointer, expectedPointer))
+            ) {
+              return jsonResponse({ cleared: false, reason: 'POINTER_OWNER_CHANGED' }, 409);
+            }
+            if (!routePointerCanBeCleared(currentPointer, expectedPointer)) {
+              if (hasExpectedPointerIdentity(expectedPointer)) {
+                return jsonResponse({ cleared: false, reason: 'POINTER_CHANGED' }, 409);
+              }
+              const publicAhead = await pointedSnapshotIsPublic(this.env.ROUTE_SNAPSHOTS, currentPointer);
+              if (!publicAhead) {
+                return jsonResponse({ cleared: false, reason: 'POINTER_CHANGED' }, 409);
+              }
             }
           }
+          if (typeof this.env.ROUTE_SNAPSHOTS.delete !== 'function') {
+            return jsonResponse({ error: 'ROUTE_POINTER_CLEAR_FAILED' }, 503);
+          }
+          await this.state.storage.put('pointer', clearedPointerTombstone(expectedPointer));
+          await this.env.ROUTE_SNAPSHOTS.delete(pointerKey);
+          if (await this.env.ROUTE_SNAPSHOTS.get(pointerKey)) {
+            return jsonResponse({ cleared: false, reason: 'POINTER_DELETE_NOT_CONFIRMED' }, 409);
+          }
+          return jsonResponse({ cleared: true }, 200);
         }
-        if (typeof this.env.ROUTE_SNAPSHOTS.delete !== 'function') {
-          return jsonResponse({ error: 'ROUTE_POINTER_CLEAR_FAILED' }, 503);
-        }
-        await this.env.ROUTE_SNAPSHOTS.delete(pointerKey);
-        let pointerState;
-        try {
-          if (typeof this.state.storage.delete === 'function') await this.state.storage.delete('pointer');
-          else await this.state.storage.put('pointer', null);
-        } catch {
-          pointerState = 'durable_state_delete_failed_after_kv_commit';
+        const snapshot = body?.snapshot;
+        assertSnapshotEnvironment(snapshot?.environment);
+        const latestPointer = await this.state.storage.get('pointer');
+        await assertPointerWriteAllowed(this.env.ROUTE_SNAPSHOTS, latestPointer, snapshot);
+        const pointerState = pointerStateForSnapshot(routePointer(snapshot, routeSnapshotKeyForSnapshot(snapshot)), snapshot);
+        const ownerFenceRequired = await pointerOwnerFenceRequired(this.env.ROUTE_SNAPSHOTS, latestPointer, snapshot);
+        if (ownerFenceRequired) await this.state.storage.put('pointer', pointerState);
+        const result = await writeRouteSnapshotUnlocked(this.env.ROUTE_SNAPSHOTS, snapshot);
+        if (ownerFenceRequired) {
+          result.durableStateConfirmed = true;
+        } else {
           try {
-            await this.state.storage.put('pointer', { cleared: true });
+            await this.state.storage.put('pointer', pointerStateForSnapshot(result.pointer, snapshot));
+            result.durableStateConfirmed = true;
           } catch {
-            pointerState = 'durable_state_repair_required_after_kv_commit';
+            result.durableStateConfirmed = false;
+            result.pointerState = 'durable_state_write_failed_after_kv_commit';
           }
         }
-        return jsonResponse({ cleared: true, ...(pointerState ? { pointerState } : {}) }, 200);
+        return jsonResponse(result, 200);
+      } catch (error) {
+        return jsonResponse({ error: error instanceof Error ? error.message : 'ROUTE_POINTER_WRITE_FAILED' }, 409);
       }
-      const snapshot = body?.snapshot;
-      assertSnapshotEnvironment(snapshot?.environment);
-      const latestPointer = await this.state.storage.get('pointer');
-      if (!latestPointer?.cleared) assertPointerIsNotStale(latestPointer, snapshot);
-      const result = await writeRouteSnapshotUnlocked(this.env.ROUTE_SNAPSHOTS, snapshot);
-      try {
-        await this.state.storage.put('pointer', result.pointer);
-      } catch {
-        result.pointerState = 'durable_state_write_failed_after_kv_commit';
-      }
-      return jsonResponse(result, 200);
-    } catch (error) {
-      return jsonResponse({ error: error instanceof Error ? error.message : 'ROUTE_POINTER_WRITE_FAILED' }, 409);
-    }
+    };
+    if (deploymentRecoveryOperation) return handle();
+    const result = this.pointerOperations.then(handle, handle);
+    this.pointerOperations = result.then(
+      () => undefined,
+      () => undefined
+    );
+    return result;
   }
 }
 
@@ -391,14 +430,31 @@ function deploymentFailureRecoveryStorageKey(deploymentId) {
 }
 
 async function pointedSnapshotIsPublic(routeSnapshots, pointer) {
-  if (!pointer?.snapshotKey || typeof routeSnapshots?.get !== 'function') return false;
-  const rawSnapshot = await routeSnapshots.get(pointer.snapshotKey);
-  if (!rawSnapshot) return false;
-  try {
-    return parseSnapshotValue(rawSnapshot)?.exposure === 'public';
-  } catch {
-    return false;
+  return (await readPointedSnapshot(routeSnapshots, pointer))?.exposure === 'public';
+}
+
+async function pointedSnapshotMatchesIdentity(routeSnapshots, pointer, expected) {
+  const snapshot = await readPointedSnapshot(routeSnapshots, pointer);
+  return (
+    pointedSnapshotMatchesPointer(snapshot, pointer) &&
+    snapshot.siteId === expected.siteId &&
+    snapshot.routeId === expected.routeId
+  );
+}
+
+async function durablePointerCanBeCleared(routeSnapshots, actual, expected) {
+  if (!actual) return true;
+  if (actual.cleared === true) {
+    if (actual.environment === undefined && actual.hostname === undefined) return true;
+    if (!routePointerCanBeCleared(actual, expected)) return false;
+    return !hasExpectedPointerIdentity(actual) || !hasExpectedPointerIdentity(expected) || routeIdentityMatches(actual, expected);
   }
+  if (hasExpectedPointerIdentity(expected)) {
+    if (!(await pointedSnapshotMatchesIdentity(routeSnapshots, actual, expected))) return false;
+    return routePointerCanBeCleared(actual, expected);
+  }
+  if (routePointerCanBeCleared(actual, expected)) return true;
+  return pointedSnapshotIsPublic(routeSnapshots, actual);
 }
 
 async function assertRoutePointerIsNotStale(routeSnapshots, snapshot) {
@@ -407,7 +463,11 @@ async function assertRoutePointerIsNotStale(routeSnapshots, snapshot) {
   const existingPointer = await readExistingPointer(routeSnapshots, snapshot);
   if (!existingPointer) return;
 
+  const ownerReplacementAllowed = await deletedRouteAllowsOwnerReplacement(routeSnapshots, existingPointer, snapshot);
+  if (ownerReplacementAllowed) return;
+
   assertPointerIsNotStale(existingPointer, snapshot);
+  await assertKvPointerOwnerMatches(routeSnapshots, existingPointer, snapshot);
 }
 
 function assertPointerIsNotStale(existingPointer, snapshot) {
@@ -418,6 +478,148 @@ function assertPointerIsNotStale(existingPointer, snapshot) {
   ) {
     throw new Error('ROUTE_POINTER_STALE');
   }
+}
+
+async function assertPointerWriteAllowed(routeSnapshots, existingPointer, snapshot) {
+  const ownerReplacementAllowed = await deletedRouteAllowsOwnerReplacement(routeSnapshots, existingPointer, snapshot);
+  const currentPointer = await readExistingPointer(routeSnapshots, snapshot);
+  if (!ownerReplacementAllowed && currentPointer) {
+    assertPointerIsNotStale(currentPointer, snapshot);
+    await assertKvPointerOwnerMatches(routeSnapshots, currentPointer, snapshot);
+  }
+  if (!existingPointer) return;
+  if (existingPointer.cleared === true) {
+    if (routeIdentityMatches(existingPointer, snapshot) && !routeTupleIsAhead(snapshot, existingPointer)) {
+      throw new Error('ROUTE_POINTER_STALE');
+    }
+    return;
+  }
+  const persistedState = await readRouteSnapshotState(routeSnapshots, snapshot);
+  if (persistedState.state === 'exact') {
+    if (
+      hasExpectedPointerIdentity(existingPointer) &&
+      hasExpectedPointerIdentity(snapshot) &&
+      !routeIdentityMatches(existingPointer, snapshot) &&
+      !(await pointerStateRepresentsDeletedRoute(routeSnapshots, existingPointer))
+    ) {
+      throw new Error('ROUTE_POINTER_OWNER_CHANGED');
+    }
+    return;
+  }
+  if (ownerReplacementAllowed) return;
+  if (hasExpectedPointerIdentity(existingPointer) && hasExpectedPointerIdentity(snapshot)) {
+    if (!routeIdentityMatches(existingPointer, snapshot)) {
+      throw new Error('ROUTE_POINTER_OWNER_CHANGED');
+    }
+  }
+  assertPointerIsNotStale(existingPointer, snapshot);
+}
+
+async function deletedRouteAllowsOwnerReplacement(routeSnapshots, existingPointer, candidate) {
+  if (!hasExpectedPointerIdentity(candidate)) return false;
+  const currentPointer = await readExistingPointer(routeSnapshots, candidate);
+  if (!currentPointer?.snapshotKey) return false;
+
+  const currentSnapshot = await readPointedSnapshot(routeSnapshots, currentPointer);
+
+  if (
+    !pointedSnapshotMatchesPointer(currentSnapshot, currentPointer) ||
+    currentSnapshot.environment !== candidate.environment ||
+    currentSnapshot.hostname !== candidate.hostname ||
+    currentSnapshot?.routeStatus !== 'deleted' ||
+    currentSnapshot?.runtime !== 'disabled' ||
+    !hasExpectedPointerIdentity(currentSnapshot) ||
+    routeIdentityMatches(currentSnapshot, candidate)
+  ) {
+    return false;
+  }
+  if (!hasExpectedPointerIdentity(existingPointer) || routeIdentityMatches(existingPointer, currentSnapshot)) {
+    return true;
+  }
+  return routeIdentityMatches(existingPointer, candidate) && !routeTupleIsAhead(existingPointer, candidate);
+}
+
+async function assertKvPointerOwnerMatches(routeSnapshots, pointer, candidate) {
+  if (!hasExpectedPointerIdentity(candidate)) return;
+  const currentSnapshot = await readPointedSnapshot(routeSnapshots, pointer);
+  if (!pointedSnapshotMatchesPointer(currentSnapshot, pointer) || !hasExpectedPointerIdentity(currentSnapshot)) {
+    throw new Error('ROUTE_POINTER_OWNER_UNCONFIRMED');
+  }
+  if (!routeIdentityMatches(currentSnapshot, candidate)) {
+    throw new Error('ROUTE_POINTER_OWNER_CHANGED');
+  }
+}
+
+async function pointerOwnerFenceRequired(routeSnapshots, existingPointer, candidate) {
+  if (!hasExpectedPointerIdentity(candidate)) return false;
+  if (existingPointer?.cleared === true) return true;
+  if (hasExpectedPointerIdentity(existingPointer)) {
+    return !routeIdentityMatches(existingPointer, candidate);
+  }
+  const currentPointer = await readExistingPointer(routeSnapshots, candidate);
+  if (!currentPointer) return false;
+  const currentSnapshot = await readPointedSnapshot(routeSnapshots, currentPointer);
+  return hasExpectedPointerIdentity(currentSnapshot) && !routeIdentityMatches(currentSnapshot, candidate);
+}
+
+async function pointerStateRepresentsDeletedRoute(routeSnapshots, pointer) {
+  const snapshot = await readPointedSnapshot(routeSnapshots, pointer);
+  return (
+    pointedSnapshotMatchesPointer(snapshot, pointer) &&
+    hasExpectedPointerIdentity(snapshot) &&
+    routeIdentityMatches(snapshot, pointer) &&
+    snapshot.routeStatus === 'deleted' &&
+    snapshot.runtime === 'disabled'
+  );
+}
+
+async function readPointedSnapshot(routeSnapshots, pointer) {
+  if (!pointer?.snapshotKey || typeof routeSnapshots?.get !== 'function') return null;
+  const rawSnapshot = await routeSnapshots.get(pointer.snapshotKey);
+  if (!rawSnapshot) return null;
+  try {
+    return parseSnapshotValue(rawSnapshot);
+  } catch {
+    return null;
+  }
+}
+
+function pointedSnapshotMatchesPointer(snapshot, pointer) {
+  return (
+    snapshot?.environment === pointer?.environment &&
+    snapshot?.hostname === pointer?.hostname &&
+    snapshot?.routeGeneration === pointer?.routeGeneration &&
+    snapshot?.policyVersion === pointer?.policyVersion
+  );
+}
+
+function routeTupleIsAhead(candidate, current) {
+  return (
+    candidate.routeGeneration > current.routeGeneration ||
+    (candidate.routeGeneration === current.routeGeneration && candidate.policyVersion > current.policyVersion)
+  );
+}
+
+function routeIdentityMatches(left, right) {
+  return left.siteId === right.siteId && left.routeId === right.routeId;
+}
+
+function pointerStateForSnapshot(pointer, snapshot) {
+  return {
+    ...pointer,
+    ...(hasExpectedPointerIdentity(snapshot) ? { siteId: snapshot.siteId, routeId: snapshot.routeId } : {}),
+  };
+}
+
+function clearedPointerTombstone(pointer) {
+  return {
+    cleared: true,
+    hostname: pointer.hostname,
+    environment: pointer.environment,
+    routeGeneration: pointer.routeGeneration,
+    policyVersion: pointer.policyVersion,
+    ...(hasExpectedPointerIdentity(pointer) ? { siteId: pointer.siteId, routeId: pointer.routeId } : {}),
+  };
 }
 
 function routePointerCanBeCleared(actual, expected) {
@@ -435,16 +637,31 @@ function routePointerCanBeCleared(actual, expected) {
 
 function assertRoutePointerShape(pointer) {
   assertSnapshotEnvironment(pointer?.environment);
+  const identityProvided = pointer?.siteId !== undefined || pointer?.routeId !== undefined;
   if (
     typeof pointer?.hostname !== 'string' ||
     pointer.hostname.length === 0 ||
     !Number.isInteger(pointer.routeGeneration) ||
     !Number.isInteger(pointer.policyVersion) ||
     typeof pointer.snapshotKey !== 'string' ||
-    pointer.snapshotKey.length === 0
+    pointer.snapshotKey.length === 0 ||
+    (identityProvided &&
+      (typeof pointer.siteId !== 'string' ||
+        pointer.siteId.length === 0 ||
+        typeof pointer.routeId !== 'string' ||
+        !pointer.routeId))
   ) {
     throw new Error('ROUTE_POINTER_INVALID');
   }
+}
+
+function hasExpectedPointerIdentity(pointer) {
+  return (
+    typeof pointer?.siteId === 'string' &&
+    pointer.siteId.length > 0 &&
+    typeof pointer?.routeId === 'string' &&
+    pointer.routeId.length > 0
+  );
 }
 
 function routePointer(snapshot, snapshotKey) {
@@ -479,21 +696,38 @@ function parseSnapshotValue(value) {
 }
 
 function snapshotTupleMatches(actual, expected) {
-  return (
-    actual?.environment === expected.environment &&
-    actual?.hostname === expected.hostname &&
-    actual?.routeGeneration === expected.routeGeneration &&
-    actual?.policyVersion === expected.policyVersion &&
-    actual?.schemaVersion === expected.schemaVersion
-  );
+  return stableJson(actual) === stableJson(expected);
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value)
+      .sort()
+      .filter((key) => value[key] !== undefined)
+      .map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function assertSnapshotEnvironment(environment) {
   if (environment !== 'production' && environment !== 'staging') throw new Error('ROUTE_SNAPSHOT_ENV_INVALID');
 }
 
-export function routeSnapshotKey(environment, hostname, routeGeneration, policyVersion) {
-  return `${environment}:route_snapshot:${hostname}:${routeGeneration}:${policyVersion}`;
+export function routeSnapshotKey(environment, hostname, routeGeneration, policyVersion, siteId = null) {
+  const identity = typeof siteId === 'string' && siteId ? `:${siteId}` : '';
+  return `${environment}:route_snapshot:${hostname}${identity}:${routeGeneration}:${policyVersion}`;
+}
+
+function routeSnapshotKeyForSnapshot(snapshot) {
+  return routeSnapshotKey(
+    snapshot.environment,
+    snapshot.hostname,
+    snapshot.routeGeneration,
+    snapshot.policyVersion,
+    snapshot.schemaVersion === 4 ? snapshot.siteId : null
+  );
 }
 
 export function routePointerKey(environment, hostname) {

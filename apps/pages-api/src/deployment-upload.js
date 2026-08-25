@@ -59,6 +59,7 @@ async function readPublishPlanMultipartBody(form) {
     siteSlug: metadata.siteSlug,
     teamId: metadata.teamId,
     visibility: metadata.visibility,
+    ...(Object.hasOwn(metadata, 'title') ? { title: metadata.title } : {}),
     ...(Object.hasOwn(metadata, 'exposure') ? { exposure: metadata.exposure } : {}),
     source: typeof metadata.source === 'string' && metadata.source.trim() ? metadata.source.trim() : 'cli',
     contentHash: typeof metadata.contentHash === 'string' ? metadata.contentHash : '',

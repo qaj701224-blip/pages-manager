@@ -4295,10 +4295,83 @@ test('platform admin can edit admin-scope site settings without asset membership
   assert.equal(settingsBody.site.owner.type, 'user');
   assert.equal(settingsBody.site.owner.id, 'usr_target');
   assert.equal(settingsBody.site.owner.displayName, '目标用户');
+  assert.equal(settingsBody.site.permissions.canTransferOwnership, true);
   const site = await store.getSite('site_console');
   assert.equal(site.ownerType, 'user');
   assert.equal(site.ownerId, 'usr_target');
   assert.equal(site.ownerUserId, 'usr_target');
+});
+
+test('platform admin can transfer site ownership without recent-login metadata', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await seedConsoleUser(store, 'usr_owner');
+  await seedConsoleUser(store, 'usr_target');
+  await store.createSite({
+    id: 'site_personal',
+    slug: 'personal',
+    ownerUserId: 'usr_owner',
+    ownerType: 'user',
+    ownerId: 'usr_owner',
+    siteUuid: 'uuid_site_personal',
+    defaultVisibility: 'internal',
+    environment: 'production',
+    routeId: 'route_site_personal',
+    hostname: 'personal.workers.xd.team',
+  });
+  const routeBefore = await store.getRouteBySiteId('site_personal', 'production');
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_personal/settings', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'PATCH',
+      body: { ownerType: 'user', ownerId: 'usr_target' },
+    }),
+    env(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.equal((await response.json()).site.owner.id, 'usr_target');
+  assert.equal((await store.getSite('site_personal')).ownerId, 'usr_target');
+  assert.equal((await store.getRouteBySiteId('site_personal', 'production')).policyVersion, routeBefore.policyVersion + 1);
+  assert.equal((await store.listAuditEvents()).filter((event) => event.eventType === 'site.owner.transfer').length, 1);
+});
+
+test('platform admin can update site name and URL without site membership', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await seedConsoleUser(store, 'usr_owner');
+  await store.createSite({
+    id: 'site_console',
+    slug: 'console-site',
+    ownerUserId: 'usr_owner',
+    siteUuid: 'uuid_site_console',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_site_console',
+    hostname: 'console-site.workers.xd.team',
+  });
+  await activateSite(store, 'site_console');
+  const snapshots = createSnapshotStore();
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_console/metadata', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'PATCH',
+      body: { title: 'Console Site', slug: 'renamed-console' },
+    }),
+    env(store, { SITE_METADATA_MUTATIONS_ENABLED: 'true', ROUTE_SNAPSHOTS: snapshots })
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.site.title, 'Console Site');
+  assert.equal(body.site.displayName, 'Console Site');
+  assert.equal(body.site.slug, 'renamed-console');
+  assert.equal(body.site.routingStatus, 'ready');
+  assert.equal(body.site.owner.id, 'usr_owner');
 });
 
 test('platform admin site detail and settings avoid full admin site scans', async () => {
@@ -4349,9 +4422,13 @@ test('platform admin site detail and settings avoid full admin site scans', asyn
   );
 
   assert.equal(detail.status, 200, await detail.clone().text());
-  assert.equal((await detail.json()).site.id, 'site_personal');
+  const detailBody = await detail.json();
+  assert.equal(detailBody.site.id, 'site_personal');
+  assert.equal(detailBody.site.owner.email, 'owner@example.com');
   assert.equal(settings.status, 200, await settings.clone().text());
-  assert.equal((await settings.json()).site.owner.id, 'usr_target');
+  const settingsBody = await settings.json();
+  assert.equal(settingsBody.site.owner.id, 'usr_target');
+  assert.equal(settingsBody.site.owner.email, 'target@example.com');
 });
 
 test('platform-admin force DELETE emits site.deleted with the admin actor', async () => {
@@ -4489,7 +4566,7 @@ test('platform admin site owner transfer rolls back when route snapshot cannot r
   );
 
   assert.equal(response.status, 503, await response.clone().text());
-  assert.equal((await response.json()).error.code, 'ROUTE_SNAPSHOT_WRITE_FAILED');
+  assert.equal((await response.json()).error.code, 'ROUTE_POLICY_REPAIR_REQUIRED');
   const site = await store.getSite('site_personal');
   assert.equal(site.ownerType, 'user');
   assert.equal(site.ownerId, 'usr_owner');

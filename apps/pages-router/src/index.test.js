@@ -24,6 +24,7 @@ const coolToneFragments = [
   '200, 212, 228',
   'var(--blue)',
 ];
+const stableSiteId = 'site_4b4c8e8361ef4b47b64f5c20a7db7c47';
 
 test('fails closed before route lookup when IP allowlist is missing', async () => {
   const env = routeEnv({ ROUTER_IP_ALLOWLIST_CIDRS: undefined });
@@ -155,6 +156,55 @@ test('v3 public snapshots require a complete access policy projection', async ()
 
   assert.equal(response.status, 403);
   assert.equal((await response.json()).error.code, 'SITE_POLICY_INVALID');
+  assert.equal(env.dispatchCount, 0);
+});
+
+test('v4 serve snapshots issue stable-id capabilities with the immutable data namespace', async () => {
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': v4RouteSnapshot({
+        kv: { enabled: true, scopes: ['kv:get', 'kv:set'] },
+      }),
+    },
+  });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/', { headers: { 'CF-Connecting-IP': '10.1.2.3' } }),
+    env,
+  );
+
+  assert.equal(response.status, 200);
+  const capability = env.dispatchedRequest.headers.get('CF-Platform-KV-Capability');
+  const claims = await verifyCapability(`Bearer ${capability}`, gatewayEnv(), {
+    requiredScope: 'kv:get',
+    now: 1_700_000_000,
+  });
+  assert.equal(claims.siteId, stableSiteId);
+  assert.equal(claims.dataNamespace, 'demo');
+  assert.equal(claims.namespaceVersion, 2);
+});
+
+test('v4 redirect snapshots are rejected instead of preserving an old slug', async () => {
+  const env = routeEnv({
+    routes: {
+      'old.pages.xd.team': {
+        schemaVersion: 4,
+        kind: 'redirect',
+        environment: 'production',
+        hostname: 'old.pages.xd.team',
+        siteId: stableSiteId,
+        targetHostname: 'demo.pages.xd.team',
+        routeGeneration: 2,
+        policyVersion: 1,
+      },
+    },
+  });
+  const response = await worker.fetch(
+    new Request('https://old.pages.xd.team/', { headers: { 'CF-Connecting-IP': '10.1.2.3' } }),
+    env,
+  );
+
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error.code, 'ROUTE_SNAPSHOT_INVALID');
   assert.equal(env.dispatchCount, 0);
 });
 
@@ -2064,6 +2114,19 @@ function publicRouteSnapshot(overrides = {}) {
     exposure: 'public',
     accessMode: 'anonymous',
     visibility: 'internal',
+    ...overrides,
+  });
+}
+
+function v4RouteSnapshot(overrides = {}) {
+  return routeSnapshot({
+    schemaVersion: 4,
+    kind: 'serve',
+    siteId: stableSiteId,
+    dataNamespace: 'demo',
+    routeGeneration: 1,
+    exposure: 'internal',
+    accessMode: 'anonymous',
     ...overrides,
   });
 }

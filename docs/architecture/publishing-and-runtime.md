@@ -6,20 +6,20 @@
 
 站点策略由网络 exposure 与身份 access mode 两个正交维度组成：
 
-| exposure | 含义 |
-| -------- | ---- |
-| `internal` | 请求必须命中公司网络 IP allowlist |
-| `public` | 互联网可达，但仍执行身份与 ACL 门禁 |
+| exposure   | 含义                                |
+| ---------- | ----------------------------------- |
+| `internal` | 请求必须命中公司网络 IP allowlist   |
+| `public`   | 互联网可达，但仍执行身份与 ACL 门禁 |
 
 现有 CLI/API 继续使用 visibility，并由兼容层映射到 access mode：
 
-| visibility | access mode | 是否需要登录 | 典型用途 |
-| ---------- | ----------- | ------------ | -------- |
-| `internal` | `anonymous` | 否 | 免登录报告、demo |
-| `org` | `org` | 是 | 企业成员站点 |
-| `acl` | `acl` | 是 | 项目私有预览 |
-| `owner` | `owner` | 是 | 管理预览、敏感站点 |
-| `disabled` | `disabled` | 不适用 | 下线、风控、事故处理 |
+| visibility | access mode | 是否需要登录 | 典型用途             |
+| ---------- | ----------- | ------------ | -------------------- |
+| `internal` | `anonymous` | 否           | 免登录报告、demo     |
+| `org`      | `org`       | 是           | 企业成员站点         |
+| `acl`      | `acl`       | 是           | 项目私有预览         |
+| `owner`    | `owner`     | 是           | 管理预览、敏感站点   |
+| `disabled` | `disabled`  | 不适用       | 下线、风控、事故处理 |
 
 发布权限与访问权限必须分开：
 
@@ -35,7 +35,11 @@ access permission: 谁能访问子站内容
 - CLI 和普通用户 API 不接受 exposure；只有 Platform Admin 可在 Console 中开启或关闭公网。
 - 用户后续修改 visibility/ACL 只改变 access mode，保留 Admin 已设置的 exposure。
 
-只有 schema v3 route snapshot 显式声明 `exposure=public` 才能绕过 Router IP allowlist。旧 v2 snapshot、缺失或非法 exposure 安全降级为 internal；旧的 `visibility=public` 仍是非法策略并 fail closed。
+只有 schema v3/v4 serve route snapshot 显式声明 `exposure=public` 才能绕过 Router IP allowlist。旧 v2 snapshot、缺失或非法 exposure 安全降级为 internal；旧的 `visibility=public` 仍是非法策略并 fail closed。
+
+## 站点名称与 URL 改名
+
+展示名称 `title` 与 canonical `slug` 可独立修改；`title` 为空时界面回退显示 slug。slug 改名只更新 D1 metadata、canonical route、hostname claim 和 schema v4 serve pointer，不上传 artifact、不创建 deployment/version，也不改变站点 ID、权限、active version、runtime config 或不可变 `dataNamespace`。旧地址不跳转；控制面确认旧 pointer 已删除后才开始 5 分钟 reuse hold，到期后旧 slug 可重新使用。异常链路 fail closed。缩略图与 R2 延期。
 
 ## SSO 登录链路
 
@@ -101,18 +105,20 @@ absolute TTL: 30 天
 用途: 证明用户已通过心动 SSO 登录 pages 平台
 ```
 
-该 cookie 不下发到子站域名，也不下发到 `api.pages.xd.team`。`auth_session` 可以做得相对长，减少用户重新扫码或重新认证的频率；但它不应是完全不可吊销的纯 stateless JWT。推荐由 Durable Object 协调发行、刷新和吊销，并在 D1 保存可查询索引。session 记录至少包含 `sid`、`userId`、`issuedAt`、`lastSeenAt`、`expiresAt`、`absoluteExpiresAt`、`revokedAt` 和 `authTime`。
+该 cookie 不下发到子站域名，也不下发到 `api.pages.xd.team`。`auth_session` 可以做得相对长，减少用户重新扫码或重新认证的频率；但它不应是完全不可吊销的纯 stateless JWT。推荐由 Durable Object 协调发行、刷新和吊销，并在 D1 保存可查询索引。session 记录至少包含 `sid`、`userId`、`issuedAt`、`lastSeenAt`、`expiresAt`、`absoluteExpiresAt` 和 `revokedAt`；`authTime` 可作为未来高风险操作的增强字段，但不能成为普通 Console 登录或站点归属转移的兼容性前提。
 
 如果需要浏览器态管理 API，必须单独签发 `api.pages.xd.team` host-only `api_session`，不能把 `auth_session` 改成父域 cookie。
 
-高风险操作仍应要求 recent login，例如：
+未来若为高风险操作增加 recent login，应按操作单独设计、验证和灰度，不能把缺少 `authTime` 的有效 Console session 整体判为无效。候选操作包括：
 
 - 删除站点。
 - 创建或查看 access key。
-- 修改 owner、collaborators 或 ACL。
+- 修改 collaborators 或 ACL。
 - 将站点 access mode 改为匿名，或修改高风险网络 exposure。当前 Admin exposure 操作要求平台管理员、理由和确认，但暂不强制 recent login。
 
-Cindy(原 XDMaker)插件 `xd-sites` 的请求不走换证：Cindy Desktop 宿主为每个 `/.xd-pages/api/*` 请求携带短时效 connection 断言(RS256 JWT,`typ=connection`,TTL 30 分钟),`pages-api` 逐请求经 Cindy JWKS 验签并按 `sub`(membershipId)映射/落库用户。断言 actor 只持有 `deploy:site`、`read:site`、`rollback:site` scope,不能创建或查看 access key;Console 创建/查看 key 的 recent-login 语义不因此改变。详见 `docs/api-boundary.md` 的「Cindy Connections 断言鉴权」。
+站点归属转移当前不要求 recent login，不使用 `authTime`、`X-Console-Auth-Time`、`reauth=1` 或 `CONSOLE_RECENT_LOGIN_REQUIRED`。它依赖有效的 host-only Console session、CSRF 校验、公司网络门禁、服务端源/目标权限复核、site commit lease、审计和 UI 二次确认。此边界允许 pages-auth、pages-console 与 pages-api 独立滚动部署；旧登录会话和旧 exchange 响应缺少 `authTime` 时，普通 Console 登录及归属转移不能因此失败。
+
+Cindy(原 XDMaker)插件 `xd-sites` 的请求不走换证：Cindy Desktop 宿主为每个 `/.xd-pages/api/*` 请求携带短时效 connection 断言(RS256 JWT,`typ=connection`,TTL 30 分钟),`pages-api` 逐请求经 Cindy JWKS 验签并按 `sub`(membershipId)映射/落库用户。断言 actor 只持有 `deploy:site`、`read:site`、`rollback:site` scope,不能创建或查看 access key；未来若为 Console 创建/查看 key 增加 recent-login 门禁，应作为独立能力设计，不受 Cindy connection 断言影响。详见 `docs/api-boundary.md` 的「Cindy Connections 断言鉴权」。
 
 ### site_session
 
@@ -181,14 +187,14 @@ CLI 使用 XD Cell 平台签发的 access key，不直接持有心动 SSO `acces
 
 凭证边界：
 
-| 凭证            | 使用者           | 典型存储                          | 权限模型                           |
-| --------------- | ---------------- | --------------------------------- | ---------------------------------- |
-| `auth_session`  | 浏览器平台登录   | auth host HttpOnly cookie         | 用户登录态，不直接用于 CLI deploy  |
-| `site_session`  | 浏览器访问子站   | 子站 host HttpOnly cookie         | 子站访问，不用于管理 API           |
-| `CLI login access key` | 本地 CLI  | OS secret store                   | 用户身份 + `*` scope + env         |
-| `access key`    | CI / agent       | CI secret 或用户显式保存的 secret | PAT / TAT + 权限 + 作用范围 + expiry |
-| `service token` | 未来机器人身份   | 组织级 secret store / CI secret   | 暂不进入 MVP                       |
-| `internal JWT`  | router -> Worker | 请求内短期 header                 | 请求身份 envelope，不是 capability |
+| 凭证                   | 使用者           | 典型存储                          | 权限模型                             |
+| ---------------------- | ---------------- | --------------------------------- | ------------------------------------ |
+| `auth_session`         | 浏览器平台登录   | auth host HttpOnly cookie         | 用户登录态，不直接用于 CLI deploy    |
+| `site_session`         | 浏览器访问子站   | 子站 host HttpOnly cookie         | 子站访问，不用于管理 API             |
+| `CLI login access key` | 本地 CLI         | OS secret store                   | 用户身份 + `*` scope + env           |
+| `access key`           | CI / agent       | CI secret 或用户显式保存的 secret | PAT / TAT + 权限 + 作用范围 + expiry |
+| `service token`        | 未来机器人身份   | 组织级 secret store / CI secret   | 暂不进入 MVP                         |
+| `internal JWT`         | router -> Worker | 请求内短期 header                 | 请求身份 envelope，不是 capability   |
 
 CLI 本地状态分三层：
 
@@ -237,8 +243,7 @@ xd-cell deploy ./dist foo --token <token> --json
 本地 CLI 不应自动从环境变量或普通命令持久化 access key。只有用户明确执行 `xd-cell login --token <token>` 这类登录命令时，才允许在 `whoami` 验证后写入 secret store，并且输出不得回显 key 明文。普通 API 命令传 `--token <token>` 时，只用于本次请求，不读取本地 secret store，也不写入 profile。
 
 access key 创建站点只允许发生在部署事务内。当前 owner-scoped 个人 access key 已支持在首次 deploy 事务中创建个人站点，也支持按现有团队 membership 向团队发布。deploy
-复合归属转移、selected sites 多选范围和独立 transfer API 仍是后续模型，后续实现时必须同步 API、CLI、Console
-和测试。Access Token 分为 Personal Access Token（PAT）和
+复合归属转移和独立 transfer API 已实现；selected sites 多选范围仍是后续模型。Access Token 分为 Personal Access Token（PAT）和
 Team Access Token（TAT）；`site-scoped` 只是 Token 的作用范围，不是第三种 Token 类型。
 
 - PAT 默认代表用户本人。`xd-cell deploy <entry> <new-site>` 不带 `teamId` 时创建个人站点；显式带
@@ -246,8 +251,9 @@ Team Access Token（TAT）；`site-scoped` 只是 Token 的作用范围，不是
   通过后创建团队站点。
 - TAT 代表团队。它创建的新站点归属该团队；如果部署请求显式带 `teamId`，必须与 TAT 归属团队一致。
 - 作用范围为 `selected_sites` 的 Token 只能部署选中的站点，不能创建新站点，也不能隐式转移未选中站点。
-- deploy 可以复合站点归属变更：当已有站点 owner 与请求目标 owner 不一致时，API 必须校验 actor 对
-  源 owner 和目标 owner 都具备站点管理权限，通过后才允许先转移归属再发布，并写审计。
+- deploy 可以复合站点归属变更：当已有站点 owner 与请求目标 owner 不一致时，个人源站点要求当前
+  Owner，团队源站点要求源团队 `admin`；目标团队仍要求 actor 是 `publisher` / `admin`。通过后在最终
+  route activation 的 D1 事务中转移归属并发布，同时写审计。TAT 可以部署自身团队站点，但不能改变 Owner。
 
 普通 `POST /.xd-pages/api/sites` 建站 API 仍只接受 `cli_login` 用户 access key 或受控 console session，不对
 普通 PAT/TAT 开放。access key 的权限、作用范围、owner 归属、过期时间和 environment 仍以 `pages-api`
@@ -356,7 +362,7 @@ xd-cell secrets put foo API_TOKEN
 xd-cell secrets delete foo API_TOKEN
 ```
 
-站点删除默认要求交互确认；用户取消时 CLI 不发送删除请求。AI agent、CI 或使用 `--json` 时必须显式传入 `--yes`。CLI 先在当前身份可见的站点中解析 slug，再调用既有的按 ID 删除接口。服务端保持当前 soft delete 语义；对于原先 active 的 route，会发布 `routeStatus=deleted` 的 inactive route snapshot 并推进当前指针，旧的 immutable snapshot 仍保留，同时保留 hostname reuse hold。当前不提供恢复、永久删除或批量删除。
+站点删除默认要求交互确认；用户取消时 CLI 不发送删除请求。AI agent、CI 或使用 `--json` 时必须显式传入 `--yes`。CLI 先在当前身份可见的站点中解析 slug，再调用既有的按 ID 删除接口。服务端保持当前 soft delete 语义；对于原先 active 的 route，会先发布 `routeStatus=deleted` 的 inactive route snapshot 作为 fail-closed 状态，再尝试清除 canonical pointer。清除成功后旧 hostname 不再保留 pointer；清除失败时 deleted snapshot 继续 fail closed。immutable snapshot 仍保留，同时 hostname 进入 reuse hold；hold 到期后的新 owner 可以替换旧 deleted snapshot。当前不提供恢复、永久删除或批量删除。
 
 配置优先级从高到低：
 
@@ -384,8 +390,9 @@ API 设计必须保持这些架构约束：
 - 用户和 AI agent 通过 `xd-cell` CLI / skill 使用平台，不手写部署 HTTP 请求。
 - 所有部署、回滚和 mutation 类请求必须有强认证、权限校验和幂等保护。
 - access key 权限和作用范围必须在 API 层强制执行；`read` 和 `publish` 不能互相越权。
-- `publish` 表示站点管理能力，可以覆盖发布、访问控制、运行配置、删除和归属转移；团队成员、团队角色、
-  Team Access Token、团队设置和团队删除等 admin 操作仍只允许 Console 登录态。
+- `publish` 表示发布、访问控制、运行配置和删除等站点管理能力；归属转移还要求个人 Owner 或源团队
+  `admin`，不能仅凭团队 `publisher` 或 TAT 完成。团队成员、团队角色、Team Access Token、团队设置和
+  团队删除等 admin 操作仍只允许 Console 登录态。
 - v2 pages-api 不公开 `/openapi.json`；v1 `apps/server` 的 `/openapi.json` 只属于旧 `workers.xd.team` 链路。
 
 `pages-auth` 的 `/.xd-pages/internal/consume-site-code` 不是公开 API，只能通过 Worker service binding 访问，并要求请求 host 为 `pages-auth.internal`；公网 `auth.pages.xd.team` / `auth-staging.pages.xd.team` 的同路径必须返回 404。CLI login poll 通过单向 `PAGES_API` binding 调用 `pages-api.internal/.xd-pages/internal/cli-access-keys` 换发 access key；历史 CLI JWT 已停止验证，`pages-api` 不再持有反向 `PAGES_AUTH` binding。`pages-api` 的 users、department hydration、CLI access key 和 hostname claim internal endpoints 同样只接受 `pages-api.internal` host，不能暴露公网。SSO callback 目前仍由 `pages-auth` 直接写共享 D1 身份元数据。
@@ -576,10 +583,10 @@ legacy runtime 响应只对浏览器暴露标准 `Deprecation` header；`X-XD-Pa
 
 `pages-router` 收到 runtime data 请求时先走平台门禁、site_session / visibility / ACL 校验、CSRF / Origin 策略和 payload 限制，再由 router 生成 gateway capability 并调用 `pages-kv-gateway`。浏览器请求永远不能直接访问 `kv-gateway.pages.xd.team`，也不能看到 gateway capability。
 
-v2 需要调整：
+当前 v2 capability：
 
 - capability issuer 使用 v2 身份，例如 `pages-v2`，不能继续使用 v1 `pages-manager`。
-- capability 的 subject 应绑定 site UUID、version 或 worker identity。
+- schema v4 路由签发 namespace v2 capability：`siteId` 使用不可变站点 ID，并同时绑定不可变 `dataNamespace` 与 `siteUuid`；gateway 继续兼容旧 snapshot 产生的 slug 形态 namespace v1 capability。
 - user data capability 可以包含最小化的稳定 `userId` / `anonymous` subject，用于 gateway 推导 user data 前缀；不得包含 email、SSO token、session token 或其它 PII。
 - 浏览器仍不能直接拿 gateway token 或 capability。
 
@@ -589,10 +596,10 @@ v2 需要调整：
 
 ```text
 site data:
-  s/{slug}--{siteUuid}/k/{key}
+  s/{dataNamespace}--{siteUuid}/k/{key}
 ```
 
-`slug` 只用于可读性和排查，不能作为隔离锚点；删除同名站点后新建站点必须得到新的 `siteUuid`，因此不会继承旧 KV 前缀。这适合存站点配置、共享草稿、轻量状态和站点级缓存，但不应被当作用户数据库。业务代码自行约定 `users/{userId}/...` 前缀不能形成平台级隔离，因为 userId 可能来自浏览器、业务参数或不可信 Worker 代码。
+`dataNamespace` 取建站时的 slug，只用于可读性并在后续改名时保持不变；真正的隔离还绑定不可变 `siteUuid`，因此删除后用同名 slug 重建也不会继承旧 KV 前缀。这适合存站点配置、共享草稿、轻量状态和站点级缓存，但不应被当作用户数据库。业务代码自行约定 `users/{userId}/...` 前缀不能形成平台级隔离，因为 userId 可能来自浏览器、业务参数或不可信 Worker 代码。
 
 用户级数据隔离由 `pages.data.user` 显式表达：
 
@@ -605,10 +612,10 @@ pages.data.user.get('settings');
 
 ```text
 site data:
-  s/{slug}--{siteUuid}/k/{key}
+  s/{dataNamespace}--{siteUuid}/k/{key}
 
 user data:
-  s/{slug}--{siteUuid}/u/{userId}/k/{key}
+  s/{dataNamespace}--{siteUuid}/u/{userId}/k/{key}
 ```
 
 `userId` 必须来自 `pages-router` 注入的签名身份，不能由浏览器、SDK 调用方或 User Worker 自行传入，也不能使用 email。第一版 user data 只支持当前登录用户自己的 `get` / `set` / `delete`，不支持 list、管理员读取他人数据、团队空间或共享用户组空间。匿名 `pages.data.user.get()` 返回 `null`；匿名 `set` / `delete` 返回 `USER_REQUIRED`。

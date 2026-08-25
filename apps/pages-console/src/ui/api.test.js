@@ -55,10 +55,12 @@ import {
   putAdminSiteRuntimeSecret,
   putAdminSiteRuntimeVar,
   updateSiteAccess,
-  updateSiteSettings,
+  updateSiteMetadata,
+  transferSiteOwnership,
   updateAdminSiteAccess,
   updateAdminSiteExposure,
-  updateAdminSiteSettings,
+  updateAdminSiteMetadata,
+  transferAdminSiteOwnership,
   updateAdminWebhook,
   updateAdminTeamMember,
   updateAdminTeamSettings,
@@ -407,7 +409,7 @@ test('site management API helpers use site access and runtime config endpoints',
   assert.deepEqual(JSON.parse(calls[3].init.body), { value: 'secret-value' });
 });
 
-test('site settings API helpers update owner under workspace and admin scopes', async () => {
+test('site ownership transfer helpers use the compatible workspace and admin endpoints', async () => {
   const calls = [];
   const fetchImpl = async (url, init) => {
     calls.push({ url, init });
@@ -415,8 +417,8 @@ test('site settings API helpers update owner under workspace and admin scopes', 
   };
 
   await listTeams({ fetchImpl });
-  await updateSiteSettings('site_1', { ownerType: 'team', teamId: 'team_1' }, { fetchImpl, csrfToken: 'csrf-1' });
-  await updateAdminSiteSettings('site_1', { ownerType: 'user', ownerId: 'usr_1' }, { fetchImpl, csrfToken: 'csrf-2' });
+  await transferSiteOwnership('site_1', { ownerType: 'team', teamId: 'team_1' }, { fetchImpl, csrfToken: 'csrf-1' });
+  await transferAdminSiteOwnership('site_1', { ownerType: 'user', ownerId: 'usr_1' }, { fetchImpl, csrfToken: 'csrf-2' });
 
   assert.deepEqual(
     calls.map((call) => [call.url, call.init.method, call.init.headers['X-CSRF-Token'] || '']),
@@ -429,6 +431,31 @@ test('site settings API helpers update owner under workspace and admin scopes', 
   assert.deepEqual(JSON.parse(calls[1].init.body), { ownerType: 'team', teamId: 'team_1' });
   assert.deepEqual(JSON.parse(calls[2].init.body), { ownerType: 'user', ownerId: 'usr_1' });
 });
+
+test('site metadata API helpers keep workspace and admin mutations on dedicated endpoints', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    return Response.json({ site: { id: 'site_1' } }, { status: 202 });
+  };
+
+  await updateSiteMetadata('site/1', { title: '产品文档' }, requestOptions(fetchImpl, 'csrf-1'));
+  await updateAdminSiteMetadata('site/1', { slug: 'product-docs' }, requestOptions(fetchImpl, 'csrf-2'));
+
+  assert.deepEqual(
+    calls.map((call) => [call.url, call.init.method, call.init.headers['X-CSRF-Token']]),
+    [
+      ['/api/console/sites/site%2F1/metadata', 'PATCH', 'csrf-1'],
+      ['/api/console/admin/sites/site%2F1/metadata', 'PATCH', 'csrf-2'],
+    ]
+  );
+  assert.deepEqual(JSON.parse(calls[0].init.body), { title: '产品文档' });
+  assert.deepEqual(JSON.parse(calls[1].init.body), { slug: 'product-docs' });
+});
+
+function requestOptions(fetchImpl, csrfToken) {
+  return { fetchImpl, csrfToken };
+}
 
 test('team settings API helpers use workspace team endpoints', async () => {
   const calls = [];

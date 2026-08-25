@@ -48,7 +48,10 @@ test('deploy requires positional dir and site, then creates and deploys with a C
   assert.equal(metadata.publishPlan.requestedFallback, 'none');
   assert.equal(metadata.publishPlan.resolvedFallback, 'none');
   assert.equal(metadata.publishPlan.routingMode, 'assets-only');
-  assert.deepEqual(metadata.assetManifest.map((asset) => asset.path), ['/index.html']);
+  assert.deepEqual(
+    metadata.assetManifest.map((asset) => asset.path),
+    ['/index.html']
+  );
   assert.equal(deployForm.has('artifactKind'), false);
   assert.equal(deployForm.has('artifactBundle'), false);
   assert.equal(deployForm.has('assetManifest'), false);
@@ -369,7 +372,10 @@ test('deploy positional entry preserves configured assets and vars', async () =>
   assert.equal(metadata.publishPlan.requestedFallback, 'single-page-application');
   assert.equal(metadata.publishPlan.resolvedFallback, 'index');
   assert.equal(metadata.workerMainModuleName, 'alt.js');
-  assert.deepEqual(metadata.assetManifest.map((asset) => asset.path), ['/index.html']);
+  assert.deepEqual(
+    metadata.assetManifest.map((asset) => asset.path),
+    ['/index.html']
+  );
   assert.deepEqual(metadata.vars, { API_BASE: 'https://api.example.com' });
 
   const body = JSON.parse(output.join('\n'));
@@ -420,19 +426,19 @@ test('deploy positional worker entry preserves configured assets even when confi
   const metadata = JSON.parse(await deployForm.get('metadata').text());
   assert.equal(metadata.publishPlan.deploymentShape, 'worker-with-assets');
   assert.equal(metadata.workerMainModuleName, 'worker.js');
-  assert.deepEqual(metadata.assetManifest.map((asset) => asset.path), ['/index.html']);
+  assert.deepEqual(
+    metadata.assetManifest.map((asset) => asset.path),
+    ['/index.html']
+  );
   assert.deepEqual(metadata.vars, { API_BASE: 'https://api.example.com' });
 });
 
 test('deploy treats a single positional argument as entry and requires site from config', async () => {
   const missingSite = await tempProject();
   await writeFile(path.join(missingSite, 'index.html'), '<h1>Hello</h1>');
-  await assert.rejects(
-    () => executeCommand(['deploy', 'demo', '--dry-run'], { cwd: missingSite, output: () => {} }),
-    {
-      code: 'SITE_REQUIRED',
-    }
-  );
+  await assert.rejects(() => executeCommand(['deploy', 'demo', '--dry-run'], { cwd: missingSite, output: () => {} }), {
+    code: 'SITE_REQUIRED',
+  });
 
   const dir = await tempProject();
   await writeFile(path.join(dir, 'index.html'), '<h1>Root</h1>');
@@ -895,10 +901,7 @@ test('deploy uses explicit token as a one-shot credential without local secret r
       filesUploaded: true,
       routeChanged: true,
     },
-    signals: [
-      { code: 'ROOT_INDEX_HTML_FOUND', path: 'index.html' },
-      { code: 'SINGLE_HTML_ENTRY' },
-    ],
+    signals: [{ code: 'ROOT_INDEX_HTML_FOUND', path: 'index.html' }, { code: 'SINGLE_HTML_ENTRY' }],
     diagnostics: {
       warnings: [],
       errors: [],
@@ -1081,10 +1084,9 @@ test('deploy dry-run validates visibility and team constraints before reporting 
     output: () => {},
   };
 
-  await assert.rejects(
-    () => executeCommand(['deploy', '.', 'docs', '--visibility', 'public', '--dry-run'], context),
-    { code: 'SITE_VISIBILITY_INVALID' }
-  );
+  await assert.rejects(() => executeCommand(['deploy', '.', 'docs', '--visibility', 'public', '--dry-run'], context), {
+    code: 'SITE_VISIBILITY_INVALID',
+  });
   await assert.rejects(
     () => executeCommand(['deploy', '.', 'docs', '--team', 'team_docs', '--visibility', 'owner', '--dry-run'], context),
     { code: 'SITE_VISIBILITY_INVALID' }
@@ -1494,10 +1496,9 @@ test('sites subcommands validate their flags before resolving credentials', asyn
   ];
 
   for (const current of cases) {
-    await assert.rejects(
-      () => executeCommand(current.argv, { env: {}, profile: { environments: {} }, output: () => {} }),
-      { code: current.code }
-    );
+    await assert.rejects(() => executeCommand(current.argv, { env: {}, profile: { environments: {} }, output: () => {} }), {
+      code: current.code,
+    });
   }
 
   await assert.rejects(
@@ -1554,7 +1555,7 @@ test('site lookup suggests the closest slug when a name is mistyped', async () =
       }),
     {
       code: 'SITE_NOT_FOUND',
-      action: '未找到 xtq-html-test。你是不是想查看 xtq-hml-test？',
+      action: '未找到 xtq-html-test。你是不是想查看 xtq-hml-test？站点也可能已改名，请运行 xd-cell sites list 查看当前站点名。',
     }
   );
 });
@@ -1655,12 +1656,15 @@ test('auth subcommands remain as hidden compatibility aliases', async () => {
   await executeCommand(['auth', 'whoami', '--access-key', 'xdp_prod_ak_1_secret', '--json'], {
     env: {},
     profile: productionProfile(),
-    fetch: fakeFetch([], [
-      {
-        environment: 'production',
-        actor: { type: 'access_key', credentialType: 'access_key', accessKeyId: 'ak_1', scopes: ['deploy:site'] },
-      },
-    ]),
+    fetch: fakeFetch(
+      [],
+      [
+        {
+          environment: 'production',
+          actor: { type: 'access_key', credentialType: 'access_key', accessKeyId: 'ak_1', scopes: ['deploy:site'] },
+        },
+      ]
+    ),
     output: (line) => output.push(line),
   });
   await executeCommand(['auth', 'logout'], {
@@ -1735,7 +1739,18 @@ test('access set updates visibility and replaces allow list entries', async () =
   const output = [];
 
   await executeCommand(
-    ['access', 'set', 'demo', '--visibility', 'acl', '--email', 'Alice@Example.COM', '--department', ' 心动/技术平台部 ', '--json'],
+    [
+      'access',
+      'set',
+      'demo',
+      '--visibility',
+      'acl',
+      '--email',
+      'Alice@Example.COM',
+      '--department',
+      ' 心动/技术平台部 ',
+      '--json',
+    ],
     {
       env: {},
       profile: productionProfile(),
@@ -1929,6 +1944,8 @@ test('prints command-specific deploy help with parameters and agent-safe output 
     assert.match(text, /--config <file>/);
     assert.match(text, /--json/);
     assert.match(text, /assets\.not_found_handling/);
+    assert.match(text, /已有团队站点随发布转移归属时，要求源团队 admin/);
+    assert.match(text, /Team Access Token（TAT）只能继续发布其自身团队站点，不能改变 Owner/);
     assert.doesNotMatch(text, /--fallback <|--access-key|--env|environment/);
     assert.doesNotMatch(
       text,
@@ -2023,7 +2040,10 @@ function fakeSecretStore(credential) {
 }
 
 function assertJsonLeafValueAbsent(value, forbidden) {
-  assert.equal(collectJsonLeafStrings(value).some((leaf) => leaf === forbidden), false);
+  assert.equal(
+    collectJsonLeafStrings(value).some((leaf) => leaf === forbidden),
+    false
+  );
 }
 
 function collectJsonLeafStrings(value, output = []) {

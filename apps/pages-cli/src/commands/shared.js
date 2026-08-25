@@ -115,8 +115,8 @@ export async function readSiteBySlug(client, slug) {
       'SITE_NOT_FOUND',
       `未找到站点：${slug}`,
       suggestion
-        ? `未找到 ${slug}。你是不是想查看 ${suggestion}？`
-        : '请确认站点名和站点权限；如果使用 API token，请确认它绑定的是这个站点。'
+        ? `未找到 ${slug}。你是不是想查看 ${suggestion}？站点也可能已改名，请运行 xd-cell sites list 查看当前站点名。`
+        : '站点可能已改名，请运行 xd-cell sites list 查看当前站点名；同时请确认站点名和站点权限，如果使用 API token，请确认它绑定的是这个站点。'
     );
   }
   return { site };
@@ -324,6 +324,8 @@ entry 是静态资源目录或 Worker 入口；site 是业务站点名，可由�
   xd-cell.config.json 只保存非敏感发布模板字段，例如 name、team、main、assets.directory、vars、visibility。
   vars 是站点级当前 runtime config；配置省略 vars 会沿用站点当前值，显式 {} 会在下一次 Worker deploy 清空。
   静态资源未命中行为使用 assets.not_found_handling 配置；不提供 --fallback。
+  --team 对新站点要求目标团队 publisher/admin；已有团队站点随发布转移归属时，要求源团队 admin。
+  Team Access Token（TAT）只能继续发布其自身团队站点，不能改变 Owner。
   CLI 不暴露底层执行平台细节。`;
   }
   if (topic === 'detect') {

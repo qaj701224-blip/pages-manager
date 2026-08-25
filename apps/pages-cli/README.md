@@ -75,9 +75,17 @@ XD_CELL_API_TOKEN=<token> xd-cell sites list --json
 
 `sites delete` 在非交互或 JSON 模式下必须显式传入 `--yes`。删除行为和错误码以 CLI 输出及当前平台契约为准。
 
+## 团队发布与归属
+
+`xd-cell deploy --team <teamId>` 创建团队站点时，要求操作者在目标团队中具有 `publisher` 或 `admin` 权限。若同一 slug 的既有站点属于其他 Owner，本次发布会请求转移归属：个人源站点要求当前 Owner，已有团队站点随发布转移归属时，要求源团队 admin；目标团队仍要求 `publisher/admin`。
+
+Team Access Token（TAT）只能继续发布其自身团队站点，不能改变 Owner。CLI 当前不提供独立的归属转移命令；交互用户应使用 Console，受控集成应遵循认证 Public API 的凭证与授权约束。
+
 ## 配置
 
 `xd-cell deploy` 可以读取项目中的 `xd-cell.config.json`，仅保存非敏感发布配置，例如站点名、Worker 入口、assets、vars 和 visibility。凭证和 secret 不应写入配置文件。
+
+配置里的 `name` 是站点 URL slug，不是 Console 展示名称。站点 URL 改名后，旧 slug 不再定位原站点；安全期内会因 hostname claim 冲突而拒绝发布，安全期结束后可被其它站点使用。CLI 不自动改写项目文件，请同步更新本地 `name`。当前 CLI 不提供名称或 URL 编辑命令，这两项通过 Console 或认证 Public API 管理。
 
 ## 开发
 

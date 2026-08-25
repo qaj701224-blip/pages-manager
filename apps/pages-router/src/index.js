@@ -1,6 +1,14 @@
 import { siteErrorResponse, wantsHtml } from '@xd/browser-pages';
 import { isAllowedIP } from '@xd/ip-guard';
-import { GATEWAY, HEADERS, RUNTIME, classifyHost, scopeForDataOperation } from '@xd/pages-runtime-protocol';
+import {
+  GATEWAY,
+  HEADERS,
+  RUNTIME,
+  classifyHost,
+  isValidSiteId,
+  isValidSiteSlug,
+  scopeForDataOperation,
+} from '@xd/pages-runtime-protocol';
 import {
   SITE_SESSION_COOKIE,
   buildSiteSessionCookie,
@@ -68,7 +76,10 @@ export default {
     }
 
     const routePolicy = await readRoutePolicy(env, host.hostname, environment);
-    const trustedPublic = routePolicy.ok && routePolicy.route.schemaVersion === 3 && routePolicy.route.exposure === 'public';
+    const trustedPublic =
+      routePolicy.ok &&
+      (routePolicy.route.schemaVersion === 3 || routePolicy.route.schemaVersion === 4) &&
+      routePolicy.route.exposure === 'public';
     const ipDecision = trustedPublic ? null : enforceIPAllowlist(request, env);
     if (ipDecision) return ipDecision;
     if (!routePolicy.ok) return routePolicyErrorResponse(request, host.hostname, routePolicy.code);
@@ -146,12 +157,23 @@ function normalizeRoutePolicy(route) {
     if (!accessMode) throw new Error('SITE_POLICY_INVALID');
     return { ...route, schemaVersion: 2, exposure: 'internal', accessMode, visibility: route.visibility };
   }
-  if (schemaVersion !== 3) throw new Error('ROUTE_SNAPSHOT_SCHEMA_INVALID');
+  if (schemaVersion !== 3 && schemaVersion !== 4) throw new Error('ROUTE_SNAPSHOT_SCHEMA_INVALID');
+  if (
+    schemaVersion === 4 &&
+    (route.kind !== 'serve' ||
+      !isValidSiteId(route.siteId) ||
+      !isValidSiteSlug(route.slug) ||
+      !isValidSiteSlug(route.dataNamespace) ||
+      !Number.isInteger(route.routeGeneration) ||
+      !Number.isInteger(route.policyVersion))
+  ) {
+    throw new Error('ROUTE_SNAPSHOT_SCHEMA_INVALID');
+  }
   const exposure = route.exposure === 'public' ? 'public' : 'internal';
   if (!isValidAccessMode(route.accessMode)) throw new Error('SITE_POLICY_INVALID');
   const visibility = visibilityFromAccessMode(route.accessMode);
   if (route.visibility !== visibility) throw new Error('SITE_POLICY_INVALID');
-  return { ...route, schemaVersion: 3, exposure, accessMode: route.accessMode, visibility };
+  return { ...route, schemaVersion, exposure, accessMode: route.accessMode, visibility };
 }
 
 function routeRuntimeIsActive(runtime) {
@@ -481,7 +503,7 @@ async function signKvCapability(route, env, identity, traceId, options = {}) {
     iss: KV_CAPABILITY_ISSUER,
     aud: KV_CAPABILITY_AUDIENCE,
     env: route.environment,
-    siteId: route.slug,
+    siteId: route.schemaVersion === 4 ? route.siteId : route.slug,
     siteUuid: route.siteUuid,
     routeId: route.routeId,
     versionId: route.activeVersionId,
@@ -494,6 +516,11 @@ async function signKvCapability(route, env, identity, traceId, options = {}) {
     nbf: now,
     exp: now + ttl,
   };
+
+  if (route.schemaVersion === 4) {
+    payload.namespaceVersion = 2;
+    payload.dataNamespace = route.dataNamespace;
+  }
 
   if (!options.legacy) {
     payload.apiVersion = 2;

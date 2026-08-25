@@ -37,6 +37,8 @@ infrastructure -----------> Cloudflare / external services
 
 跨表不变量必须保留在命名 transaction 中，application 不得用多个 repository call 重拼原子操作。站点策略、部署和回滚仍遵循 D1 authority、lease/CAS、immutable route snapshot、monotonic pointer 和显式补偿语义。
 
+站点展示名称与 canonical slug 由 metadata application use case 统一修改。slug rename 在 D1 中原子维护 canonical route、hostname claim 和不可变 `dataNamespace`，再写入 schema v4 serve snapshot 并清理旧 hostname pointer；它不创建 deployment/version，也不保留旧 URL 跳转。旧 pointer 确认删除后开始 5 分钟 reuse hold，到期后旧 slug 可由其它站点使用。Public、Workspace Console 与 Admin Console 都走该 use case；受控部署集成也可在 multipart metadata 中显式传 `title`，省略时不修改既有名称，字符串会规范化后设置，`null` 会清空。当前 `xd-cell` CLI 不发送 `title`。`SITE_METADATA_MUTATIONS_ENABLED` 在两个环境模板中默认启用，仍可按环境改为 `false` 紧急止损；关闭后只拦截 mutation 和显式携带 `title` 的部署，不影响省略 `title` 的既有部署、metadata 读取、兼容 reader/writer 或 reconciliation。缩略图与 R2 不在当前能力范围内。
+
 测试不维护第二套完整 Store。`test-support/pages-store-fixture.js` 使用真实 SQLite-backed D1 fixture 验证 repository、transaction 和 handler 行为；窄 application 单测可以按 port 注入局部 fake。
 
 ## 依赖与影响面
@@ -51,14 +53,14 @@ infrastructure -----------> Cloudflare / external services
 
 运行时依赖包括 `PAGES_METADATA` D1、`ROUTE_SNAPSHOTS` / `V1_SITES` KV、`ROUTE_POINTER_LOCKS` Durable Object、可选 `XD_OFFICE_NET` VPC binding，以及按 capability 读取的 Cloudflare、Webhook、Slack 和组织目录配置。binding、secret 和环境隔离的完整清单以 [资源与部署](../../docs/operations/resources-and-deployment.md) 为准，不在本文复制值或资源 ID。
 
-| 改动区域 | 主要影响 | 必须联动验证 |
-| --- | --- | --- |
-| transport / 认证 / response mapper | CLI、Cindy、Console BFF、internal caller | OpenAPI、稳定 error/status、HTTPS 与认证边界 |
-| application / domain | Public、Console、Admin 对同一业务动作的语义 | 共享 use case、授权、幂等、补偿和 focused tests |
-| Store repository / transaction | pages-api D1 行为；身份 metadata 还会影响 pages-auth | D1 contract、migration/schema 无漂移、跨 app 回归 |
-| deployment Provider / route snapshot | 用户 Worker、pages-router 可见路由和回滚 | Provider 顺序、lease/CAS、snapshot/pointer、recovery |
-| config / Wrangler / workflow | staging 与 production 资源隔离和部署安全 | binding inventory、无资源串用、production 仍仅手动部署 |
-| 公开 API 行为 | CLI、skill 和受控内部集成 | `src/openapi.js`、CLI help、skill 和 API 边界文档同步 |
+| 改动区域                             | 主要影响                                             | 必须联动验证                                           |
+| ------------------------------------ | ---------------------------------------------------- | ------------------------------------------------------ |
+| transport / 认证 / response mapper   | CLI、Cindy、Console BFF、internal caller             | OpenAPI、稳定 error/status、HTTPS 与认证边界           |
+| application / domain                 | Public、Console、Admin 对同一业务动作的语义          | 共享 use case、授权、幂等、补偿和 focused tests        |
+| Store repository / transaction       | pages-api D1 行为；身份 metadata 还会影响 pages-auth | D1 contract、migration/schema 无漂移、跨 app 回归      |
+| deployment Provider / route snapshot | 用户 Worker、pages-router 可见路由和回滚             | Provider 顺序、lease/CAS、snapshot/pointer、recovery   |
+| config / Wrangler / workflow         | staging 与 production 资源隔离和部署安全             | binding inventory、无资源串用、production 仍仅手动部署 |
+| 公开 API 行为                        | CLI、skill 和受控内部集成                            | `src/openapi.js`、CLI help、skill 和 API 边界文档同步  |
 
 ## 扩展规则
 

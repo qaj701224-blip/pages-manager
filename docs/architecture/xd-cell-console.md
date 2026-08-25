@@ -17,7 +17,7 @@ XD Cell Console 是 v2 控制台，面向站点目录、个人工作台、团队
 
 第一版不支持从网页上传并发布站点。Console 可以创建站点记录、hostname claim 和 owner 关系，但不上传 artifact、不创建 deployment；站点 artifact 发布仍通过 CLI / CI / AI / agent 等受控入口完成。`publisher` 表示可创建团队站点记录并通过这些受控入口发布站点，后续增加浏览器上传不会改变该角色语义。
 
-第一版不新增站点标题、分类、简介概念。目录卡片使用 slug、hostname、owner、visibility 和状态 tag 展示；如果站点没有额外 metadata，不做补充字段。
+站点支持可选展示名称 `title`；目录、工作台、详情与 Admin 优先展示 `displayName=title || slug`，并把 slug/hostname 作为地址信息。缩略图上传与托管延期，当前不增加图片字段、占位入口或 R2 binding；分类和简介仍不在范围内。
 
 ## 架构
 
@@ -154,7 +154,7 @@ Console 鉴权分两层：
 - `部署记录`。
 - `访问控制`。
 - `运行配置`：非敏感 Vars 和 Secrets metadata；secret value 不回显。
-- `设置`：站点基础信息和危险操作。删除站点必须二次确认；站点归属转移单独设计，不和普通表单保存混在一起。
+- `设置`：名称与站点 URL 使用两个独立表单和错误状态；名称可清空，URL 改名的 `202 pending` 会自动轮询至 ready，旧地址停止访问并在安全期后释放，同时提示同步本地 `xd-cell.config.json.name`。Owner 使用独立“站点归属”卡片和二次确认，不重复展示名称、Slug 或 Hostname；个人 Owner 或源团队 `admin` 可发起转移，使用有效 Console session，不额外要求 recent login。运行配置保存或替换后保留现有列表并后台刷新，弹窗开关不应造成页面横向位移。删除站点必须二次确认。
 
 ## 团队与权限
 
@@ -166,11 +166,11 @@ SSO 登录成功后，平台可按邮箱调用 XDS 部门接口获取部门路�
 
 站点级操作必须统一按下表语义实现；新增访问控制、运行配置、删除站点或归属转移能力时，需要同步 API、CLI、Console 和测试，避免出现 CLI 与 Console 权限不一致。
 
-| 角色        | 语义       | 权限                                                                                  |
-| ----------- | ---------- | ------------------------------------------------------------------------------------- |
-| `viewer`    | 只读成员   | 查看团队、团队站点、部署记录和基础配置                                                |
-| `publisher` | 站点管理者 | 创建团队站点、发布和更新团队站点、管理访问控制、运行配置、删除站点、转移站点归属      |
-| `admin`     | 团队管理员 | 继承 `publisher`；额外管理团队成员、角色、Team Access Token、团队设置和团队删除前盘点 |
+| 角色        | 语义       | 权限                                                                              |
+| ----------- | ---------- | --------------------------------------------------------------------------------- |
+| `viewer`    | 只读成员   | 查看团队、团队站点、部署记录和基础配置                                            |
+| `publisher` | 站点管理者 | 创建、发布和更新团队站点，修改名称/URL、访问控制和运行配置，删除站点              |
+| `admin`     | 团队管理员 | 继承 `publisher`；额外转移站点归属，并管理成员、角色、Token、团队设置和删除前盘点 |
 
 `publisher` 是站点资产管理角色，不等同于控制台网页上传发布。第一版仍不支持从控制台上传 artifact；发布入口仍是 CLI / CI / AI / agent 等受控链路。`admin` 只表示团队治理权限，团队成员管理、角色调整、Team Access Token 创建 / 撤销、团队设置和团队删除等 admin 操作暂时只支持 Console 登录态，不通过 Access Token 暴露。
 
@@ -180,7 +180,7 @@ SSO 登录成功后，平台可按邮箱调用 XDS 部门接口获取部门路�
 
 Access Key 目标模型按归属分为两类：
 
-> 当前实现仍可能使用 `scopes_json` / `site_id` 等旧字段表达权限和单站点限制。后续实现多站点范围、deploy 复合归属转移和独立 transfer API 时，以本节模型为准，并保留向后兼容迁移。
+> 当前实现仍可能使用 `scopes_json` / `site_id` 等旧字段表达权限和单站点限制。后续实现多站点范围时，以本节模型为准，并保留向后兼容迁移；deploy 复合归属转移和独立 transfer API 已按下述约束实现。
 
 - Personal Access Token，简称 PAT：从工作台 `Access Keys` 创建，`ownerType=user`，代表某个用户；权限按用户当前状态、个人资产 owner 关系和团队成员角色动态计算。
 - Team Access Token，简称 TAT：从团队详情 `Access Keys` 创建，`ownerType=team`，代表某个团队；只有团队 `admin` 可创建和撤销。创建者后续离开团队不自动影响 TAT，但团队失效、Token 到期或撤销后必须失效。
@@ -192,10 +192,10 @@ site-scoped 不再作为第三种 Token 类型，而是 PAT / TAT 创建时的�
 
 Token 权限第一版只暴露站点级能力，不暴露团队 admin 能力：
 
-| 权限      | 语义                                                                                   |
-| --------- | -------------------------------------------------------------------------------------- |
-| `read`    | 查看 Token 作用范围内的站点、部署记录和必要 metadata                                   |
-| `publish` | 站点管理能力：发布、创建可管理站点、修改站点访问控制和运行配置、删除站点、转移站点归属 |
+| 权限      | 语义                                                                                  |
+| --------- | ------------------------------------------------------------------------------------- |
+| `read`    | 查看 Token 作用范围内的站点、部署记录和必要 metadata                                  |
+| `publish` | 发布、创建可管理站点、修改访问控制和运行配置、删除站点；归属转移还需满足源 Owner 规则 |
 
 有效期创建时设置，默认 3 个月，最大 1 年。plaintext 只在创建成功时返回一次；列表、日志、审计和错误响应都不能展示 plaintext。
 
@@ -203,9 +203,9 @@ Token 权限第一版只暴露站点级能力，不暴露团队 admin 能力：
 
 - PAT 不带 `teamId` 发布新 slug 时创建个人站点；带 `teamId` 且用户在目标团队是 `publisher` / `admin` 时创建团队站点。
 - TAT 发布新 slug 时创建该团队站点；如果请求显式指定 `teamId`，必须与 TAT 的 `ownerId` 一致。
-- 已有站点 owner 与 deploy 请求目标 owner 不一致时，API 必须按同一套站点管理权限判断源 owner 和目标 owner；通过后可先转移归属再发布，并在 API 响应、审计和 CLI JSON 输出中明确 `fromOwner` / `toOwner`。
-- PAT 可将团队站点转到个人名下，前提是用户对源团队有 `publisher` / `admin` 权限且 Token 有 `publish`。TAT 暂不支持把团队站点转给个人；该场景应由有权限的团队成员使用 PAT 或 Console 登录态执行。
-- TAT 可管理本团队站点，也可在后续支持团队到团队的转移；目标团队接收规则必须显式校验，不得仅凭源团队 Token 单方面完成跨团队资产迁移。
+- 已有站点 owner 与 deploy 请求目标 owner 不一致时，个人源站点只允许当前 Owner，团队源站点只允许源团队 `admin`；目标团队仍要求 actor 是 `publisher` / `admin`。通过后可在最终 route activation 的 D1 事务中转移归属并发布，在响应、审计和 CLI JSON 输出中明确 `fromOwner` / `toOwner`。
+- 独立 Public transfer API 转给个人时只允许转给已认证 actor 自己；PAT 从团队转个人时要求用户是源团队 `admin`，不能仅凭 `publisher` 身份转移。
+- TAT 可继续发布和管理本团队站点，但不能通过独立 transfer API 或 deploy 改变 Owner；向当前团队提交相同 Owner 也不产生转移副作用。
 
 普通建站 API 不直接对 Access Token 开放；Access Token 创建新站点只允许发生在部署事务内。团队 admin 操作不进入 Access Token 能力面，仍由 Console 登录态完成并写审计。
 

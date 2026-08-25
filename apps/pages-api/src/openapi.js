@@ -51,8 +51,25 @@ export function buildOpenApi(config) {
           properties: {
             metadata: {
               type: 'string',
+              contentMediaType: 'application/json',
+              contentSchema: { $ref: '#/components/schemas/DeploymentMetadata' },
               description:
-                'JSON metadata part. For team deploys the metadata carries teamId; the API validates team publisher role.',
+                'JSON metadata part. Controlled integrations may include optional title: omit it to leave an existing ' +
+                'site title unchanged, send a string to set the normalized display name, or send null to clear it. ' +
+                'The current xd-cell CLI does not send title. For team deploys the metadata carries teamId; the API ' +
+                'validates team publisher role.',
+            },
+          },
+          additionalProperties: true,
+        },
+        DeploymentMetadata: {
+          type: 'object',
+          properties: {
+            title: {
+              type: ['string', 'null'],
+              description:
+                'Optional site display name. Omit it to preserve the current title, send a string to update it, ' +
+                'or send null to clear it.',
             },
           },
           additionalProperties: true,
@@ -185,6 +202,64 @@ export function buildOpenApi(config) {
             visibility: { $ref: '#/components/schemas/SiteVisibility' },
           },
         },
+        SiteMetadataUpdateRequest: {
+          type: 'object',
+          additionalProperties: false,
+          anyOf: [{ required: ['title'] }, { required: ['slug'] }],
+          properties: {
+            title: {
+              type: ['string', 'null'],
+              pattern: '\\S',
+              description:
+                'Optional display name. String values are NFC-normalized; control characters and U+2028/U+2029 are rejected, ' +
+                'then surrounding whitespace is trimmed and the result must contain 1-80 Unicode code points. ' +
+                'Send null to clear it.',
+            },
+            slug: {
+              type: 'string',
+              description:
+                'Canonical site URL slug. Input is trimmed and lowercased before validation; the normalized slug must contain ' +
+                '2-50 lowercase ASCII letters, digits, or hyphens, start and end with an alphanumeric character, and not be ' +
+                'reserved. The previous URL stops resolving and is released after a safety hold.',
+            },
+          },
+        },
+        SiteMetadataProjection: {
+          type: 'object',
+          required: ['id', 'title', 'displayName', 'slug', 'routingStatus', 'url'],
+          properties: {
+            id: { type: 'string' },
+            title: { type: ['string', 'null'] },
+            displayName: { type: 'string' },
+            slug: { type: 'string' },
+            routingStatus: { type: 'string', enum: ['ready', 'pending'] },
+            url: { type: ['string', 'null'], format: 'uri' },
+          },
+          additionalProperties: false,
+        },
+        SiteMetadataUpdateResponse: {
+          type: 'object',
+          required: ['site'],
+          properties: {
+            site: { $ref: '#/components/schemas/SiteMetadataProjection' },
+          },
+        },
+        SiteMetadataPendingResponse: {
+          type: 'object',
+          required: ['site', 'warning'],
+          properties: {
+            site: { $ref: '#/components/schemas/SiteMetadataProjection' },
+            warning: {
+              type: 'object',
+              required: ['code', 'message', 'action'],
+              properties: {
+                code: { type: 'string', const: 'SITE_METADATA_ROUTING_PENDING' },
+                message: { type: 'string' },
+                action: { type: 'string' },
+              },
+            },
+          },
+        },
         AdminSiteExposureRequest: {
           type: 'object',
           required: ['exposure'],
@@ -222,10 +297,7 @@ export function buildOpenApi(config) {
               items: { $ref: '#/components/schemas/SiteAclEntry' },
             },
             exposureReason: {
-              oneOf: [
-                { $ref: '#/components/schemas/AdminSiteExposureReason' },
-                { type: 'null' },
-              ],
+              oneOf: [{ $ref: '#/components/schemas/AdminSiteExposureReason' }, { type: 'null' }],
             },
           },
         },
@@ -252,7 +324,7 @@ export function buildOpenApi(config) {
               type: 'string',
               enum: ['user', 'team'],
               description:
-                'Target owner type. Team access tokens cannot transfer a team-owned site to a personal owner.',
+                'Target owner type. Team access tokens cannot change site ownership, including transfers to personal owners.',
             },
             ownerId: {
               type: 'string',
@@ -499,11 +571,67 @@ export function buildOpenApi(config) {
         delete: {
           summary: 'Soft-delete a manageable site and hold its hostname briefly before reuse',
           parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
-          'x-error-codes': ['SITE_POLICY_FORBIDDEN', 'SITE_NOT_FOUND'],
+          'x-error-codes': [
+            'SITE_POLICY_FORBIDDEN',
+            'SITE_POLICY_CONFLICT',
+            'SITE_NOT_FOUND',
+            'ROUTE_SNAPSHOT_WRITE_FAILED',
+            'ROUTE_POLICY_REPAIR_REQUIRED',
+          ],
           responses: {
             200: { description: 'Site deleted' },
             403: { description: 'Actor cannot manage this site' },
             404: { description: 'Site not found' },
+            409: { description: 'Site changed concurrently' },
+            503: { description: 'Route snapshot write or recovery failed' },
+          },
+        },
+      },
+      '/.xd-pages/api/sites/{id}/metadata': {
+        patch: {
+          summary: 'Update a site display name or canonical URL slug',
+          description:
+            'Requires site management permission and deploy:site scope for access keys. Slug changes preserve the site ' +
+            'identity and deployed version; the previous URL stops resolving and is released after a safety hold.',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/SiteMetadataUpdateRequest' },
+              },
+            },
+          },
+          'x-error-codes': [
+            'INVALID_JSON',
+            'SITE_METADATA_INVALID',
+            'SITE_TITLE_INVALID',
+            'SITE_SLUG_INVALID',
+            'SITE_SLUG_RESERVED',
+            'SITE_SLUG_CONFLICT',
+            'SITE_METADATA_CONFLICT',
+            'SITE_NOT_FOUND',
+            'SITE_METADATA_MUTATIONS_DISABLED',
+            'SITE_METADATA_UPDATE_FAILED',
+          ],
+          responses: {
+            200: {
+              description: 'Site metadata saved; routingStatus may be ready or pending',
+              content: {
+                'application/json': { schema: { $ref: '#/components/schemas/SiteMetadataUpdateResponse' } },
+              },
+            },
+            202: {
+              description: 'Site metadata saved while route snapshots are still being reconciled',
+              content: {
+                'application/json': { schema: { $ref: '#/components/schemas/SiteMetadataPendingResponse' } },
+              },
+            },
+            400: { description: 'Invalid JSON, metadata, title, or slug' },
+            404: { description: 'Site not found or not manageable by this actor' },
+            409: { description: 'Slug or concurrent metadata conflict' },
+            500: { description: 'Site metadata update failed' },
+            503: { description: 'Metadata mutations are disabled' },
           },
         },
       },
@@ -511,7 +639,8 @@ export function buildOpenApi(config) {
         patch: {
           summary: 'Update a site network exposure as a platform admin',
           description:
-            'Admin-only Console BFF operation. exposure is independent from legacy visibility: public changes network reachability, ' +
+            'Admin-only Console BFF operation. exposure is independent from legacy visibility: ' +
+            'public changes network reachability, ' +
             'while visibility continues to select anonymous, org, ACL, owner, or disabled access.',
           parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
           requestBody: {
@@ -539,8 +668,7 @@ export function buildOpenApi(config) {
           ],
           responses: {
             200: {
-              description:
-                'Site exposure updated and effective in the route snapshot. auditStatus is confirmed or unconfirmed.',
+              description: 'Site exposure updated and effective in the route snapshot. auditStatus is confirmed or unconfirmed.',
               content: {
                 'application/json': {
                   schema: { $ref: '#/components/schemas/AdminSiteExposureUpdateResponse' },
@@ -559,7 +687,8 @@ export function buildOpenApi(config) {
         get: {
           summary: 'Read a site access policy as a platform admin',
           description:
-            'Admin-only Console BFF operation. exposureReason is present only for the currently effective public exposure policy.',
+            'Admin-only Console BFF operation. exposureReason is present only for the currently ' +
+            'effective public exposure policy.',
           parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
           responses: {
             200: {
@@ -579,9 +708,9 @@ export function buildOpenApi(config) {
         post: {
           summary: 'Transfer a site asset to a personal or team owner',
           description:
-            'Requires publish-level site management on the source site. Transfers to a team also require publisher/admin ' +
-            'membership on the target team, or a team access token owned by the target team. Team access tokens cannot ' +
-            'transfer sites to personal owners in this release.',
+            'Requires the current personal owner or an admin of the source team. Transfers to a team also require ' +
+            'publisher/admin membership on the target team. Transfers to a personal owner remain limited to the ' +
+            'authenticated actor. Team access tokens cannot change ownership, and the target must differ from the current owner.',
           parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
           requestBody: {
             required: true,
@@ -594,19 +723,22 @@ export function buildOpenApi(config) {
           'x-error-codes': [
             'INVALID_JSON',
             'SITE_TRANSFER_INVALID',
-            'SITE_POLICY_FORBIDDEN',
+            'SITE_VISIBILITY_INVALID',
+            'SITE_POLICY_CONFLICT',
             'SITE_TRANSFER_FORBIDDEN',
             'TEAM_REQUIRED',
             'TEAM_NOT_FOUND',
             'SITE_NOT_FOUND',
             'SITE_TRANSFER_UNSUPPORTED',
+            'ROUTE_POLICY_REPAIR_REQUIRED',
           ],
           responses: {
             200: { description: 'Site owner transferred' },
             400: { description: 'Invalid transfer request' },
             403: { description: 'Actor cannot transfer this site or target owner is not allowed' },
             404: { description: 'Site or team not found' },
-            503: { description: 'Site transfer store unavailable' },
+            409: { description: 'Site changed concurrently' },
+            503: { description: 'Site transfer store or route policy repair unavailable' },
           },
         },
       },
@@ -992,8 +1124,11 @@ export function buildOpenApi(config) {
             'CLI-managed multipart upload. Personal/team access keys with deploy:site may create a new site ' +
             'during this deployment; tokens with a site scope can only deploy their bound site. User CLI tokens ' +
             'or personal access tokens may include teamId to deploy as a team publisher/admin. When the target ' +
-            'slug already belongs to a site the actor can manage, teamId transfers that site to the target team ' +
-            'before deploying.',
+            'slug already belongs to a personal site owned by the actor, or a team site where the actor is an admin, ' +
+            'a different teamId requests an ownership transfer that is ' +
+            'committed atomically with final route activation. A controlled integration may explicitly include title ' +
+            'in the JSON metadata part; ' +
+            'only an explicitly present title is applied, after the idempotency claim and before provider upload.',
           parameters: [{ name: 'Idempotency-Key', in: 'header', required: true, schema: { type: 'string' } }],
           requestBody: {
             required: true,
@@ -1014,6 +1149,10 @@ export function buildOpenApi(config) {
             'INVALID_MULTIPART',
             'PAYLOAD_TOO_LARGE',
             'SITE_REQUIRED',
+            'SITE_TITLE_INVALID',
+            'SITE_METADATA_MUTATIONS_DISABLED',
+            'SITE_METADATA_CONFLICT',
+            'SITE_METADATA_UPDATE_FAILED',
             'SITE_NOT_FOUND',
             'SITE_SLUG_INVALID',
             'SITE_SLUG_RESERVED',
@@ -1047,15 +1186,17 @@ export function buildOpenApi(config) {
           ],
           responses: {
             201: deploymentTraceResponse('Deployment created; ownerTransfer is present when deployment changed site ownership'),
-            400: deploymentTraceResponse('Invalid deployment request'),
+            400: deploymentTraceResponse('Invalid deployment request or title'),
             401: deploymentTraceResponse('Authentication required or invalid'),
             403: deploymentTraceResponse('Actor cannot deploy the requested site or exposure'),
             404: deploymentTraceResponse('Requested site or team was not found'),
             413: deploymentTraceResponse('Deployment payload too large for the current upload path'),
-            500: deploymentTraceResponse('Deployment platform configuration invalid or request processing failed'),
+            500: deploymentTraceResponse('Deployment platform configuration, metadata update, or request processing failed'),
             502: deploymentTraceResponse('Deployment upload or verification failed'),
-            503: deploymentTraceResponse('Deployment capacity exhausted, site creation, or route snapshot write failed'),
-            409: deploymentTraceResponse('Idempotency conflict'),
+            503: deploymentTraceResponse(
+              'Deployment capacity exhausted, site creation, metadata mutation, or route snapshot write failed'
+            ),
+            409: deploymentTraceResponse('Idempotency or site metadata conflict'),
           },
         },
       },

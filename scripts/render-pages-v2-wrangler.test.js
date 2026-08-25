@@ -189,6 +189,7 @@ test('production pages-api config renders explicit production template values on
   assert.match(config, /WFP_DISPATCH_NAMESPACE = "xd-cell-workers-production"/);
   assert.match(config, /PAGES_EXECUTION_MODE = "wfp"/);
   assert.match(config, /PAGES_NORMAL_WORKER_SLOT_EXPAND_BY = "2"/);
+  assert.match(config, /SITE_METADATA_MUTATIONS_ENABLED = "true"/);
   assert.match(config, /SLACK_PAGES_ALERT_MENTION_USER_ID = "U06QLFY2XCK"/);
   assert.match(config, /WFP_COMPATIBILITY_DATE = "2026-06-15"/);
   assert.match(config, /ACCESS_KEY_ACTIVE_PEPPER_ID = "pepper_2026_06"/);
@@ -226,6 +227,7 @@ test('staging pages-api config renders explicit staging template values', () => 
   assert.match(config, /WFP_DISPATCH_NAMESPACE = "xd-cell-workers-staging"/);
   assert.match(config, /PAGES_EXECUTION_MODE = "wfp"/);
   assert.match(config, /PAGES_NORMAL_WORKER_SLOT_EXPAND_BY = "20"/);
+  assert.match(config, /SITE_METADATA_MUTATIONS_ENABLED = "true"/);
   assert.match(config, /SLACK_PAGES_ALERT_MENTION_USER_ID = "U06QLFY2XCK"/);
   assert.match(config, /ACCESS_KEY_ACTIVE_PEPPER_ID = "pepper_2026_06"/);
   assert.match(config, /ACCESS_KEY_PEPPERS = "pepper_2026_06:ACCESS_KEY_PEPPER_202606"/);
@@ -293,6 +295,17 @@ test('pages-api config keeps committed WFP compatibility date', () => {
 
   assert.match(config, /WFP_COMPATIBILITY_DATE = "2026-06-15"/);
   assert.doesNotMatch(config, /2026-07-01/);
+});
+
+test('pages-api metadata mutation rollout flag is sourced from each environment template', () => {
+  for (const environment of ['production', 'staging']) {
+    const config = renderPagesApi(environment, {
+      ...baseEnv,
+      SITE_METADATA_MUTATIONS_ENABLED: 'false',
+    });
+
+    assert.match(config, /SITE_METADATA_MUTATIONS_ENABLED = "true"/);
+  }
 });
 
 test('pages-api config renders optional user Worker VPC Tunnel ID from deployment env', () => {

@@ -6,23 +6,13 @@ import {
 } from './console-auth.js';
 import { departmentTeamDisplayName } from './department-path.js';
 import { isSiteVisibility, teamOwnerSupportsVisibility } from './domain/sites/access-policy.js';
-import { viewerCanPublishSite } from './domain/sites/authorization.js';
+import { viewerCanAdminSite, viewerCanPublishSite } from './domain/sites/authorization.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
 import { nextId } from './id.js';
 import { buildSiteOwnerTransferAuditEvent } from './application/sites/build-owner-transfer-audit-event.js';
-import {
-  normalizeSiteSlug,
-  rejectUserExposureMutation,
-  validateSiteSlugInput,
-} from './transport/shared/site-input.js';
-import {
-  createSiteCreationApplication,
-  siteCreateErrorResponse,
-} from './transport/shared/site-creation-application.js';
-import {
-  createSiteOwnershipApplication,
-  siteTransferErrorResponse,
-} from './transport/shared/site-ownership-application.js';
+import { normalizeSiteSlug, rejectUserExposureMutation, validateSiteSlugInput } from './transport/shared/site-input.js';
+import { createSiteCreationApplication, siteCreateErrorResponse } from './transport/shared/site-creation-application.js';
+import { createSiteOwnershipApplication, siteTransferErrorResponse } from './transport/shared/site-ownership-application.js';
 import {
   deleteConsoleSite,
   deleteSiteSecret,
@@ -32,6 +22,7 @@ import {
   readSiteConfig,
   teamOwnerVisibilityUnsupported,
   updateSiteAccess,
+  updateConsoleSiteMetadata,
 } from './transport/console/site-mutations.js';
 import {
   formatAclEntry,
@@ -83,6 +74,14 @@ export async function handleConsoleApi(request, env, config, store, ctx) {
       teamId,
     });
     return jsonOk({ sites: sites.map(formatWorkspaceSite) });
+  }
+
+  const siteMetadataMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/sites\/([^/]+)\/metadata$/);
+  if (siteMetadataMatch) {
+    const session = await requireConsoleUserSession(request, env, config, store);
+    if (session instanceof Response) return session;
+    if (request.method !== 'PATCH') return methodNotAllowed();
+    return updateConsoleSiteMetadata(request, env, config, store, session, decodeURIComponent(siteMetadataMatch[1]), { ctx });
   }
 
   const siteSettingsMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/sites\/([^/]+)\/settings$/);
@@ -161,12 +160,7 @@ export async function handleConsoleApi(request, env, config, store, ctx) {
     }
     if (subresource === 'config') {
       if (!viewerCanPublishSite(site)) {
-        return jsonError(
-          'SITE_PUBLISHER_REQUIRED',
-          'Site publisher role required.',
-          403,
-          'Ask a site or team publisher.'
-        );
+        return jsonError('SITE_PUBLISHER_REQUIRED', 'Site publisher role required.', 403, 'Ask a site or team publisher.');
       }
       return readSiteConfig(env, config, store, site);
     }
@@ -262,12 +256,12 @@ async function updateConsoleSiteSettings(request, env, config, store, session, s
     siteId,
   });
   if (!site) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
-  if (!viewerCanPublishSite(site)) {
+  if (!viewerCanAdminSite(site)) {
     return jsonError(
-      'SITE_PUBLISHER_REQUIRED',
-      'Site publisher role required.',
+      'SITE_ADMIN_REQUIRED',
+      'Site owner or team admin role required.',
       403,
-      'Use the site owner account or a team publisher/admin account.'
+      'Use the personal owner account or a team admin account.'
     );
   }
 
@@ -289,13 +283,14 @@ async function updateConsoleSiteSettings(request, env, config, store, session, s
     const result = await createSiteOwnershipApplication({ store, env })({
       environment: config.environment,
       site,
+      actor: { type: 'user', userId: session.userId },
       target,
-      buildAuditEvent: (updatedAt) =>
+      buildAuditEvent: (updatedAt, currentSite) =>
         buildSiteOwnerTransferAuditEvent({
           id: nextId(env, 'aud'),
           environment: config.environment,
           actor: { type: 'user', userId: session.userId },
-          site,
+          site: currentSite,
           target,
           source: 'console',
           createdAt: updatedAt,
@@ -324,6 +319,7 @@ async function updateConsoleSiteSettings(request, env, config, store, session, s
       ownerDisplayName: target.displayName,
       ownerEmail: target.email || null,
       ownerTeamType: target.teamType || null,
+      ownerDepartmentPath: target.departmentPath || null,
     }),
   });
 }
@@ -372,6 +368,7 @@ async function resolveConsoleSiteOwnerTarget(store, config, session, body) {
     ownerUserId: session.userId,
     displayName: departmentTeamDisplayName(team) || team.departmentPath || team.id,
     teamType: team.teamType || null,
+    departmentPath: team.departmentPath || null,
     role: member.role,
   };
 }

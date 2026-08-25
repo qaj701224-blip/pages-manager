@@ -15,6 +15,7 @@ export function createSiteCreation({ siteCreation, legacyV1Takeover, ids, siteUu
       ownerType: command.ownerType,
       ownerId: command.ownerId,
       ownerUserId: command.ownerUserId,
+      title: command.title ?? null,
       siteUuid: siteUuids.next(),
       defaultVisibility: command.visibility,
       environment: command.environment,

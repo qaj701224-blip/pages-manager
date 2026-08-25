@@ -4,6 +4,7 @@ import { createPagesStore } from './infrastructure/store/create-store.js';
 import { RoutePointerDO } from './route-snapshot.js';
 import { createPagesApiRouter } from './transport/router.js';
 import { createScheduledHandler } from './transport/scheduled.js';
+import { runSiteMetadataRoutingReconciliation } from './transport/shared/site-metadata-application.js';
 
 export { RoutePointerDO };
 
@@ -12,6 +13,7 @@ const handleScheduled = createScheduledHandler({
   readConfig: readApiConfig,
   createStore: createPagesStore,
   runDueCleanups: runDueDeploymentCleanups,
+  runMetadataReconciliation: runSiteMetadataRoutingReconciliation,
   taskScheduler: {
     schedule: (executionContext, task) => executionContext.waitUntil(task),
   },

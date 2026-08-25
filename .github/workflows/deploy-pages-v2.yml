@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       component:
-        description: Deploy XD Cell component
+        description: Deploy XD Cell component (pages-api includes protocol consumers)
         required: true
         type: choice
         default: all
@@ -72,7 +72,7 @@ jobs:
         run: node scripts/render-pages-v2-wrangler.mjs apps/pages-auth production
 
       - name: Generate Pages KV Gateway Wrangler config
-        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-kv-gateway'
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-api' || env.DEPLOY_COMPONENT == 'pages-kv-gateway'
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           SITE_DATA_KV_ID: ${{ vars.PAGES_V2_SITE_DATA_KV_ID }}
@@ -112,7 +112,7 @@ jobs:
         run: DRY_RUN=1 scripts/put-pages-v2-secrets.sh apps/pages-auth
 
       - name: Validate Pages Router secrets
-        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-router'
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-api' || env.DEPLOY_COMPONENT == 'pages-router'
         env:
           # Add new PAGES_SESSION_JWT_SECRET_* mappings here when PAGES_SESSION_JWT_KEYS rotates.
           PAGES_SESSION_JWT_SECRET_202606: ${{ secrets.PAGES_SESSION_JWT_SECRET_202606 }}
@@ -121,7 +121,7 @@ jobs:
         run: DRY_RUN=1 scripts/put-pages-v2-secrets.sh apps/pages-router
 
       - name: Validate Pages KV Gateway secrets
-        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-kv-gateway'
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-api' || env.DEPLOY_COMPONENT == 'pages-kv-gateway'
         env:
           # Add new PAGES_CAP_JWT_SECRET_* mappings here when PAGES_CAP_JWT_KEYS rotates.
           PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
@@ -148,8 +148,58 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: pnpm --dir apps/pages-api exec wrangler d1 migrations apply pages-v2-metadata --remote
 
-      # Deploy Pages API before Pages Auth: the CLI login poll in pages-auth calls
-      # pages-api 的 /.xd-pages/internal/cli-access-keys 端点，必须先在线，否则 all 部署窗口期内 login 会 502。
+      - name: Deploy Pages KV Gateway
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-api' || env.DEPLOY_COMPONENT == 'pages-kv-gateway'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm --dir apps/kv-gateway exec wrangler deploy
+
+      - name: Inject Pages KV Gateway secrets
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-api' || env.DEPLOY_COMPONENT == 'pages-kv-gateway'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          # Add new PAGES_CAP_JWT_SECRET_* mappings here when PAGES_CAP_JWT_KEYS rotates.
+          PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
+        run: scripts/put-pages-v2-secrets.sh apps/kv-gateway
+
+      - name: Compute legacy normal worker bindings
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-api' || env.DEPLOY_COMPONENT == 'pages-router'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/provision-pages-v2-slots.mjs production bindings
+
+      - name: Generate Pages Router Wrangler config
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-api' || env.DEPLOY_COMPONENT == 'pages-router'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          ROUTE_SNAPSHOTS_KV_ID: ${{ vars.PAGES_V2_ROUTE_SNAPSHOTS_KV_ID }}
+          ROUTER_IP_ALLOWLIST_CIDRS: ${{ vars.ROUTER_IP_ALLOWLIST_CIDRS }}
+        run: node scripts/render-pages-v2-wrangler.mjs apps/pages-router production
+
+      - name: Deploy Pages Router
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-api' || env.DEPLOY_COMPONENT == 'pages-router'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm --dir apps/pages-router exec wrangler deploy
+
+      - name: Inject Pages Router secrets
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-api' || env.DEPLOY_COMPONENT == 'pages-router'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          # Add new PAGES_SESSION_JWT_SECRET_* mappings here when PAGES_SESSION_JWT_KEYS rotates.
+          PAGES_SESSION_JWT_SECRET_202606: ${{ secrets.PAGES_SESSION_JWT_SECRET_202606 }}
+          # Add new PAGES_CAP_JWT_SECRET_* mappings here when PAGES_CAP_JWT_KEYS rotates.
+          PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
+        run: scripts/put-pages-v2-secrets.sh apps/pages-router
+
+      # Protocol consumers must be online before pages-api can publish v4 route snapshots.
+      # Pages API still deploys before Pages Auth because the CLI login poll calls
+      # pages-api 的 /.xd-pages/internal/cli-access-keys 端点。
       - name: Deploy Pages API
         if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-api'
         env:
@@ -191,55 +241,6 @@ jobs:
           # Add new PAGES_SESSION_JWT_SECRET_* mappings here when PAGES_SESSION_JWT_KEYS rotates.
           PAGES_SESSION_JWT_SECRET_202606: ${{ secrets.PAGES_SESSION_JWT_SECRET_202606 }}
         run: scripts/put-pages-v2-secrets.sh apps/pages-auth
-
-      - name: Deploy Pages KV Gateway
-        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-kv-gateway'
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-        run: pnpm --dir apps/kv-gateway exec wrangler deploy
-
-      - name: Inject Pages KV Gateway secrets
-        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-kv-gateway'
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          # Add new PAGES_CAP_JWT_SECRET_* mappings here when PAGES_CAP_JWT_KEYS rotates.
-          PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
-        run: scripts/put-pages-v2-secrets.sh apps/kv-gateway
-
-      - name: Compute legacy normal worker bindings
-        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-router'
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-        run: node scripts/provision-pages-v2-slots.mjs production bindings
-
-      - name: Generate Pages Router Wrangler config
-        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-router'
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          ROUTE_SNAPSHOTS_KV_ID: ${{ vars.PAGES_V2_ROUTE_SNAPSHOTS_KV_ID }}
-          ROUTER_IP_ALLOWLIST_CIDRS: ${{ vars.ROUTER_IP_ALLOWLIST_CIDRS }}
-        run: node scripts/render-pages-v2-wrangler.mjs apps/pages-router production
-
-      - name: Deploy Pages Router
-        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-router'
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-        run: pnpm --dir apps/pages-router exec wrangler deploy
-
-      - name: Inject Pages Router secrets
-        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-router'
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          # Add new PAGES_SESSION_JWT_SECRET_* mappings here when PAGES_SESSION_JWT_KEYS rotates.
-          PAGES_SESSION_JWT_SECRET_202606: ${{ secrets.PAGES_SESSION_JWT_SECRET_202606 }}
-          # Add new PAGES_CAP_JWT_SECRET_* mappings here when PAGES_CAP_JWT_KEYS rotates.
-          PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
-        run: scripts/put-pages-v2-secrets.sh apps/pages-router
 
       - name: Build Pages Console assets
         if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-console'

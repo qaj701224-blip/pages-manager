@@ -3,6 +3,7 @@ import {
   mapConsoleDirectorySite,
   mapConsoleTeamSite,
   mapDeployment,
+  mapHostnameClaim,
   mapSite,
   mapSiteAclEntry,
   mapSiteMember,
@@ -13,10 +14,70 @@ import {
 export const sitesRepositoryMethods = {
   async findSiteBySlug(environment, slug) {
     const row = await this.db
-      .prepare('SELECT * FROM sites WHERE environment = ? AND slug = ? AND deleted_at IS NULL')
+      .prepare(
+        `SELECT * FROM sites
+          WHERE environment = ? AND slug = ? AND deleted_at IS NULL`
+      )
       .bind(environment, slug)
       .first();
     return row ? mapSite(row) : null;
+  },
+
+  async listSiteRetiringHostnameClaims(siteId, { environment } = {}) {
+    const environmentFilter = environment ? ' AND environment = ?' : '';
+    const result = await this.db
+      .prepare(
+        `SELECT * FROM hostname_claims
+          WHERE owner_system = 'v2' AND owner_id = ?${environmentFilter}
+            AND status = 'held'
+            AND release_reason = 'site_slug_renamed_pending_cleanup'
+            AND reuse_hold_until IS NULL
+          ORDER BY released_at ASC, id ASC`
+      )
+      .bind(...(environment ? [siteId, environment] : [siteId]))
+      .all();
+    return (result.results || []).map(mapHostnameClaim);
+  },
+
+  async listSiteHostnameClaims(siteId, { environment } = {}) {
+    const environmentFilter = environment ? ' AND environment = ?' : '';
+    const result = await this.db
+      .prepare(
+        `SELECT * FROM hostname_claims
+          WHERE owner_system = 'v2' AND owner_id = ?${environmentFilter}
+          ORDER BY created_at ASC, id ASC`
+      )
+      .bind(...(environment ? [siteId, environment] : [siteId]))
+      .all();
+    return (result.results || []).map(mapHostnameClaim);
+  },
+
+  async listSitesPendingSlugRouting(environment, { limit = 50 } = {}) {
+    const result = await this.db
+      .prepare(
+        `SELECT sites.*, site_routes.id AS route_id, site_routes.hostname AS route_hostname,
+            site_routes.runtime AS route_runtime, site_routes.worker_name AS route_worker_name,
+            site_routes.execution_provider AS route_execution_provider,
+            site_routes.dispatch_type AS route_dispatch_type,
+            site_routes.dispatch_binding_name AS route_dispatch_binding_name,
+            site_routes.slot_id AS route_slot_id,
+            site_routes.active_version_id AS route_active_version_id,
+            site_routes.visibility AS route_visibility, site_routes.exposure AS route_exposure,
+            site_routes.access_mode AS route_access_mode, site_routes.policy_version AS route_policy_version,
+            site_routes.route_generation AS route_route_generation,
+            site_routes.runtime_config_generation AS route_runtime_config_generation,
+            site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
+            site_routes.created_at AS route_created_at, site_routes.updated_at AS route_updated_at
+          FROM sites
+          JOIN site_routes ON site_routes.site_id = sites.id AND site_routes.environment = sites.environment
+          WHERE sites.environment = ? AND sites.deleted_at IS NULL
+            AND sites.slug_routing_synced_revision != sites.slug_revision
+          ORDER BY sites.slug_routing_reconcile_attempted_at ASC, sites.updated_at ASC, sites.id ASC
+          LIMIT ?`
+      )
+      .bind(environment, Math.max(1, Math.min(Number(limit) || 50, 200)))
+      .all();
+    return (result.results || []).map(mapSiteWithJoinedRoute);
   },
 
   async getSite(id) {
@@ -417,6 +478,7 @@ export const sitesRepositoryMethods = {
         ownerDisplayName: departmentTeamDisplayName(team),
         ownerTeamType: team.teamType,
         ownerTeamId: team.id,
+        ownerDepartmentPath: team.departmentPath || null,
         currentUserId: userId,
         managementRole: member.role,
       };
@@ -427,6 +489,7 @@ export const sitesRepositoryMethods = {
       ...site,
       ownerType: 'user',
       ownerDisplayName: ownerUser?.realname || ownerUser?.email || null,
+      ownerEmail: ownerUser?.email || null,
       currentUserId: userId,
       managementRole: 'admin',
     };

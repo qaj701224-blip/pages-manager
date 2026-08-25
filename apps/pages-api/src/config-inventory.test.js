@@ -23,6 +23,7 @@ const TEMPLATE_VARS = [
   'PUBLIC_API_BASE',
   'PUBLIC_AUTH_BASE',
   'PUBLIC_SITE_SUFFIX',
+  'SITE_METADATA_MUTATIONS_ENABLED',
   'SLACK_PAGES_ALERT_MENTION_USER_ID',
   'WFP_COMPATIBILITY_DATE',
   'WFP_DISPATCH_NAMESPACE',
@@ -52,6 +53,7 @@ const RUNTIME_ENV_INVENTORY = {
     'RUNTIME_CONFIG_HASH_PEPPER',
     'SITE_COMMIT_LOCK_RENEW_INTERVAL_MS',
     'SITE_COMMIT_LOCK_TIMEOUT_MS',
+    'SITE_METADATA_RECONCILIATION_CRON_LIMIT',
     'SLACK_PAGES_ALERT_WEBHOOK_URL',
     'WEBHOOK_DNS_RESOLVER_URL',
     'WFP_CLEANUP_DRAIN_SECONDS',
@@ -108,6 +110,8 @@ test('production and staging templates preserve the pages-api Cloudflare topolog
   assert.equal(tomlString(STAGING_TEMPLATE, 'PAGES_ENV'), 'staging');
   assert.equal(tomlString(PRODUCTION_TEMPLATE, 'WFP_DISPATCH_NAMESPACE'), 'xd-cell-workers-production');
   assert.equal(tomlString(STAGING_TEMPLATE, 'WFP_DISPATCH_NAMESPACE'), 'xd-cell-workers-staging');
+  assert.equal(tomlString(PRODUCTION_TEMPLATE, 'SITE_METADATA_MUTATIONS_ENABLED'), 'true');
+  assert.equal(tomlString(STAGING_TEMPLATE, 'SITE_METADATA_MUTATIONS_ENABLED'), 'true');
   assert.notEqual(tomlString(PRODUCTION_TEMPLATE, 'database_name'), tomlString(STAGING_TEMPLATE, 'database_name'));
 });
 

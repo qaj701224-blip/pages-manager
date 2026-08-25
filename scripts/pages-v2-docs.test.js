@@ -22,9 +22,7 @@ function readRepoFile(path) {
 }
 
 function readPagesDocs() {
-  return splitDocPaths
-    .map((file) => readRepoFile(file))
-    .join('\n');
+  return splitDocPaths.map((file) => readRepoFile(file)).join('\n');
 }
 
 test('XD Cell docs are split into indexed topic files', () => {
@@ -34,23 +32,19 @@ test('XD Cell docs are split into indexed topic files', () => {
   for (const file of splitDocPaths.slice(1)) {
     assert.match(index, new RegExp(escapeRegExp(file.replace('docs/', './'))), `${file} should be linked`);
     const lineCount = readRepoFile(file).split('\n').length;
-    assert.ok(
-      lineCount <= maxReviewableMarkdownLines,
-      `${file} should stay reviewable, got ${lineCount} lines`,
-    );
+    assert.ok(lineCount <= maxReviewableMarkdownLines, `${file} should stay reviewable, got ${lineCount} lines`);
   }
   assert.equal(existsSync(join(repoRoot, 'docs/人工配置待办.md')), false);
 });
 
 test('current docs stay short enough to review', () => {
-  const docs = listMarkdownFiles('docs')
-    .filter((file) => !file.startsWith('docs/superpowers/'));
+  const docs = listMarkdownFiles('docs').filter((file) => !file.startsWith('docs/superpowers/'));
 
   for (const file of ['README.md', 'AGENTS.md', ...docs]) {
     const lineCount = readRepoFile(file).split('\n').length;
     assert.ok(
       lineCount <= maxReviewableMarkdownLines,
-      `${file} should be split when it exceeds ${maxReviewableMarkdownLines} lines, got ${lineCount}`,
+      `${file} should be split when it exceeds ${maxReviewableMarkdownLines} lines, got ${lineCount}`
     );
   }
 });
@@ -77,10 +71,7 @@ test('documentation truth source matrix names current owners', () => {
 });
 
 test('active architecture docs do not become API contract truth sources', () => {
-  const architectureDocs = [
-    'docs/architecture/xd-pages-overview.md',
-    'docs/architecture/publishing-and-runtime.md',
-  ]
+  const architectureDocs = ['docs/architecture/xd-pages-overview.md', 'docs/architecture/publishing-and-runtime.md']
     .map((file) => readRepoFile(file))
     .join('\n');
 
@@ -116,10 +107,7 @@ test('ADR 0001 is an index over split topic files', () => {
   for (const file of files) {
     assert.match(index, new RegExp(escapeRegExp(file.replace('docs/adr/', './'))), `${file} should be linked`);
     const lineCount = readRepoFile(file).split('\n').length;
-    assert.ok(
-      lineCount <= maxReviewableMarkdownLines,
-      `${file} should stay reviewable, got ${lineCount} lines`,
-    );
+    assert.ok(lineCount <= maxReviewableMarkdownLines, `${file} should stay reviewable, got ${lineCount} lines`);
   }
 });
 
@@ -156,7 +144,7 @@ test('XD Cell architecture release gate names the checked workflow and secret sc
 
   assert.match(
     doc,
-    /node --test scripts\/render-pages-v2-wrangler\.test\.js scripts\/pages-v2-secrets\.test\.js scripts\/workflows\.test\.js/,
+    /node --test scripts\/render-pages-v2-wrangler\.test\.js scripts\/pages-v2-secrets\.test\.js scripts\/workflows\.test\.js/
   );
   assert.match(doc, /DRY_RUN=1 scripts\/put-pages-v2-secrets\.sh/);
   assert.match(doc, /deploy-pages-v2\.yml/);
@@ -177,7 +165,7 @@ test('XD Cell architecture keeps execution provider internal to the platform', (
     'normal-worker-slot',
     'worker_slots',
     'available_pending_router',
-    'schemaVersion": 2',
+    'schemaVersion": 4',
     'CF-Platform-KV-Capability',
   ]) {
     assert.match(doc, new RegExp(escapeRegExp(text)), `${text} should be documented`);
@@ -197,6 +185,33 @@ test('XD Cell architecture keeps execution provider internal to the platform', (
   assert.doesNotMatch(doc, /--runtime wfp/);
   assert.doesNotMatch(doc, /xd-cell deploy --runtime/);
   assert.doesNotMatch(doc, /xd-cell deploy \.\/dist --name/);
+});
+
+test('XD Cell architecture documents site metadata compatibility and staged rollout', () => {
+  const doc = readPagesDocs();
+
+  for (const text of [
+    'SITE_METADATA_MUTATIONS_ENABLED',
+    '0021_site_metadata.sql',
+    'dataNamespace',
+    'site_slug_renamed_pending_cleanup',
+    'kind=serve',
+    '旧地址不跳转',
+    '缩略图与 R2 延期',
+    'failure_stage=site_metadata',
+    'deployment GET 不触发恢复',
+    '不承诺跨进程 exactly-once',
+  ]) {
+    assert.match(doc, new RegExp(escapeRegExp(text)), `${text} should be documented`);
+  }
+  assert.match(doc, /当前默认均为 `true`/);
+  assert.match(doc, /显式携带 `title` 的部署[^。\n]*省略 `title` 的部署不受影响/);
+  assert.match(doc, /consumer-before-producer/);
+  assert.doesNotMatch(doc, /历史地址以 308|schema v4 redirect snapshot/);
+  assert.match(doc, /production[^。\n]*只通过 `Deploy XD Cell Production` 手动发布/);
+  assert.match(doc, /首个 schema v4 pointer[^。\n]*不得降级[^。\n]*旧 pages-router 或 pages-kv-gateway/);
+  assert.match(doc, /尚未发生 slug rename[^。\n]*只回滚 pages-api[^。\n]*保留新版 pages-router 和 pages-kv-gateway/);
+  assert.match(doc, /首次 slug rename[^。\n]*pages-api、pages-router 与 pages-kv-gateway[^。\n]*roll forward/);
 });
 
 function escapeRegExp(value) {

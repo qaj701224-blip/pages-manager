@@ -8,7 +8,14 @@ import {
   hostnameFamilyForHostname,
   isSqliteConstraintError,
   mapHostnameClaim,
+  sitePolicyError,
 } from '../store-support.js';
+import {
+  SITE_MUTATION_AUTHORIZATION_FAILED,
+  SITE_TRANSFER_INVARIANT_FAILED,
+  siteMutationAuthorizationStatements,
+  siteTransferInvariantStatements,
+} from '../support/site-mutation-authorization.js';
 
 export const siteLifecycleMethods = {
   async createSite(input) {
@@ -18,6 +25,10 @@ export const siteLifecycleMethods = {
     const site = {
       id: input.id,
       slug: input.slug,
+      title: input.title || null,
+      dataNamespace: input.dataNamespace || input.slug,
+      slugRevision: 1,
+      slugRoutingSyncedRevision: 1,
       environment: input.environment,
       ownerType: input.ownerType || 'user',
       ownerId: input.ownerId || input.ownerUserId,
@@ -51,7 +62,10 @@ export const siteLifecycleMethods = {
     const hostnameClaimGuardStatement = this.createHostnameClaimGuardStatement(hostnameClaim);
     if (existingHostnameClaim) {
       if (!['released', 'held'].includes(existingHostnameClaim.status)) throw new Error('HOSTNAME_CLAIM_CONFLICT');
-      if (existingHostnameClaim.reuseHoldUntil && existingHostnameClaim.reuseHoldUntil > now) {
+      if (
+        existingHostnameClaim.status === 'held' &&
+        (!existingHostnameClaim.reuseHoldUntil || existingHostnameClaim.reuseHoldUntil > now)
+      ) {
         throw new Error('HOSTNAME_CLAIM_CONFLICT');
       }
       if (await this.findConflictingHostnameClaim({ ...hostnameClaim, excludeHostname: hostnameClaim.hostname })) {
@@ -64,8 +78,10 @@ export const siteLifecycleMethods = {
               owner_ref = ?, status = ?, source = ?, acquired_at = ?, lease_expires_at = ?,
               released_at = NULL, reuse_hold_until = ?, release_reason = NULL, updated_at = ?
             WHERE hostname = ?
-              AND status IN ('released', 'held')
-              AND (reuse_hold_until IS NULL OR reuse_hold_until <= ?)
+              AND (
+                status = 'released'
+                OR (status = 'held' AND reuse_hold_until IS NOT NULL AND reuse_hold_until <= ?)
+              )
               AND NOT EXISTS (
                 SELECT 1 FROM hostname_claims
                 WHERE environment = ?
@@ -150,14 +166,19 @@ export const siteLifecycleMethods = {
         this.db
           .prepare(
             `INSERT INTO sites (
-                id, slug, environment, owner_type, owner_id, owner_user_id,
+                id, slug, title, data_namespace, slug_revision, slug_routing_synced_revision,
+                environment, owner_type, owner_id, owner_user_id,
                 default_visibility, default_exposure, default_access_mode,
                 execution_mode_override, site_uuid, created_at, updated_at, deleted_at
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           )
           .bind(
             site.id,
             site.slug,
+            site.title,
+            site.dataNamespace,
+            site.slugRevision,
+            site.slugRoutingSyncedRevision,
             site.environment,
             site.ownerType,
             site.ownerId,
@@ -248,6 +269,10 @@ export const siteLifecycleMethods = {
     const site = {
       id: input.id,
       slug: input.slug,
+      title: input.title || null,
+      dataNamespace: input.dataNamespace || input.slug,
+      slugRevision: 1,
+      slugRoutingSyncedRevision: 1,
       environment: targetEnvironment,
       ownerType: input.ownerType || 'user',
       ownerId: input.ownerId || input.ownerUserId,
@@ -335,14 +360,19 @@ export const siteLifecycleMethods = {
       this.db
         .prepare(
           `INSERT INTO sites (
-              id, slug, environment, owner_type, owner_id, owner_user_id,
+              id, slug, title, data_namespace, slug_revision, slug_routing_synced_revision,
+              environment, owner_type, owner_id, owner_user_id,
               default_visibility, default_exposure, default_access_mode,
               execution_mode_override, site_uuid, created_at, updated_at, deleted_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .bind(
           site.id,
           site.slug,
+          site.title,
+          site.dataNamespace,
+          site.slugRevision,
+          site.slugRoutingSyncedRevision,
           site.environment,
           site.ownerType,
           site.ownerId,
@@ -514,8 +544,10 @@ export const siteLifecycleMethods = {
               owner_ref = ?, status = ?, source = ?, acquired_at = ?, lease_expires_at = ?,
               released_at = NULL, reuse_hold_until = ?, release_reason = NULL, updated_at = ?
             WHERE hostname = ?
-              AND status IN ('released', 'held')
-              AND (reuse_hold_until IS NULL OR reuse_hold_until <= ?)
+              AND (
+                status = 'released'
+                OR (status = 'held' AND reuse_hold_until IS NOT NULL AND reuse_hold_until <= ?)
+              )
               AND NOT EXISTS (
                 SELECT 1 FROM hostname_claims
                 WHERE environment = ?
@@ -598,16 +630,60 @@ export const siteLifecycleMethods = {
     return { ok: true, claim: await this.getHostnameClaim(input.hostname) };
   },
 
-  async deleteSite(siteId, { deletedAt, reuseHoldUntil, releaseReason = 'site_deleted' } = {}, environment) {
+  async deleteSite(
+    siteId,
+    { deletedAt, reuseHoldUntil, releaseReason = 'site_deleted', authorization, expectedOwner, lease } = {},
+    environment
+  ) {
     const site = await this.getSite(siteId);
     const route = await this.getRouteBySiteId(siteId, environment);
     if (!site || site.deletedAt || !route) return null;
     if (environment && site.environment !== environment) return null;
-    const now = deletedAt || this.now();
-    await this.db.batch([
-      this.db
-        .prepare(`UPDATE sites SET deleted_at = ?, updated_at = ? WHERE id = ?${environment ? ' AND environment = ?' : ''}`)
-        .bind(...(environment ? [now, now, siteId, environment] : [now, now, siteId])),
+    const leaseCheckNow = this.now();
+    const currentLease = lease ? await this.assertSitePolicyLease(site.environment, siteId, lease, leaseCheckNow) : null;
+    const commitNow = this.now();
+    const now = deletedAt || commitNow;
+    const siteUpdate = this.db
+      .prepare(
+        `UPDATE sites SET deleted_at = ?, updated_at = ?
+          WHERE id = ?${environment ? ' AND environment = ?' : ''} AND deleted_at IS NULL${
+            currentLease
+              ? `${
+                  expectedOwner
+                    ? ` AND COALESCE(owner_type, 'user') = ?
+                        AND COALESCE(owner_id, owner_user_id) = ?`
+                    : ''
+                } AND EXISTS (
+                  SELECT 1 FROM site_policy_locks
+                  WHERE environment = ? AND site_id = ? AND lock_id = ?
+                    AND fencing_token
+                      = ? AND expires_at > ?
+                )`
+              : ''
+          }`
+      )
+      .bind(
+        ...(environment ? [now, now, siteId, environment] : [now, now, siteId]),
+        ...(currentLease
+          ? [
+              ...(expectedOwner ? [expectedOwner.ownerType || 'user', expectedOwner.ownerId] : []),
+              site.environment,
+              siteId,
+              currentLease.lockId,
+              currentLease.fencingToken,
+              commitNow,
+            ]
+          : [])
+      );
+    const statements = [
+      ...siteMutationAuthorizationStatements(this, {
+        siteId,
+        environment: site.environment,
+        authorization,
+        now: commitNow,
+      }),
+      siteUpdate,
+      ...(currentLease ? [this.sitePolicyGuardStatement()] : []),
       this.db
         .prepare(
           `UPDATE site_routes
@@ -621,35 +697,157 @@ export const siteLifecycleMethods = {
         .prepare(
           `UPDATE hostname_claims
             SET status = 'held', released_at = ?, reuse_hold_until = ?, release_reason = ?, updated_at = ?
-            WHERE hostname = ? AND owner_system = 'v2' AND owner_id = ?
-              AND status IN ('pending', 'active', 'held')`
+            WHERE owner_system = 'v2' AND owner_id = ?
+              AND environment = ?
+              AND (
+                status IN ('pending', 'active')
+                OR (
+                  status = 'held'
+                  AND release_reason = 'site_slug_renamed_pending_cleanup'
+                  AND reuse_hold_until IS NULL
+                )
+              )`
         )
-        .bind(now, reuseHoldUntil || null, releaseReason, now, route.hostname, siteId),
-    ]);
+        .bind(now, reuseHoldUntil || null, releaseReason, now, siteId, site.environment),
+    ];
+    try {
+      await this.db.batch(statements);
+    } catch (error) {
+      if (String(error?.message || error).includes(SITE_MUTATION_AUTHORIZATION_FAILED)) {
+        throw sitePolicyError('SITE_NOT_FOUND');
+      }
+      throw error;
+    }
     return this.getSite(siteId);
   },
 
-  async transferSiteOwner(siteId, { ownerType, ownerId, ownerUserId, defaultVisibility, updatedAt, auditEvent }, environment) {
+  async transferSiteOwner(
+    siteId,
+    {
+      ownerType,
+      ownerId,
+      ownerUserId,
+      defaultVisibility,
+      updatedAt,
+      auditEvent,
+      expected,
+      expectedRoute,
+      bumpPolicyVersion = false,
+      authorization,
+      targetUserMustMatchActor,
+      lease,
+    },
+    environment
+  ) {
+    const fenced = expected !== undefined || lease !== undefined;
+    if (fenced && (!expected || !lease)) throw sitePolicyError('SITE_POLICY_CONFLICT');
+
     const site = await this.getSite(siteId);
     if (!site || site.deletedAt) return null;
     if (environment && site.environment !== environment) return null;
 
     const nextOwnerType = ownerType || 'user';
-    const now = updatedAt || this.now();
     const nextDefaultVisibility = defaultVisibility || site.defaultVisibility;
     const nextDefaultAccessMode = accessModeFromVisibility(nextDefaultVisibility);
+    const leaseCheckNow = this.now();
+    const currentLease = fenced ? await this.assertSitePolicyLease(site.environment, siteId, lease, leaseCheckNow) : null;
+    const commitNow = this.now();
+    const now = updatedAt || commitNow;
+    const expectedOwnerType = expected?.ownerType || 'user';
+    const expectedOwnerId = expected?.ownerId || expected?.ownerUserId;
+    if (authorization && !expectedRoute) throw sitePolicyError('SITE_POLICY_CONFLICT');
+    if (bumpPolicyVersion && (!expectedRoute || !currentLease)) throw sitePolicyError('SITE_POLICY_CONFLICT');
+    if (targetUserMustMatchActor && nextOwnerType === 'user' && authorization?.actorUserId !== ownerId) {
+      throw sitePolicyError('SITE_NOT_FOUND');
+    }
     const statements = [
+      ...siteMutationAuthorizationStatements(this, {
+        siteId,
+        environment: site.environment,
+        authorization,
+        now: commitNow,
+        target: { ownerType: nextOwnerType, ownerId },
+      }),
+      ...(authorization
+        ? siteTransferInvariantStatements(this, {
+            siteId,
+            environment: site.environment,
+            target: { ownerType: nextOwnerType, ownerId },
+            expectedRoute,
+          })
+        : []),
       this.db
         .prepare(
           `UPDATE sites
             SET owner_type = ?, owner_id = ?, owner_user_id = ?, default_visibility = ?, default_access_mode = ?, updated_at = ?
-            WHERE id = ?${environment ? ' AND environment = ?' : ''} AND deleted_at IS NULL`
+            WHERE id = ?${environment ? ' AND environment = ?' : ''} AND deleted_at IS NULL${
+              currentLease
+                ? ` AND COALESCE(owner_type, 'user') = ?
+                    AND COALESCE(owner_id, owner_user_id) = ?
+                    AND EXISTS (
+                      SELECT 1 FROM site_policy_locks
+                      WHERE environment = ? AND site_id = ? AND lock_id = ?
+                        AND fencing_token = ? AND expires_at > ?
+                    )`
+                : ''
+            }`
         )
         .bind(
-          ...(environment
-            ? [nextOwnerType, ownerId, ownerUserId, nextDefaultVisibility, nextDefaultAccessMode, now, siteId, environment]
-            : [nextOwnerType, ownerId, ownerUserId, nextDefaultVisibility, nextDefaultAccessMode, now, siteId])
+          nextOwnerType,
+          ownerId,
+          ownerUserId,
+          nextDefaultVisibility,
+          nextDefaultAccessMode,
+          now,
+          siteId,
+          ...(environment ? [environment] : []),
+          ...(currentLease
+            ? [
+                expectedOwnerType,
+                expectedOwnerId,
+                site.environment,
+                siteId,
+                currentLease.lockId,
+                currentLease.fencingToken,
+                commitNow,
+              ]
+            : [])
         ),
+      ...(currentLease ? [this.sitePolicyGuardStatement()] : []),
+      ...(bumpPolicyVersion
+        ? [
+            this.db
+              .prepare(
+                `UPDATE site_routes
+                  SET policy_version = policy_version + 1, updated_at = ?
+                  WHERE id = ? AND site_id = ? AND environment = ?
+                    AND route_generation = ? AND policy_version = ? AND active_version_id IS ?
+                    AND runtime_config_generation = ? AND visibility = ?
+                    AND EXISTS (
+                      SELECT 1 FROM site_policy_locks
+                      WHERE environment = ? AND site_id = ? AND lock_id = ?
+                        AND fencing_token = ? AND expires_at > ?
+                    )`
+              )
+              .bind(
+                now,
+                expectedRoute.id,
+                siteId,
+                site.environment,
+                expectedRoute.routeGeneration,
+                expectedRoute.policyVersion,
+                expectedRoute.activeVersionId,
+                expectedRoute.runtimeConfigGeneration || 0,
+                expectedRoute.visibility,
+                site.environment,
+                siteId,
+                currentLease.lockId,
+                currentLease.fencingToken,
+                commitNow
+              ),
+            this.sitePolicyGuardStatement(),
+          ]
+        : []),
     ];
 
     if (nextOwnerType === 'user') {
@@ -666,7 +864,14 @@ export const siteLifecycleMethods = {
     }
     if (auditEvent) statements.push(this.auditEventStatement(auditEvent));
 
-    await this.db.batch(statements);
+    try {
+      await this.db.batch(statements);
+    } catch (error) {
+      const message = String(error?.message || error);
+      if (message.includes(SITE_MUTATION_AUTHORIZATION_FAILED)) throw sitePolicyError('SITE_NOT_FOUND');
+      if (message.includes(SITE_TRANSFER_INVARIANT_FAILED)) throw sitePolicyError('SITE_POLICY_CONFLICT');
+      throw error;
+    }
     return this.getSite(siteId);
   },
 
