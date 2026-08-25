@@ -37,7 +37,7 @@ infrastructure -----------> Cloudflare / external services
 
 跨表不变量必须保留在命名 transaction 中，application 不得用多个 repository call 重拼原子操作。站点策略、部署和回滚仍遵循 D1 authority、lease/CAS、immutable route snapshot、monotonic pointer 和显式补偿语义。
 
-站点展示名称与 canonical slug 由 metadata application use case 统一修改。slug rename 在 D1 中原子维护 canonical route、hostname claim 和不可变 `dataNamespace`，再写入 schema v4 serve snapshot 并清理旧 hostname pointer；它不创建 deployment/version，也不保留旧 URL 跳转。旧 pointer 确认删除后开始 5 分钟 reuse hold，到期后旧 slug 可由其它站点使用。Public、Workspace Console 与 Admin Console 都走该 use case；受控部署集成也可在 multipart metadata 中显式传 `title`，省略时不修改既有名称，字符串会规范化后设置，`null` 会清空。当前 `xd-cell` CLI 不发送 `title`。`SITE_METADATA_MUTATIONS_ENABLED` 在两个环境模板中默认关闭，只拦截 mutation 和显式携带 `title` 的部署，不影响省略 `title` 的既有部署、metadata 读取、兼容 reader/writer 或 reconciliation。缩略图与 R2 不在当前能力范围内。
+站点展示名称与 canonical slug 由 metadata application use case 统一修改。slug rename 在 D1 中原子维护 canonical route、hostname claim 和不可变 `dataNamespace`，再写入 schema v4 serve snapshot 并清理旧 hostname pointer；它不创建 deployment/version，也不保留旧 URL 跳转。旧 pointer 确认删除后开始 5 分钟 reuse hold，到期后旧 slug 可由其它站点使用。Public、Workspace Console 与 Admin Console 都走该 use case；受控部署集成也可在 multipart metadata 中显式传 `title`，省略时不修改既有名称，字符串会规范化后设置，`null` 会清空。当前 `xd-cell` CLI 不发送 `title`。`SITE_METADATA_MUTATIONS_ENABLED` 在两个环境模板中默认启用，仍可按环境改为 `false` 紧急止损；关闭后只拦截 mutation 和显式携带 `title` 的部署，不影响省略 `title` 的既有部署、metadata 读取、兼容 reader/writer 或 reconciliation。缩略图与 R2 不在当前能力范围内。
 
 测试不维护第二套完整 Store。`test-support/pages-store-fixture.js` 使用真实 SQLite-backed D1 fixture 验证 repository、transaction 和 handler 行为；窄 application 单测可以按 port 注入局部 fake。
 

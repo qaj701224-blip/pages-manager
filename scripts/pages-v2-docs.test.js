@@ -204,7 +204,7 @@ test('XD Cell architecture documents site metadata compatibility and staged roll
   ]) {
     assert.match(doc, new RegExp(escapeRegExp(text)), `${text} should be documented`);
   }
-  assert.match(doc, /默认均为 `false`/);
+  assert.match(doc, /当前默认均为 `true`/);
   assert.match(doc, /显式携带 `title` 的部署[^。\n]*省略 `title` 的部署不受影响/);
   assert.match(doc, /consumer-before-producer/);
   assert.doesNotMatch(doc, /历史地址以 308|schema v4 redirect snapshot/);
