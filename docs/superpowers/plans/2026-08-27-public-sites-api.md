@@ -391,4 +391,3 @@ Expected: exit 0。
 Run: `git diff --check && git status --short`
 
 逐项核对：精确路由、认证矩阵、active/有效团队/ACL fail-closed、stale department 门控、最小字段、effective timestamp/keyset、Cindy、OpenAPI、文档、无 CLI/skill 漂移、无 secret/provider ID。任何未由测试或源码直接证明的项目都视为未完成并继续修复。
-
