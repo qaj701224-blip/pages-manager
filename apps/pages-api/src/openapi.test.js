@@ -451,7 +451,7 @@ test('documents the authenticated Public Sites directory contract', () => {
   }
   assert.deepEqual(schemas.PublicSiteOwner.required, ['type']);
   assert.deepEqual(schemas.PublicSiteOwner.properties.type.enum, ['user', 'team']);
-  assert.deepEqual(schemas.PublicSite.required, [
+  const publicSiteFields = [
     'id',
     'title',
     'displayName',
@@ -464,8 +464,12 @@ test('documents the authenticated Public Sites directory contract', () => {
     'visibility',
     'createdAt',
     'updatedAt',
-  ]);
-  assert.deepEqual(Object.keys(schemas.PublicSite.properties), schemas.PublicSite.required);
+  ].sort();
+  const requiredPublicSiteFields = [...schemas.PublicSite.required].sort();
+  const publicSiteProperties = Object.keys(schemas.PublicSite.properties).sort();
+  assert.deepEqual(requiredPublicSiteFields, publicSiteFields);
+  assert.deepEqual(publicSiteProperties, publicSiteFields);
+  assert.deepEqual(requiredPublicSiteFields, publicSiteProperties);
   assert.deepEqual(schemas.PublicSite.properties.environment.enum, ['production', 'staging', 'local']);
   assert.deepEqual(schemas.PublicSite.properties.routingStatus.enum, ['ready', 'pending']);
   assert.deepEqual(schemas.PublicSite.properties.visibility.enum, ['internal', 'org', 'acl', 'owner']);
@@ -501,6 +505,11 @@ test('documents the authenticated Public Sites directory contract', () => {
   });
   assert.equal(operation.responses[200].content['application/json'].schema.$ref, '#/components/schemas/PublicSitesResponse');
   assert.deepEqual(Object.keys(operation.responses).map(Number), [200, 400, 401, 403, 405, 409, 500, 503]);
+  for (const status of [400, 401, 403, 405, 409, 500, 503]) {
+    assert.deepEqual(operation.responses[status].content, {
+      'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } },
+    });
+  }
   assert.deepEqual(operation['x-error-codes'], [
     'LEGACY_TOKEN_UNSUPPORTED',
     'PUBLIC_SITES_QUERY_INVALID',

@@ -620,13 +620,48 @@ export function buildOpenApi(config) {
                 'application/json': { schema: { $ref: '#/components/schemas/PublicSitesResponse' } },
               },
             },
-            400: { description: 'Invalid, repeated, or unknown query parameter, or unsupported legacy token header' },
-            401: { description: 'Authentication is missing, invalid, expired, revoked, or stale' },
-            403: { description: 'Active user directory access is forbidden for this credential' },
-            405: { description: 'Only GET is supported' },
-            409: { description: 'Cindy connection identity conflicts with an existing user' },
-            500: { description: 'Pages API store binding is unavailable' },
-            503: { description: 'Connection signing keys or the Public Sites directory are temporarily unavailable' },
+            400: {
+              description: 'Invalid, repeated, or unknown query parameter, or unsupported legacy token header',
+              content: {
+                'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } },
+              },
+            },
+            401: {
+              description: 'Authentication is missing, invalid, expired, revoked, or stale',
+              content: {
+                'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } },
+              },
+            },
+            403: {
+              description: 'Active user directory access is forbidden for this credential',
+              content: {
+                'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } },
+              },
+            },
+            405: {
+              description: 'Only GET is supported',
+              content: {
+                'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } },
+              },
+            },
+            409: {
+              description: 'Cindy connection identity conflicts with an existing user',
+              content: {
+                'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } },
+              },
+            },
+            500: {
+              description: 'Pages API store binding is unavailable',
+              content: {
+                'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } },
+              },
+            },
+            503: {
+              description: 'Connection signing keys or the Public Sites directory are temporarily unavailable',
+              content: {
+                'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } },
+              },
+            },
           },
         },
       },

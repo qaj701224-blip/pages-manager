@@ -116,16 +116,16 @@ Console 鉴权分两层：
 
 ### Console directory 与 Cindy Public Sites
 
-两条目录 lane 都以站点当前环境的有效 route 和 identity visibility 为基础，但认证入口和响应投影不同，不能互相代理或复用凭据：
+两条目录 lane 都固定在当前环境并使用 identity visibility，但对 route 生命周期的筛选、认证入口和响应投影不同，不能互相代理或复用凭据：
 
-| 边界       | Console directory                                                                                          | Cindy Public Sites                                                                                                           |
-| ---------- | ---------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| 调用链     | Browser → `pages-console` BFF → `pages-api.internal`                                                       | Cindy Desktop → `pages-api` Public API                                                                                       |
-| 凭据与门禁 | host-only Console session、BFF identity headers、公司网络 IP allowlist；production 目录可在 BFF 边界内匿名 | 每次请求携带 active user Bearer credential；Cindy connection assertion、CLI 登录凭证或合格的个人 read key                    |
-| 结果范围   | 未登录时可返回 active `internal` 站点；登录后按当前 Console user 返回可访问目录                            | 只为 active 用户返回当前环境中拥有或可访问的 active 站点，不提供匿名目录                                                     |
-| 投影       | 面向 Console UI，可包含 owner 展示身份等内部页面字段                                                       | active-only minimal projection；只返回 `owner.type`，不返回 owner identity、ACL、route/version、runtime 或 provider metadata |
+| 边界       | Console directory                                                                                                                                              | Cindy Public Sites                                                                                                           |
+| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| 调用链     | Browser → `pages-console` BFF → `pages-api.internal`                                                                                                           | Cindy Desktop → `pages-api` Public API                                                                                       |
+| 凭据与门禁 | host-only Console session、BFF identity headers、公司网络 IP allowlist；production 目录可在 BFF 边界内匿名                                                     | 每次请求携带 active user Bearer credential；Cindy connection assertion、CLI 登录凭证或合格的个人 read key                    |
+| 结果范围   | 使用未删除站点的 latest route 和当前 visibility，不要求 route active 或存在 active version；未登录时可返回 `internal` 站点，登录后按当前 Console user 扩展目录 | 只为 active 用户返回当前环境中拥有或可访问的 active 站点，不提供匿名目录                                                     |
+| 投影       | 面向 Console UI，可包含 owner 展示身份等内部页面字段                                                                                                           | active-only minimal projection；只返回 `owner.type`，不返回 owner identity、ACL、route/version、runtime 或 provider metadata |
 
-Public Sites 中的 `public` 仍表示 API lane，不是 `exposure=public`。它不替代 Console 的 BFF/session/IP 安全边界；Console 内部匿名目录能力也不能绕过 Public Sites 的 active user Bearer 要求。
+Console directory 因此可展示 `status=disabled` 的 latest route，也可展示 `routingStatus=pending` 等未收敛状态；active route 与 active version 是 Cindy Public Sites 的 active-only 限制，不是 Console directory 的入选条件。Public Sites 中的 `public` 仍表示 API lane，不是 `exposure=public`。它不替代 Console 的 BFF/session/IP 安全边界；Console 内部匿名目录能力也不能绕过 Public Sites 的 active user Bearer 要求。
 
 ## 功能导航
 
@@ -140,7 +140,7 @@ Public Sites 中的 `public` 仍表示 API lane，不是 `exposure=public`。它
 
 站点目录：
 
-- 未登录时，在 IP allowlist 内只展示 `internal` 且 active 可访问的站点。
+- 未登录时，在 IP allowlist 内只展示 latest-route visibility 为 `internal` 的未删除站点；目录保留 `disabled` route status 或 `pending` routing status 供 Console 展示。
 - 登录后展示当前用户可访问的目录内容。
 - internal 站点可显示 owner；用户 owner 显示姓名/邮箱，团队 owner 显示团队名和团队类型 tag，不泄露内部 team id。
 

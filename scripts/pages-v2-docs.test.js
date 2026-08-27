@@ -56,6 +56,9 @@ test('Console architecture separates its directory lane from Cindy Public Sites'
   assert.match(doc, /Console directory[\s\S]*pages-console` BFF[\s\S]*pages-api\.internal/);
   assert.match(doc, /Console directory[\s\S]*Console session[\s\S]*公司网络 IP allowlist/);
   assert.match(doc, /production 目录可在 BFF 边界内匿名/);
+  assert.match(doc, /Console directory[\s\S]*latest route[\s\S]*不要求 route active 或存在 active version/);
+  assert.match(doc, /Console directory[^\n]*可展示 `status=disabled`[^\n]*`routingStatus=pending`/);
+  assert.match(doc, /active route 与 active version[^\n]*Cindy Public Sites[^\n]*不是 Console directory 的入选条件/);
   assert.match(doc, /Cindy Public Sites[\s\S]*active user Bearer credential/);
   assert.match(doc, /Cindy connection assertion、CLI 登录凭证或合格的个人 read key/);
   assert.match(doc, /不提供匿名目录/);
@@ -63,6 +66,7 @@ test('Console architecture separates its directory lane from Cindy Public Sites'
   assert.match(doc, /只返回 `owner\.type`[^\n]*不返回 owner identity、ACL、route\/version、runtime 或 provider metadata/);
   assert.match(doc, /`public`[^\n]*API lane[^\n]*不是 `exposure=public`/);
   assert.match(doc, /Console 内部匿名目录能力[^\n]*active user Bearer 要求/);
+  assert.doesNotMatch(doc, /未登录时[^\n]*active `internal` 站点/);
 });
 
 test('documentation truth source matrix names current owners', () => {
