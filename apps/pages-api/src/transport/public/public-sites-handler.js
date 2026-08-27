@@ -31,8 +31,9 @@ export async function handlePublicSitesApi(request, env, config, store) {
   let query;
   try {
     query = parsePublicSitesQuery(new URL(request.url), config.environment);
-  } catch {
-    return invalidQueryResponse();
+  } catch (error) {
+    if (error instanceof PublicSitesQueryError) return invalidQueryResponse();
+    throw error;
   }
 
   let auth;
@@ -65,33 +66,34 @@ export async function handlePublicSitesApi(request, env, config, store) {
     user,
   });
 
+  let records;
   try {
-    const records = await store.listPublicSitesForUser({
+    records = await store.listPublicSitesForUser({
       environment: config.environment,
       viewerUserId: auth.actor.userId,
       limit: query.limit,
       cursor: query.cursor,
       departmentAclEnabled,
     });
-    const hasNextPage = records.length > query.limit;
-    const page = hasNextPage ? records.slice(0, query.limit) : records;
-    const lastSite = page.at(-1);
-    const nextCursor =
-      hasNextPage && lastSite
-        ? encodePublicSitesCursor({
-            environment: config.environment,
-            updatedAt: lastSite.updatedAt,
-            id: lastSite.id,
-          })
-        : null;
-
-    return jsonOk({
-      sites: page.map(formatPublicSite),
-      pagination: { nextCursor },
-    });
   } catch {
     return publicSitesUnavailable();
   }
+  const hasNextPage = records.length > query.limit;
+  const page = hasNextPage ? records.slice(0, query.limit) : records;
+  const lastSite = page.at(-1);
+  const nextCursor =
+    hasNextPage && lastSite
+      ? encodePublicSitesCursor({
+          environment: config.environment,
+          updatedAt: lastSite.updatedAt,
+          id: lastSite.id,
+        })
+      : null;
+
+  return jsonOk({
+    sites: page.map(formatPublicSite),
+    pagination: { nextCursor },
+  });
 }
 
 export function parsePublicSitesQuery(url, environment) {
@@ -249,8 +251,7 @@ async function resolveDepartmentAclEnabled({ env, store, environment, userId, us
   } catch {
     return false;
   }
-  const departmentMissing = !isNonBlankString(user?.departmentPath);
-  if (!departmentMissing && !shouldHydrate) return false;
+  if (!shouldHydrate) return false;
 
   let hydration;
   try {

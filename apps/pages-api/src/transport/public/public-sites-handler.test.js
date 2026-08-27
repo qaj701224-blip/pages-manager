@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { decodePublicSitesCursor, encodePublicSitesCursor, parsePublicSitesQuery } from './public-sites-handler.js';
+import {
+  decodePublicSitesCursor,
+  encodePublicSitesCursor,
+  handlePublicSitesApi,
+  parsePublicSitesQuery,
+} from './public-sites-handler.js';
 
 const UPDATED_AT = '2026-08-27T01:02:03.000Z';
 
@@ -36,6 +41,21 @@ test('public sites query rejects unknown and repeated parameters', () => {
       query
     );
   }
+});
+
+test('public sites handler does not relabel unexpected query setup errors as invalid input', async () => {
+  const programmingError = new Error('unexpected query setup failure');
+  const config = {};
+  Object.defineProperty(config, 'environment', {
+    get() {
+      throw programmingError;
+    },
+  });
+
+  await assert.rejects(
+    handlePublicSitesApi(new Request('https://api.pages.xd.team/.xd-pages/api/public/sites'), {}, config, {}),
+    (error) => error === programmingError
+  );
 });
 
 test('public sites query rejects empty, overlong, non-ASCII, and non-base64url cursors', () => {

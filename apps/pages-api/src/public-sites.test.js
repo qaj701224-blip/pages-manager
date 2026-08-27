@@ -708,6 +708,19 @@ test('Public Sites HTTP maps repository and authoritative-user failures to a sta
   });
 });
 
+test('Public Sites HTTP does not relabel projection programming errors as Store outages', async () => {
+  const { store, token } = await createAuthenticatedPublicSitesFixture('projection_error', 48);
+  const programmingError = new Error('unexpected projection failure');
+  store.listPublicSitesForUser = async () =>
+    Object.defineProperty({}, 'length', {
+      get() {
+        throw programmingError;
+      },
+    });
+
+  await assert.rejects(worker.fetch(publicSitesRequest({ token }), publicSitesEnv(store)), (error) => error === programmingError);
+});
+
 test('Public Sites HTTP truncates limit plus one and returns a usable nonduplicating cursor', async () => {
   const { store, token } = await createAuthenticatedPublicSitesFixture('pagination', 40);
   for (const [id, routeUpdatedAt] of [
@@ -807,14 +820,25 @@ test('Public Sites HTTP hides department ACL when hydration is unavailable or no
       byte: 43,
       departmentPath: '心动/旧部门',
       departmentCheckedAt: '2026-08-25T00:00:00.000Z',
+      expectedDirectoryCalls: 1,
       fetch: async () => new Response('provider detail', { status: 503 }),
     },
     {
-      name: 'XDS has no hydrated user',
+      name: 'recent negative department check observes retry backoff',
       keyId: 'ak_public_department_missing',
       byte: 44,
       departmentPath: null,
       departmentCheckedAt: HTTP_NOW,
+      expectedDirectoryCalls: 0,
+      fetch: async () => Response.json({ code: 0, data: [] }),
+    },
+    {
+      name: 'missing department outside retry backoff hydrates once',
+      keyId: 'ak_public_department_retry',
+      byte: 49,
+      departmentPath: null,
+      departmentCheckedAt: '2026-08-27T11:49:59.000Z',
+      expectedDirectoryCalls: 1,
       fetch: async () => Response.json({ code: 0, data: [] }),
     },
   ];
@@ -846,7 +870,7 @@ test('Public Sites HTTP hides department ACL when hydration is unavailable or no
         new Set((await response.json()).sites.map((site) => site.id)),
         new Set(['site_department_internal', 'site_department_org'])
       );
-      assert.equal(directoryCalls, 1);
+      assert.equal(directoryCalls, input.expectedDirectoryCalls);
     });
   }
 });
