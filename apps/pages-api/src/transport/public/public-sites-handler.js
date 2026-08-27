@@ -1,3 +1,9 @@
+import { authenticateApiRequest } from '../../auth.js';
+import { hydrateUserDepartmentFromDirectory, shouldHydrateUserDepartment } from '../../department-hydration.js';
+import { actorCanReadPublicSites } from '../../domain/sites/authorization.js';
+import { siteMetadataRoutingStatus } from '../../domain/sites/metadata.js';
+import { jsonError, jsonOk } from '../../http.js';
+
 const PUBLIC_SITES_QUERY_ERROR_CODE = 'PUBLIC_SITES_QUERY_INVALID';
 const PUBLIC_SITES_CURSOR_SCOPE = 'public-sites';
 const PUBLIC_SITES_CURSOR_VERSION = 1;
@@ -16,6 +22,75 @@ class PublicSitesQueryError extends Error {
     super(message);
     this.name = 'PublicSitesQueryError';
     this.code = PUBLIC_SITES_QUERY_ERROR_CODE;
+  }
+}
+
+export async function handlePublicSitesApi(request, env, config, store) {
+  if (request.method !== 'GET') return methodNotAllowed();
+
+  let query;
+  try {
+    query = parsePublicSitesQuery(new URL(request.url), config.environment);
+  } catch {
+    return invalidQueryResponse();
+  }
+
+  let auth;
+  try {
+    auth = await authenticateApiRequest(request, env, store, config, readNow(env));
+  } catch {
+    return publicSitesUnavailable();
+  }
+  if (!auth.ok) return authErrorResponse(auth.error);
+  if (!actorCanReadPublicSites(auth.actor)) {
+    return jsonError(
+      'PUBLIC_SITES_FORBIDDEN',
+      'Actor cannot read public sites.',
+      403,
+      'Use a personal access key with read:site scope.'
+    );
+  }
+
+  let user;
+  try {
+    user = await store.getUser(auth.actor.userId);
+  } catch {
+    return publicSitesUnavailable();
+  }
+  const departmentAclEnabled = await resolveDepartmentAclEnabled({
+    env,
+    store,
+    environment: config.environment,
+    userId: auth.actor.userId,
+    user,
+  });
+
+  try {
+    const records = await store.listPublicSitesForUser({
+      environment: config.environment,
+      viewerUserId: auth.actor.userId,
+      limit: query.limit,
+      cursor: query.cursor,
+      departmentAclEnabled,
+    });
+    const hasNextPage = records.length > query.limit;
+    const page = hasNextPage ? records.slice(0, query.limit) : records;
+    const lastSite = page.at(-1);
+    const nextCursor =
+      hasNextPage && lastSite
+        ? encodePublicSitesCursor({
+            environment: config.environment,
+            updatedAt: lastSite.updatedAt,
+            id: lastSite.id,
+          })
+        : null;
+
+    return jsonOk({
+      sites: page.map(formatPublicSite),
+      pagination: { nextCursor },
+    });
+  } catch {
+    return publicSitesUnavailable();
   }
 }
 
@@ -162,4 +237,90 @@ function decodeBase64Url(value) {
 
 function invalidQuery(message) {
   return new PublicSitesQueryError(message);
+}
+
+async function resolveDepartmentAclEnabled({ env, store, environment, userId, user }) {
+  if (hasTrustedDepartment(user, env)) return true;
+  if (!isNonBlankString(user?.email)) return false;
+
+  let shouldHydrate;
+  try {
+    shouldHydrate = shouldHydrateUserDepartment(user, env);
+  } catch {
+    return false;
+  }
+  const departmentMissing = !isNonBlankString(user?.departmentPath);
+  if (!departmentMissing && !shouldHydrate) return false;
+
+  let hydration;
+  try {
+    hydration = await hydrateUserDepartmentFromDirectory({ env, store, environment, user });
+  } catch {
+    return false;
+  }
+  if (hydration?.status !== 'hydrated') return false;
+
+  let hydratedUser;
+  try {
+    hydratedUser = await store.getUser(userId);
+  } catch {
+    return false;
+  }
+  return hasTrustedDepartment(hydratedUser, env);
+}
+
+function hasTrustedDepartment(user, env) {
+  if (!isNonBlankString(user?.email) || !isNonBlankString(user?.departmentPath)) return false;
+  try {
+    return shouldHydrateUserDepartment(user, env) === false;
+  } catch {
+    return false;
+  }
+}
+
+function isNonBlankString(value) {
+  return typeof value === 'string' && Boolean(value.trim());
+}
+
+function formatPublicSite(site) {
+  return {
+    id: site.id,
+    title: site.title || null,
+    displayName: site.title || site.slug,
+    slug: site.slug,
+    environment: site.environment,
+    routingStatus: siteMetadataRoutingStatus(site),
+    hostname: site.hostname,
+    url: `https://${site.hostname}`,
+    owner: { type: site.ownerType },
+    visibility: site.visibility,
+    createdAt: site.createdAt,
+    updatedAt: site.updatedAt,
+  };
+}
+
+function invalidQueryResponse() {
+  return jsonError(
+    PUBLIC_SITES_QUERY_ERROR_CODE,
+    'Public sites query is invalid.',
+    400,
+    'Use limit 1 through 100 and a cursor returned by this endpoint.'
+  );
+}
+
+function authErrorResponse(error) {
+  return jsonError(error.code, error.message, error.status, error.action);
+}
+
+function methodNotAllowed() {
+  return jsonError('METHOD_NOT_ALLOWED', 'Method not allowed.', 405, 'Use GET for this endpoint.');
+}
+
+function publicSitesUnavailable() {
+  return jsonError('PUBLIC_SITES_UNAVAILABLE', 'Public sites are temporarily unavailable.', 503, 'Retry shortly.');
+}
+
+function readNow(env) {
+  if (typeof env?.now === 'function') return env.now();
+  return new Date().toISOString();
 }

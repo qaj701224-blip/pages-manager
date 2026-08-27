@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { createAccessKeyPlaintext, hashAccessKey } from './crypto.js';
+import worker from './index.js';
 import {
   createTestPagesStore,
   insertTestRoute,
@@ -13,6 +15,8 @@ import {
 const ENVIRONMENT = 'production';
 const CREATED_AT = '2026-08-01T00:00:00.000Z';
 const ROUTE_UPDATED_AT = '2026-08-02T00:00:00.000Z';
+const HTTP_NOW = '2026-08-27T12:00:00.000Z';
+const PUBLIC_SITES_PATH = '/.xd-pages/api/public/sites';
 
 test('D1 Store returns every accessible active site once and fails closed on access misses', async () => {
   const store = testStore();
@@ -472,8 +476,599 @@ test('D1 Store defensively normalizes limits and never returns more than 101 row
   assert.equal((await list()).length, 51);
 });
 
+test('Public Sites HTTP requires Bearer authentication', async () => {
+  const response = await worker.fetch(publicSitesRequest(), publicSitesEnv(testStore()));
+
+  assert.equal(response.status, 401);
+  assert.equal(response.headers.get('Cache-Control'), 'no-store');
+  assert.deepEqual(await response.json(), {
+    error: {
+      code: 'PAGES_AUTH_REQUIRED',
+      message: 'Login required.',
+      action: 'Run `xd-cell login` and retry.',
+    },
+  });
+});
+
+test('Public Sites HTTP accepts CLI login and unscoped personal read keys', async (t) => {
+  const store = testStore();
+  await seedUser(store, 'usr_http_viewer', {
+    email: 'http-viewer@example.com',
+    departmentPath: '心动/平台支持/Web',
+    departmentCheckedAt: '2026-08-27T11:00:00.000Z',
+  });
+  const credentials = [
+    {
+      name: 'CLI login key',
+      keyId: 'ak_public_cli',
+      scopes: ['*'],
+      issuedSource: 'cli_login',
+      issuedSessionVersion: 1,
+      byte: 31,
+    },
+    { name: 'personal read key', keyId: 'ak_public_read', scopes: ['read:site'], byte: 32 },
+    { name: 'personal wildcard key', keyId: 'ak_public_star', scopes: ['*'], byte: 33 },
+  ];
+
+  for (const credential of credentials) {
+    const token = await seedPublicSitesAccessKey(store, {
+      ...credential,
+      userId: 'usr_http_viewer',
+    });
+    await t.test(credential.name, async () => {
+      const response = await worker.fetch(publicSitesRequest({ token }), publicSitesEnv(store));
+
+      assert.equal(response.status, 200, await response.clone().text());
+      assert.deepEqual(await response.json(), { sites: [], pagination: { nextCursor: null } });
+    });
+  }
+});
+
+test('Public Sites HTTP rejects deploy-only, team, and site-scoped keys before directory hydration', async (t) => {
+  const store = testStore();
+  await seedUser(store, 'usr_http_forbidden', { email: 'forbidden@example.com' });
+  const team = await store.createTeam({
+    id: 'team_public_key',
+    environment: ENVIRONMENT,
+    name: 'Public Key Team',
+    createdByUserId: 'usr_http_forbidden',
+  });
+  const credentials = [
+    {
+      name: 'deploy-only key',
+      keyId: 'ak_public_deploy',
+      scopes: ['deploy:site'],
+      byte: 34,
+    },
+    {
+      name: 'team key',
+      keyId: 'ak_public_team',
+      scopes: ['read:site'],
+      ownerType: 'team',
+      ownerId: team.id,
+      byte: 35,
+    },
+    {
+      name: 'site-scoped key',
+      keyId: 'ak_public_site',
+      scopes: ['read:site'],
+      siteId: 'site_scope',
+      byte: 36,
+    },
+  ];
+
+  for (const credential of credentials) {
+    const token = await seedPublicSitesAccessKey(store, {
+      ...credential,
+      userId: 'usr_http_forbidden',
+    });
+    await t.test(credential.name, async () => {
+      let directoryCalls = 0;
+      let listCalls = 0;
+      const originalList = store.listPublicSitesForUser.bind(store);
+      store.listPublicSitesForUser = async (input) => {
+        listCalls += 1;
+        return originalList(input);
+      };
+      try {
+        const response = await worker.fetch(
+          publicSitesRequest({ token }),
+          publicSitesEnv(store, {
+            XDS_OPENAI_TOKEN: 'test-directory-token',
+            XDS_FETCH: async () => {
+              directoryCalls += 1;
+              return Response.json({ code: 0, data: [] });
+            },
+          })
+        );
+
+        assert.equal(response.status, 403);
+        assert.equal((await response.json()).error.code, 'PUBLIC_SITES_FORBIDDEN');
+        assert.equal(directoryCalls, 0);
+        assert.equal(listCalls, 0);
+      } finally {
+        store.listPublicSitesForUser = originalList;
+      }
+    });
+  }
+});
+
+test('Public Sites HTTP validates method and query before authentication or directory hydration', async (t) => {
+  const store = testStore();
+  let directoryCalls = 0;
+  const env = publicSitesEnv(store, {
+    XDS_OPENAI_TOKEN: 'test-directory-token',
+    XDS_FETCH: async () => {
+      directoryCalls += 1;
+      return Response.json({ code: 0, data: [] });
+    },
+  });
+
+  const methodResponse = await worker.fetch(publicSitesRequest({ method: 'POST' }), env);
+  assert.equal(methodResponse.status, 405);
+  assert.equal((await methodResponse.json()).error.code, 'METHOD_NOT_ALLOWED');
+
+  let stableInvalidBody;
+  for (const query of ['limit=0', 'limit=1&limit=2', 'owner=user']) {
+    await t.test(query, async () => {
+      const response = await worker.fetch(publicSitesRequest({ query }), env);
+      const body = await response.json();
+
+      assert.equal(response.status, 400);
+      assert.deepEqual(Object.keys(body.error), ['code', 'message', 'action']);
+      assert.equal(body.error.code, 'PUBLIC_SITES_QUERY_INVALID');
+      stableInvalidBody ||= body;
+      assert.deepEqual(body, stableInvalidBody);
+    });
+  }
+  assert.equal(directoryCalls, 0);
+});
+
+test('Public Sites HTTP returns the exact minimal projection without sensitive fields', async () => {
+  const store = testStore();
+  await seedUser(store, 'usr_http_projection', {
+    email: 'projection@example.com',
+    departmentPath: '心动/平台支持/Web',
+    departmentCheckedAt: '2026-08-27T11:00:00.000Z',
+  });
+  await seedActiveSite(store, {
+    id: 'site_public_projection',
+    ownerUserId: 'usr_http_projection',
+    visibility: 'org',
+  });
+  const token = await seedPublicSitesAccessKey(store, {
+    keyId: 'ak_public_projection',
+    userId: 'usr_http_projection',
+    scopes: ['read:site'],
+    byte: 37,
+  });
+
+  const response = await worker.fetch(publicSitesRequest({ token }), publicSitesEnv(store));
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.equal(response.headers.get('Cache-Control'), 'no-store');
+  assert.deepEqual(await response.json(), {
+    sites: [
+      {
+        id: 'site_public_projection',
+        title: null,
+        displayName: 'site-public-projection',
+        slug: 'site-public-projection',
+        environment: 'production',
+        routingStatus: 'ready',
+        hostname: 'site-public-projection.workers.xd.team',
+        url: 'https://site-public-projection.workers.xd.team',
+        owner: { type: 'user' },
+        visibility: 'org',
+        createdAt: CREATED_AT,
+        updatedAt: ROUTE_UPDATED_AT,
+      },
+    ],
+    pagination: { nextCursor: null },
+  });
+});
+
+test('Public Sites HTTP maps repository and authoritative-user failures to a stable redacted 503', async (t) => {
+  const expected = {
+    error: {
+      code: 'PUBLIC_SITES_UNAVAILABLE',
+      message: 'Public sites are temporarily unavailable.',
+      action: 'Retry shortly.',
+    },
+  };
+
+  await t.test('repository failure', async () => {
+    const { store, token } = await createAuthenticatedPublicSitesFixture('repository', 38);
+    store.listPublicSitesForUser = async () => {
+      throw new Error('secret SQL and provider detail');
+    };
+
+    const response = await worker.fetch(publicSitesRequest({ token }), publicSitesEnv(store));
+    const text = await response.text();
+
+    assert.equal(response.status, 503);
+    assert.deepEqual(JSON.parse(text), expected);
+    assert.doesNotMatch(text, /secret|SQL|provider/i);
+  });
+
+  await t.test('authoritative user failure', async () => {
+    const { store, token } = await createAuthenticatedPublicSitesFixture('user_read', 39);
+    const originalGetUser = store.getUser.bind(store);
+    let reads = 0;
+    store.getUser = async (...args) => {
+      reads += 1;
+      if (reads === 2) throw new Error('secret user query detail');
+      return originalGetUser(...args);
+    };
+
+    const response = await worker.fetch(publicSitesRequest({ token }), publicSitesEnv(store));
+
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), expected);
+  });
+});
+
+test('Public Sites HTTP truncates limit plus one and returns a usable nonduplicating cursor', async () => {
+  const { store, token } = await createAuthenticatedPublicSitesFixture('pagination', 40);
+  for (const [id, routeUpdatedAt] of [
+    ['site_http_page_a', '2026-08-03T00:00:00.000Z'],
+    ['site_http_page_b', '2026-08-04T00:00:00.000Z'],
+    ['site_http_page_c', '2026-08-05T00:00:00.000Z'],
+  ]) {
+    await seedActiveSite(store, { id, visibility: 'internal', routeUpdatedAt });
+  }
+
+  const firstResponse = await worker.fetch(publicSitesRequest({ token, query: 'limit=2' }), publicSitesEnv(store));
+  assert.equal(firstResponse.status, 200, await firstResponse.clone().text());
+  const first = await firstResponse.json();
+  assert.deepEqual(
+    first.sites.map((site) => site.id),
+    ['site_http_page_c', 'site_http_page_b']
+  );
+  assert.match(first.pagination.nextCursor, /^[A-Za-z0-9_-]+$/);
+
+  const secondQuery = new URLSearchParams({ limit: '2', cursor: first.pagination.nextCursor });
+  const secondResponse = await worker.fetch(publicSitesRequest({ token, query: secondQuery.toString() }), publicSitesEnv(store));
+  assert.equal(secondResponse.status, 200, await secondResponse.clone().text());
+  const second = await secondResponse.json();
+  assert.deepEqual(
+    second.sites.map((site) => site.id),
+    ['site_http_page_a']
+  );
+  assert.equal(second.pagination.nextCursor, null);
+
+  const allIds = [...first.sites, ...second.sites].map((site) => site.id);
+  assert.equal(new Set(allIds).size, allIds.length);
+});
+
+test('Public Sites HTTP trusts a fresh authoritative department path without calling XDS', async () => {
+  const store = testStore();
+  const token = await seedDepartmentHttpFixture(store, {
+    keyId: 'ak_public_department_fresh',
+    byte: 41,
+    departmentPath: '心动/平台支持/Web',
+    departmentCheckedAt: '2026-08-27T11:00:00.000Z',
+  });
+  let directoryCalls = 0;
+
+  const response = await worker.fetch(
+    publicSitesRequest({ token }),
+    publicSitesEnv(store, {
+      XDS_OPENAI_TOKEN: 'test-directory-token',
+      XDS_FETCH: async () => {
+        directoryCalls += 1;
+        return Response.json({ code: 0, data: [] });
+      },
+    })
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.deepEqual(new Set((await response.json()).sites.map((site) => site.id)), departmentVisibleSiteIds());
+  assert.equal(directoryCalls, 0);
+});
+
+test('Public Sites HTTP enables department ACL only after successful XDS hydration and authoritative reload', async () => {
+  const store = testStore();
+  const token = await seedDepartmentHttpFixture(store, {
+    keyId: 'ak_public_department_hydrated',
+    byte: 42,
+    departmentPath: '心动/旧部门',
+    departmentCheckedAt: '2026-08-25T00:00:00.000Z',
+  });
+  let directoryCalls = 0;
+
+  const response = await worker.fetch(
+    publicSitesRequest({ token }),
+    publicSitesEnv(store, {
+      XDS_OPENAI_TOKEN: 'test-directory-token',
+      XDS_FETCH: async () => {
+        directoryCalls += 1;
+        return Response.json({
+          code: 0,
+          data: [{ email: 'department-viewer@example.com', departmentPath: '心动/平台支持/Web' }],
+        });
+      },
+    })
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.deepEqual(new Set((await response.json()).sites.map((site) => site.id)), departmentVisibleSiteIds());
+  assert.equal(directoryCalls, 1);
+  const user = await store.getUser('usr_department_viewer');
+  assert.equal(user.departmentPath, '心动/平台支持/Web');
+  assert.equal(user.departmentCheckedAt, HTTP_NOW);
+});
+
+test('Public Sites HTTP hides department ACL when hydration is unavailable or non-hydrated', async (t) => {
+  const cases = [
+    {
+      name: 'XDS transport unavailable',
+      keyId: 'ak_public_department_xds_down',
+      byte: 43,
+      departmentPath: '心动/旧部门',
+      departmentCheckedAt: '2026-08-25T00:00:00.000Z',
+      fetch: async () => new Response('provider detail', { status: 503 }),
+    },
+    {
+      name: 'XDS has no hydrated user',
+      keyId: 'ak_public_department_missing',
+      byte: 44,
+      departmentPath: null,
+      departmentCheckedAt: HTTP_NOW,
+      fetch: async () => Response.json({ code: 0, data: [] }),
+    },
+  ];
+
+  for (const input of cases) {
+    await t.test(input.name, async () => {
+      const store = testStore();
+      const token = await seedDepartmentHttpFixture(store, {
+        keyId: input.keyId,
+        byte: input.byte,
+        departmentPath: input.departmentPath,
+        departmentCheckedAt: input.departmentCheckedAt,
+      });
+      let directoryCalls = 0;
+
+      const response = await worker.fetch(
+        publicSitesRequest({ token }),
+        publicSitesEnv(store, {
+          XDS_OPENAI_TOKEN: 'test-directory-token',
+          XDS_FETCH: async (...args) => {
+            directoryCalls += 1;
+            return input.fetch(...args);
+          },
+        })
+      );
+
+      assert.equal(response.status, 200, await response.clone().text());
+      assert.deepEqual(
+        new Set((await response.json()).sites.map((site) => site.id)),
+        new Set(['site_department_internal', 'site_department_org'])
+      );
+      assert.equal(directoryCalls, 1);
+    });
+  }
+});
+
+test('Public Sites HTTP keeps department ACL disabled when membership hydration throws after writing the new path', async () => {
+  const store = testStore();
+  const token = await seedDepartmentHttpFixture(store, {
+    keyId: 'ak_public_department_membership_fail',
+    byte: 45,
+    departmentPath: '心动/旧部门',
+    departmentCheckedAt: '2026-08-25T00:00:00.000Z',
+  });
+  store.hydrateDepartmentMembership = async () => {
+    throw new Error('secret membership write failure');
+  };
+
+  const response = await worker.fetch(
+    publicSitesRequest({ token }),
+    publicSitesEnv(store, {
+      XDS_OPENAI_TOKEN: 'test-directory-token',
+      XDS_FETCH: async () =>
+        Response.json({
+          code: 0,
+          data: [{ email: 'department-viewer@example.com', departmentPath: '心动/平台支持/Web' }],
+        }),
+    })
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.deepEqual(
+    new Set((await response.json()).sites.map((site) => site.id)),
+    new Set(['site_department_internal', 'site_department_org'])
+  );
+  assert.equal((await store.getUser('usr_department_viewer')).departmentPath, '心动/平台支持/Web');
+});
+
+test('Public Sites HTTP keeps department ACL disabled when the post-hydration authoritative reload fails', async () => {
+  const store = testStore();
+  const token = await seedDepartmentHttpFixture(store, {
+    keyId: 'ak_public_department_reload_fail',
+    byte: 46,
+    departmentPath: '心动/旧部门',
+    departmentCheckedAt: '2026-08-25T00:00:00.000Z',
+  });
+  const originalGetUser = store.getUser.bind(store);
+  let reads = 0;
+  store.getUser = async (...args) => {
+    reads += 1;
+    if (reads === 4) throw new Error('post-hydration reload failed');
+    return originalGetUser(...args);
+  };
+
+  const response = await worker.fetch(
+    publicSitesRequest({ token }),
+    publicSitesEnv(store, {
+      XDS_OPENAI_TOKEN: 'test-directory-token',
+      XDS_FETCH: async () =>
+        Response.json({
+          code: 0,
+          data: [{ email: 'department-viewer@example.com', departmentPath: '心动/平台支持/Web' }],
+        }),
+    })
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.deepEqual(
+    new Set((await response.json()).sites.map((site) => site.id)),
+    new Set(['site_department_internal', 'site_department_org'])
+  );
+  assert.equal((await originalGetUser('usr_department_viewer')).departmentPath, '心动/平台支持/Web');
+});
+
+test('Public Sites HTTP supports local access keys and local pagination cursors', async () => {
+  const store = testStore();
+  await seedUser(store, 'usr_local_viewer', {
+    email: 'local-viewer@example.com',
+    departmentPath: '心动/本地开发',
+    departmentCheckedAt: '2026-08-27T11:00:00.000Z',
+  });
+  await seedActiveSite(store, {
+    id: 'site_local_page_b',
+    environment: 'local',
+    visibility: 'internal',
+    routeUpdatedAt: '2026-08-04T00:00:00.000Z',
+  });
+  await seedActiveSite(store, {
+    id: 'site_local_page_a',
+    environment: 'local',
+    visibility: 'internal',
+    routeUpdatedAt: '2026-08-03T00:00:00.000Z',
+  });
+  const token = await seedPublicSitesAccessKey(store, {
+    keyId: 'ak_public_local',
+    userId: 'usr_local_viewer',
+    environment: 'local',
+    scopes: ['read:site'],
+    byte: 47,
+  });
+  const localEnv = publicSitesEnv(store, { PAGES_ENV: 'local' });
+
+  const firstResponse = await worker.fetch(
+    publicSitesRequest({ token, query: 'limit=1', baseUrl: 'http://xd-pages.127.0.0.1.nip.io:8787' }),
+    localEnv
+  );
+  assert.equal(firstResponse.status, 200, await firstResponse.clone().text());
+  const first = await firstResponse.json();
+  assert.equal(first.sites[0].environment, 'local');
+  assert.equal(first.sites[0].id, 'site_local_page_b');
+  assert.ok(first.pagination.nextCursor);
+
+  const query = new URLSearchParams({ limit: '1', cursor: first.pagination.nextCursor });
+  const secondResponse = await worker.fetch(
+    publicSitesRequest({ token, query: query.toString(), baseUrl: 'http://xd-pages.127.0.0.1.nip.io:8787' }),
+    localEnv
+  );
+  assert.equal(secondResponse.status, 200, await secondResponse.clone().text());
+  const second = await secondResponse.json();
+  assert.equal(second.sites[0].id, 'site_local_page_a');
+  assert.equal(second.pagination.nextCursor, null);
+});
+
 function testStore() {
   return createTestPagesStore({ now: () => CREATED_AT });
+}
+
+function publicSitesEnv(store, overrides = {}) {
+  return {
+    PAGES_ENV: ENVIRONMENT,
+    PAGES_STORE: store,
+    ACCESS_KEY_PEPPERS: 'pepper_1:ACCESS_KEY_PEPPER_TEST',
+    ACCESS_KEY_PEPPER_TEST: 'pepper-secret',
+    now: () => HTTP_NOW,
+    ...overrides,
+  };
+}
+
+function publicSitesRequest({ token, query, method = 'GET', baseUrl = 'https://api.pages.xd.team', headers = {} } = {}) {
+  const search = query ? `?${query}` : '';
+  return new Request(`${baseUrl}${PUBLIC_SITES_PATH}${search}`, {
+    method,
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...headers,
+    },
+  });
+}
+
+async function seedPublicSitesAccessKey(
+  store,
+  {
+    keyId,
+    userId,
+    environment = ENVIRONMENT,
+    scopes,
+    ownerType = 'user',
+    ownerId = ownerType === 'user' ? userId : undefined,
+    siteId = null,
+    issuedSource = 'legacy',
+    issuedSessionVersion = null,
+    byte,
+  }
+) {
+  const plaintext = createAccessKeyPlaintext({
+    environment,
+    keyId,
+    bytes: new Uint8Array(24).fill(byte),
+  });
+  await store.createAccessKey({
+    id: keyId,
+    environment,
+    ownerType,
+    ownerId,
+    ownerUserId: userId,
+    createdByUserId: userId,
+    keyHash: await hashAccessKey(plaintext, 'pepper-secret'),
+    pepperId: 'pepper_1',
+    name: keyId,
+    scopes,
+    siteId,
+    issuedSource,
+    issuedSessionVersion,
+  });
+  return plaintext;
+}
+
+async function createAuthenticatedPublicSitesFixture(suffix, byte) {
+  const store = testStore();
+  const userId = `usr_http_${suffix}`;
+  await seedUser(store, userId, {
+    email: `${suffix}@example.com`,
+    departmentPath: '心动/平台支持/Web',
+    departmentCheckedAt: '2026-08-27T11:00:00.000Z',
+  });
+  const token = await seedPublicSitesAccessKey(store, {
+    keyId: `ak_public_${suffix}`,
+    userId,
+    scopes: ['read:site'],
+    byte,
+  });
+  return { store, token };
+}
+
+async function seedDepartmentHttpFixture(store, { keyId, byte, departmentPath, departmentCheckedAt }) {
+  await seedUser(store, 'usr_department_viewer', {
+    email: 'department-viewer@example.com',
+    departmentPath,
+    departmentCheckedAt,
+  });
+  await seedActiveSite(store, { id: 'site_department_internal', visibility: 'internal' });
+  await seedActiveSite(store, { id: 'site_department_org', visibility: 'org' });
+  await seedActiveSite(store, { id: 'site_department_acl_http', visibility: 'acl' });
+  await addAclEntries(store, 'site_department_acl_http', [departmentAcl('acl_department_http', '心动/平台支持')]);
+  return seedPublicSitesAccessKey(store, {
+    keyId,
+    userId: 'usr_department_viewer',
+    scopes: ['read:site'],
+    byte,
+  });
+}
+
+function departmentVisibleSiteIds() {
+  return new Set(['site_department_internal', 'site_department_org', 'site_department_acl_http']);
 }
 
 async function seedUser(store, userId, overrides = {}) {
