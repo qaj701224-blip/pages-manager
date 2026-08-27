@@ -67,17 +67,19 @@ GET /.xd-pages/api/public/sites
 - 存在当前环境的最新 route；
 - route 的 `route_status = active`；
 - route 存在 active version；
-- 当前有效 visibility 不是 `disabled`；
+- 当前有效 visibility 必须是 `internal`、`org`、`acl` 或 `owner` 之一；`disabled` 和任何未知值都 fail closed；
 - 且满足下列任一关系：
   - 个人 Owner 是当前用户；
-  - Owner 是当前用户仍为 active member 的团队；
+  - Owner 是当前用户仍为 active member 的团队，且团队与站点属于当前环境、`status = active`、`deleted_at IS NULL`；
   - visibility 为 `internal`；
   - visibility 为 `org`；
   - visibility 为 `acl`，且 allow entry 命中当前用户的规范化邮箱；
   - visibility 为 `acl`，且 allow entry 命中当前用户已落库的完整部门路径或其父部门路径；
   - visibility 为 `owner`，且当前用户是个人 Owner。
 
-单次 SQL 查询使用 OR 条件表达可访问关系，因此同一站点天然只返回一次，不在 transport 层拼接多份结果。团队站点不支持 `owner` visibility，继续沿用现有领域约束。
+单次 SQL 查询使用 OR 条件表达可访问关系，因此同一站点天然只返回一次，不在 transport 层拼接多份结果。个人 Owner 可看到有效 visibility 下自己的站点；团队成员可看到团队拥有且 visibility 为 `internal`、`org` 或 `acl` 的站点。团队站点的 `owner` visibility 和任何未知 visibility 都必须排除，不依赖数据库值始终合法的假设。
+
+`config.environment` 可为 `production`、`staging` 或本地开发使用的 `local`。公开部署只运行前两种环境；`local` 仍进入响应和 cursor 校验，保证本地 Worker 与测试使用同一合约。
 
 `internal` 与 `org` 目录项只对已经通过本 API 认证的 active 用户返回；本接口不提供匿名目录。
 
@@ -127,7 +129,7 @@ Authorization: Bearer <credential>
 查询参数：
 
 - `limit`：可选整数，范围 `1..100`，默认 `50`；重复参数、空值、小数、符号或范围外值均拒绝。
-- `cursor`：可选、非空、opaque 的 base64url cursor；重复参数或解析失败均拒绝。
+- `cursor`：可选、非空、最长 2048 个 ASCII 字符的 opaque base64url cursor；重复参数、超长值或解析失败均拒绝。
 - 未知查询参数返回 400，避免客户端误以为筛选已生效。
 
 ### 成功响应
@@ -168,7 +170,7 @@ Authorization: Bearer <credential>
 | `title` | 可选展示名称；未设置为 `null` |
 | `displayName` | 服务端计算的 `title || slug` |
 | `slug` | 当前 canonical slug |
-| `environment` | 当前 API Worker 环境，只能是 `production` 或 `staging` |
+| `environment` | 当前 API Worker 环境，只能是 `production`、`staging` 或本地开发使用的 `local` |
 | `routingStatus` | 当前 slug 路由是否已收敛，`ready` 或 `pending` |
 | `hostname` | 当前 route canonical hostname，供列表展示 |
 | `url` | 使用 HTTPS 和当前 hostname 构造的绝对 URL |
@@ -210,7 +212,7 @@ cursor payload 至少包含：
 }
 ```
 
-cursor 对客户端保持 opaque。服务端验证版本、scope、environment、ISO 时间和 site ID；其它环境或其它 endpoint 的 cursor 返回 400。cursor 不承载授权信息，不替代每次请求的认证和可访问条件复核，因此无需签名；调用方篡改 cursor 最多改变自己的翻页位置，不能扩大结果集。
+cursor 对客户端保持 opaque。服务端在解码前限制 encoded cursor 最长 2048 个 ASCII 字符，再验证版本、scope、environment（含 `local`）、ISO 时间和 site ID；其它环境或其它 endpoint 的 cursor 返回 400。cursor 不承载授权信息，不替代每次请求的认证和可访问条件复核，因此无需签名；调用方篡改 cursor 最多改变自己的翻页位置，不能扩大结果集。
 
 翻页条件使用严格 keyset：
 
@@ -300,10 +302,10 @@ Public Site mapper 是独立的纯函数，并用精确字段测试锁定。它�
 ### 结果集
 
 - 返回当前用户个人 Owner 的 active 站点。
-- 返回当前用户仍为 active member 的团队站点。
+- 返回当前用户仍为 active member 且团队 active、未删除、与站点同环境的团队站点。
 - 返回 active `internal`、`org`、email ACL 和 department ACL 站点。
 - `visibility=owner` 的站点只对个人 Owner 返回。
-- 排除 ACL 未命中、已移除团队成员、`disabled` visibility、非 active route、没有 active version、deleted 和其它环境站点。
+- 排除 ACL 未命中、已移除团队成员、inactive/deleted/跨环境团队、`disabled`/未知 visibility、团队拥有的 `owner` visibility、非 active route、没有 active version、deleted 和其它环境站点。
 - 多种条件同时命中的站点只出现一次。
 - 部门 hydration 成功后可命中部门 ACL；失败时部门 ACL fail closed、其它目录项仍返回。
 
@@ -319,7 +321,7 @@ Public Site mapper 是独立的纯函数，并用精确字段测试锁定。它�
 - 默认 limit、边界 limit、limit + 1 截断和稳定排序。
 - 同时间记录使用 ID tie-breaker，不重复、不漏掉静态数据集中的记录。
 - next cursor 终止条件正确。
-- malformed、wrong scope、wrong version、wrong environment、重复和未知 query 参数返回 400。
+- malformed、超长、wrong scope、wrong version、wrong environment、重复和未知 query 参数返回 400；`local` 环境的响应与 cursor 可正常往返。
 - 第二页重新执行授权和可访问条件，cursor 不能绕过 ACL 或环境隔离。
 
 ### 合约与回归
