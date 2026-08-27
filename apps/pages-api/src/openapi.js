@@ -237,6 +237,63 @@ export function buildOpenApi(config) {
           },
           additionalProperties: false,
         },
+        PublicSiteOwner: {
+          type: 'object',
+          required: ['type'],
+          properties: {
+            type: { type: 'string', enum: ['user', 'team'] },
+          },
+          additionalProperties: false,
+        },
+        PublicSite: {
+          type: 'object',
+          required: [
+            'id',
+            'title',
+            'displayName',
+            'slug',
+            'environment',
+            'routingStatus',
+            'hostname',
+            'url',
+            'owner',
+            'visibility',
+            'createdAt',
+            'updatedAt',
+          ],
+          properties: {
+            id: { type: 'string' },
+            title: { type: ['string', 'null'] },
+            displayName: { type: 'string' },
+            slug: { type: 'string' },
+            environment: { type: 'string', enum: ['production', 'staging', 'local'] },
+            routingStatus: { type: 'string', enum: ['ready', 'pending'] },
+            hostname: { type: 'string' },
+            url: { type: 'string', format: 'uri' },
+            owner: { $ref: '#/components/schemas/PublicSiteOwner' },
+            visibility: { type: 'string', enum: ['internal', 'org', 'acl', 'owner'] },
+            createdAt: { type: 'string', format: 'date-time' },
+            updatedAt: { type: 'string', format: 'date-time' },
+          },
+          additionalProperties: false,
+        },
+        PublicSitesPagination: {
+          type: 'object',
+          required: ['nextCursor'],
+          properties: {
+            nextCursor: { type: ['string', 'null'], maxLength: 2048 },
+          },
+          additionalProperties: false,
+        },
+        PublicSitesResponse: {
+          type: 'object',
+          required: ['sites', 'pagination'],
+          properties: {
+            sites: { type: 'array', items: { $ref: '#/components/schemas/PublicSite' } },
+            pagination: { $ref: '#/components/schemas/PublicSitesPagination' },
+          },
+          additionalProperties: false,
+        },
         SiteMetadataUpdateResponse: {
           type: 'object',
           required: ['site'],
@@ -508,6 +565,71 @@ export function buildOpenApi(config) {
       },
     },
     paths: {
+      '/.xd-pages/api/public/sites': {
+        get: {
+          summary: 'List active sites discoverable by the authenticated user',
+          description:
+            'Authenticated Public Sites directory for the current API Worker environment; public names this API lane ' +
+            'and does not mean anonymous access or exposure=public. Cindy connection assertions, CLI login credentials, ' +
+            'and unscoped personal access keys with read:site or * may use it. Deploy-only, team-owned, and site-scoped ' +
+            'keys are forbidden. Repeated or unknown query parameters return 400.',
+          parameters: [
+            {
+              name: 'limit',
+              in: 'query',
+              required: false,
+              schema: { type: 'integer', minimum: 1, maximum: 100, default: 50 },
+              description: 'Maximum number of sites to return.',
+            },
+            {
+              name: 'cursor',
+              in: 'query',
+              required: false,
+              schema: {
+                type: 'string',
+                minLength: 1,
+                maxLength: 2048,
+                pattern: '^[A-Za-z0-9_-]+$',
+              },
+              description: 'Opaque base64url cursor returned by this endpoint.',
+            },
+          ],
+          'x-error-codes': [
+            'LEGACY_TOKEN_UNSUPPORTED',
+            'PUBLIC_SITES_QUERY_INVALID',
+            'PAGES_AUTH_REQUIRED',
+            'CLI_TOKEN_INVALID',
+            'ACCESS_KEY_INVALID',
+            'ACCESS_KEY_REVOKED',
+            'ACCESS_KEY_EXPIRED',
+            'ACCESS_KEY_SESSION_STALE',
+            'CONNECTION_ASSERTION_INVALID',
+            'PAGES_USER_INACTIVE',
+            'ACCESS_KEY_OWNER_INACTIVE',
+            'PUBLIC_SITES_FORBIDDEN',
+            'CONNECTION_IDENTITY_CONFLICT',
+            'METHOD_NOT_ALLOWED',
+            'API_STORE_UNAVAILABLE',
+            'CONNECTION_KEYS_UNAVAILABLE',
+            'PUBLIC_SITES_UNAVAILABLE',
+          ],
+          responses: {
+            200: {
+              description: 'Active sites discoverable by the authenticated user',
+              content: {
+                'application/json': { schema: { $ref: '#/components/schemas/PublicSitesResponse' } },
+              },
+            },
+            400: { description: 'Invalid, repeated, or unknown query parameter, or unsupported legacy token header' },
+            401: { description: 'Authentication is missing, invalid, expired, revoked, or stale' },
+            403: { description: 'Active user directory access is forbidden for this credential' },
+            405: { description: 'Only GET is supported' },
+            409: { description: 'Cindy connection identity conflicts with an existing user' },
+            500: { description: 'Pages API store binding is unavailable' },
+            503: { description: 'Connection signing keys or the Public Sites directory are temporarily unavailable' },
+          },
+        },
+      },
       '/.xd-pages/api/sites': {
         get: {
           summary: 'List sites visible to the authenticated actor; access keys require read:site or deploy:site',

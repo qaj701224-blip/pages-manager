@@ -49,6 +49,22 @@ test('current docs stay short enough to review', () => {
   }
 });
 
+test('Console architecture separates its directory lane from Cindy Public Sites', () => {
+  const doc = readRepoFile('docs/architecture/xd-cell-console.md');
+
+  assert.match(doc, /### Console directory 与 Cindy Public Sites/);
+  assert.match(doc, /Console directory[\s\S]*pages-console` BFF[\s\S]*pages-api\.internal/);
+  assert.match(doc, /Console directory[\s\S]*Console session[\s\S]*公司网络 IP allowlist/);
+  assert.match(doc, /production 目录可在 BFF 边界内匿名/);
+  assert.match(doc, /Cindy Public Sites[\s\S]*active user Bearer credential/);
+  assert.match(doc, /Cindy connection assertion、CLI 登录凭证或合格的个人 read key/);
+  assert.match(doc, /不提供匿名目录/);
+  assert.match(doc, /active-only minimal projection/);
+  assert.match(doc, /只返回 `owner\.type`[^\n]*不返回 owner identity、ACL、route\/version、runtime 或 provider metadata/);
+  assert.match(doc, /`public`[^\n]*API lane[^\n]*不是 `exposure=public`/);
+  assert.match(doc, /Console 内部匿名目录能力[^\n]*active user Bearer 要求/);
+});
+
 test('documentation truth source matrix names current owners', () => {
   const doc = readRepoFile('docs/README.md');
 
