@@ -4,12 +4,84 @@ import test from 'node:test';
 import {
   actorCanDeploySite,
   actorCanManageSite,
+  actorCanReadPublicSites,
   actorCanTransferSiteOwnership,
   actorCanReadSite,
   actorCanReadSitesApi,
   viewerCanAdminSite,
   viewerCanPublishSite,
 } from './authorization.js';
+
+test('public sites capability requires a user-backed directory reader', () => {
+  const cases = [
+    {
+      name: 'CLI user actor',
+      actor: { type: 'user', userId: 'usr_1' },
+      expected: true,
+    },
+    {
+      name: 'Cindy-like personal access key',
+      actor: {
+        type: 'access_key',
+        userId: 'usr_1',
+        ownerType: 'user',
+        siteId: null,
+        scopes: ['read:site'],
+        source: 'cindy_connection',
+      },
+      expected: true,
+    },
+    {
+      name: 'unscoped personal read key',
+      actor: { type: 'access_key', userId: 'usr_1', scopes: ['read:site'] },
+      expected: true,
+    },
+    {
+      name: 'unscoped personal wildcard key',
+      actor: { type: 'access_key', userId: 'usr_1', ownerType: 'user', scopes: ['*'] },
+      expected: true,
+    },
+    {
+      name: 'deploy-only key',
+      actor: { type: 'access_key', userId: 'usr_1', scopes: ['deploy:site'] },
+      expected: false,
+    },
+    {
+      name: 'team-owned key',
+      actor: { type: 'access_key', userId: 'usr_1', ownerType: 'team', scopes: ['read:site'] },
+      expected: false,
+    },
+    {
+      name: 'site-scoped key',
+      actor: { type: 'access_key', userId: 'usr_1', siteId: 'site_1', scopes: ['read:site'] },
+      expected: false,
+    },
+    {
+      name: 'actor without userId',
+      actor: { type: 'user' },
+      expected: false,
+    },
+    {
+      name: 'actor with blank userId',
+      actor: { type: 'user', userId: '  ' },
+      expected: false,
+    },
+    {
+      name: 'unknown actor',
+      actor: undefined,
+      expected: false,
+    },
+    {
+      name: 'null actor',
+      actor: null,
+      expected: false,
+    },
+  ];
+
+  for (const { name, actor, expected } of cases) {
+    assert.equal(actorCanReadPublicSites(actor), expected, name);
+  }
+});
 
 test('site management respects owner, team role, scope, and site boundaries', () => {
   const personal = { id: 'site_1', ownerType: 'user', ownerId: 'usr_1', ownerUserId: 'usr_1' };
