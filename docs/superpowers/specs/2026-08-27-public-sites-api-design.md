@@ -68,9 +68,10 @@ GET /.xd-pages/api/public/sites
 - route 的 `route_status = active`；
 - route 存在 active version；
 - 当前有效 visibility 必须是 `internal`、`org`、`acl` 或 `owner` 之一；`disabled` 和任何未知值都 fail closed；
+- Owner 类型必须是 `user` 或 `team`；team-owned 站点的团队必须与站点同环境、`status = active`、`deleted_at IS NULL`，否则无论 visibility 为何都 fail closed；
 - 且满足下列任一关系：
   - 个人 Owner 是当前用户；
-  - Owner 是当前用户仍为 active member 的团队，且团队与站点属于当前环境、`status = active`、`deleted_at IS NULL`；
+  - Owner 是当前用户仍为 active member 的有效团队；
   - visibility 为 `internal`；
   - visibility 为 `org`；
   - visibility 为 `acl`，且 allow entry 命中当前用户的规范化邮箱；
@@ -91,6 +92,7 @@ Public handler 在查询前对当前用户执行与 Console 一致的 best-effor
 - 缺失或过期时可复用现有 XDS hydration；
 - hydration 不可用或失败时，请求仍可返回其它可见站点；
 - 没有可信完整部门路径时，部门 ACL 必须 fail closed；
+- handler 只在部门路径已新鲜或 hydration 成功并重新读取权威用户记录后，向 Store 传入 `departmentAclEnabled = true`；异常或仍 stale 时即使旧路径还在库中也不得用于本次查询；
 - 不读取 Cindy assertion 中的额外 role、department 或 identities claim。
 
 ## 认证与授权
@@ -302,7 +304,7 @@ Public Site mapper 是独立的纯函数，并用精确字段测试锁定。它�
 ### 结果集
 
 - 返回当前用户个人 Owner 的 active 站点。
-- 返回当前用户仍为 active member 且团队 active、未删除、与站点同环境的团队站点。
+- 返回当前用户仍为 active member 的有效团队站点；所有 team-owned 站点都要求团队 active、未删除且与站点同环境。
 - 返回 active `internal`、`org`、email ACL 和 department ACL 站点。
 - `visibility=owner` 的站点只对个人 Owner 返回。
 - 排除 ACL 未命中、已移除团队成员、inactive/deleted/跨环境团队、`disabled`/未知 visibility、团队拥有的 `owner` visibility、非 active route、没有 active version、deleted 和其它环境站点。
