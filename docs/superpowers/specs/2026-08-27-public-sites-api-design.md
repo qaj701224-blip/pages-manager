@@ -247,7 +247,8 @@ OR (effective_updated_at = cursor.updatedAt AND sites.id < cursor.id)
 - `environment`；
 - `viewerUserId`；
 - `limit`；
-- 可选 keyset cursor。
+- 可选 keyset cursor；
+- `departmentAclEnabled`，默认 `false`；只有 handler 已确认部门路径新鲜或 hydration 成功时才传 `true`，查询也只有在该值为 `true` 时匹配 department ACL。
 
 查询只选择构造 Public Site 所需的站点、最新 route 和 owner type 字段。Owner/ACL 表只用于授权条件，不把 subject value、用户邮箱、部门路径、团队 ID 或成员信息返回 transport。
 
@@ -310,6 +311,7 @@ Public Site mapper 是独立的纯函数，并用精确字段测试锁定。它�
 - 排除 ACL 未命中、已移除团队成员、inactive/deleted/跨环境团队、`disabled`/未知 visibility、团队拥有的 `owner` visibility、非 active route、没有 active version、deleted 和其它环境站点。
 - 多种条件同时命中的站点只出现一次。
 - 部门 hydration 成功后可命中部门 ACL；失败时部门 ACL fail closed、其它目录项仍返回。
+- 即使库中仍残留 stale 部门路径，hydration unavailable、返回失败状态或抛异常时也不得命中 department ACL。
 
 ### 响应与信息披露
 
