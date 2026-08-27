@@ -1,8 +1,4 @@
-import {
-  isConnectionAssertionCandidate,
-  readConnectionAuthConfig,
-  verifyConnectionAssertion,
-} from './connection-assertion.js';
+import { isConnectionAssertionCandidate, readConnectionAuthConfig, verifyConnectionAssertion } from './connection-assertion.js';
 import { constantTimeEqualHex, hashAccessKey, parseAccessKeyPlaintext } from './crypto.js';
 import { nextId } from './id.js';
 import { readAccessKeyPepper } from './infrastructure/config/identity-config.js';
@@ -77,7 +73,13 @@ async function authenticateAccessKey(plaintext, parts, env, store, config, now) 
     return authError('ACCESS_KEY_INVALID', 'Access key is invalid.', 401, 'Check the configured access key.');
   }
 
-  const ownerType = accessKey.ownerType || 'user';
+  const ownerType = accessKey.ownerType ?? 'user';
+  if (ownerType !== 'user' && ownerType !== 'team') {
+    return authError('ACCESS_KEY_INVALID', 'Access key is invalid.', 401, 'Check the configured access key.');
+  }
+  if (accessKey.issuedSource === 'cli_login' && !isValidCliLoginAccessKey(accessKey, ownerType)) {
+    return authError('ACCESS_KEY_INVALID', 'Access key is invalid.', 401, 'Check the configured access key.');
+  }
   if (ownerType === 'team') return authenticateTeamAccessKey(accessKey, store, now);
 
   const ownerUserId = accessKey.ownerId || accessKey.ownerUserId;
@@ -114,6 +116,21 @@ async function authenticateAccessKey(plaintext, parts, env, store, config, now) 
       source: 'access_key',
     },
   };
+}
+
+function isValidCliLoginAccessKey(accessKey, ownerType) {
+  return (
+    ownerType === 'user' &&
+    typeof accessKey.ownerId === 'string' &&
+    accessKey.ownerId.length > 0 &&
+    accessKey.ownerUserId === accessKey.ownerId &&
+    accessKey.siteId == null &&
+    Array.isArray(accessKey.scopes) &&
+    accessKey.scopes.length === 1 &&
+    accessKey.scopes[0] === '*' &&
+    Number.isInteger(accessKey.issuedSessionVersion) &&
+    accessKey.issuedSessionVersion > 0
+  );
 }
 
 async function authenticateTeamAccessKey(accessKey, store, now) {

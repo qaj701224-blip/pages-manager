@@ -186,6 +186,121 @@ test('maps cli_login access keys to the legacy user CLI actor shape', async () =
   });
 });
 
+for (const [ownerType, keyId, byte] of [
+  ['service', 'ak_unknown_owner', 12],
+  ['', 'ak_empty_owner', 13],
+]) {
+  test(`rejects access keys with explicit ${ownerType || 'empty'} owner type without recording usage`, async () => {
+    const plaintext = createAccessKeyPlaintext({
+      environment: 'production',
+      keyId,
+      bytes: new Uint8Array(24).fill(byte),
+    });
+    const store = await createSeededStore();
+    await store.createAccessKey({
+      id: keyId,
+      environment: 'production',
+      ownerType,
+      ownerId: 'usr_1',
+      ownerUserId: 'usr_1',
+      createdByUserId: 'usr_1',
+      keyHash: await hashAccessKey(plaintext, 'pepper-secret'),
+      pepperId: 'pepper_1',
+      name: 'invalid owner key',
+      scopes: ['read:site'],
+      siteId: null,
+      issuedSource: 'legacy',
+      issuedSessionVersion: null,
+    });
+
+    const result = await authenticateApiRequest(
+      bearerRequest(plaintext),
+      accessKeyEnv(),
+      store,
+      config,
+      '2026-06-15T00:00:00.000Z'
+    );
+
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, 'ACCESS_KEY_INVALID');
+    assert.equal(result.error.status, 401);
+    assert.equal((await store.getAccessKeyById(keyId)).lastUsedAt, null);
+  });
+}
+
+for (const input of [
+  {
+    name: 'site-scoped deploy-only shape',
+    keyId: 'ak_cli_site_deploy',
+    scopes: ['deploy:site'],
+    siteId: 'site_1',
+    issuedSessionVersion: 1,
+    byte: 14,
+  },
+  {
+    name: 'null session version',
+    keyId: 'ak_cli_null_session',
+    scopes: ['*'],
+    siteId: null,
+    issuedSessionVersion: null,
+    byte: 15,
+  },
+  {
+    name: 'non-positive session version',
+    keyId: 'ak_cli_invalid_session',
+    scopes: ['*'],
+    siteId: null,
+    issuedSessionVersion: 0,
+    byte: 16,
+  },
+  {
+    name: 'inconsistent owner ids',
+    keyId: 'ak_cli_owner_mismatch',
+    ownerId: 'usr_other',
+    scopes: ['*'],
+    siteId: null,
+    issuedSessionVersion: 1,
+    byte: 17,
+  },
+]) {
+  test(`rejects cli_login access keys with ${input.name} without recording usage`, async () => {
+    const plaintext = createAccessKeyPlaintext({
+      environment: 'production',
+      keyId: input.keyId,
+      bytes: new Uint8Array(24).fill(input.byte),
+    });
+    const store = await createSeededStore();
+    await store.createAccessKey({
+      id: input.keyId,
+      environment: 'production',
+      ownerType: 'user',
+      ownerId: input.ownerId || 'usr_1',
+      ownerUserId: 'usr_1',
+      createdByUserId: 'usr_1',
+      keyHash: await hashAccessKey(plaintext, 'pepper-secret'),
+      pepperId: 'pepper_1',
+      name: 'malformed cli login key',
+      scopes: input.scopes,
+      siteId: input.siteId,
+      issuedSource: 'cli_login',
+      issuedSessionVersion: input.issuedSessionVersion,
+    });
+
+    const result = await authenticateApiRequest(
+      bearerRequest(plaintext),
+      accessKeyEnv(),
+      store,
+      config,
+      '2026-06-15T00:00:00.000Z'
+    );
+
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, 'ACCESS_KEY_INVALID');
+    assert.equal(result.error.status, 401);
+    assert.equal((await store.getAccessKeyById(input.keyId)).lastUsedAt, null);
+  });
+}
+
 test('rejects cli_login access keys after the user session version changes', async () => {
   const plaintext = createAccessKeyPlaintext({
     environment: 'production',

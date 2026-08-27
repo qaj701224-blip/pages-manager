@@ -4,8 +4,8 @@ export const accessKeysRepositoryMethods = {
   async createAccessKey(input) {
     if ('plaintext' in input) throw new Error('ACCESS_KEY_PLAINTEXT_FORBIDDEN');
     const now = this.now();
-    const ownerType = input.ownerType || 'user';
-    const ownerId = input.ownerId || input.ownerUserId;
+    const ownerType = input.ownerType ?? 'user';
+    const ownerId = input.ownerId ?? input.ownerUserId;
     const record = {
       id: input.id,
       environment: input.environment || null,

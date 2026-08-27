@@ -593,6 +593,40 @@ test('Public Sites HTTP rejects deploy-only, team, and site-scoped keys before d
   }
 });
 
+test('Public Sites HTTP rejects persisted malformed cli_login keys before listing directory data', async () => {
+  const store = testStore();
+  await seedUser(store, 'usr_http_malformed_cli', { email: 'malformed-cli@example.com' });
+  await seedActiveSite(store, { id: 'site_malformed_cli_leak', visibility: 'internal' });
+  const token = await seedPublicSitesAccessKey(store, {
+    keyId: 'ak_public_malformed_cli',
+    userId: 'usr_http_malformed_cli',
+    scopes: ['deploy:site'],
+    siteId: 'site_scope',
+    issuedSource: 'cli_login',
+    issuedSessionVersion: null,
+    byte: 50,
+  });
+  let listCalls = 0;
+  const originalList = store.listPublicSitesForUser.bind(store);
+  store.listPublicSitesForUser = async (input) => {
+    listCalls += 1;
+    return originalList(input);
+  };
+
+  const response = await worker.fetch(publicSitesRequest({ token }), publicSitesEnv(store));
+
+  assert.equal(response.status, 401);
+  assert.deepEqual(await response.json(), {
+    error: {
+      code: 'ACCESS_KEY_INVALID',
+      message: 'Access key is invalid.',
+      action: 'Check the configured access key.',
+    },
+  });
+  assert.equal(listCalls, 0);
+  assert.equal((await store.getAccessKeyById('ak_public_malformed_cli')).lastUsedAt, null);
+});
+
 test('Public Sites HTTP validates method and query before authentication or directory hydration', async (t) => {
   const store = testStore();
   let directoryCalls = 0;

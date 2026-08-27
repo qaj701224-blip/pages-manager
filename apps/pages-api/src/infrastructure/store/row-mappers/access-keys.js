@@ -2,8 +2,8 @@ export function mapAccessKey(row) {
   return {
     id: row.id,
     environment: row.environment || null,
-    ownerType: row.owner_type || 'user',
-    ownerId: row.owner_id || row.owner_user_id,
+    ownerType: row.owner_type ?? 'user',
+    ownerId: row.owner_id ?? row.owner_user_id,
     ownerUserId: row.owner_user_id,
     createdByUserId: row.created_by_user_id || row.owner_user_id,
     issuedSource: row.issued_source || 'legacy',
