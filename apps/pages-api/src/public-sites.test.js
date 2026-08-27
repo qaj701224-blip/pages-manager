@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   createTestPagesStore,
   insertTestRoute,
+  insertTestTeamMember,
   updateTestRoute,
   updateTestSite,
   updateTestTeam,
@@ -123,6 +124,65 @@ test('D1 Store returns every accessible active site once and fails closed on acc
   assert.equal(sites.length, expectedIds.length);
   assert.equal(new Set(sites.map((site) => site.id)).size, sites.length);
   assert.equal(sites.find((site) => site.id === 'site_team_member').ownerType, 'team');
+});
+
+test('D1 Store pins the latest-route correlated lookup to the site_id index', async () => {
+  const store = testStore();
+  await seedUser(store, 'usr_viewer', { email: 'viewer@example.com' });
+  await seedUser(store, 'usr_owner', { email: 'owner@example.com' });
+  await seedActiveSite(store, { id: 'site_index_hint', visibility: 'internal' });
+
+  const preparedSql = [];
+  const originalPrepare = store.db.prepare;
+  store.db.prepare = (sql) => {
+    preparedSql.push(sql);
+    return originalPrepare.call(store.db, sql);
+  };
+  try {
+    assert.deepEqual(
+      (await store.listPublicSitesForUser({ environment: ENVIRONMENT, viewerUserId: 'usr_viewer' })).map((site) => site.id),
+      ['site_index_hint']
+    );
+  } finally {
+    store.db.prepare = originalPrepare;
+  }
+
+  assert.match(preparedSql.at(-1), /FROM site_routes AS latest INDEXED BY idx_site_routes_site_id/);
+});
+
+test('D1 Store accepts supported active team roles and rejects an active corrupt role', async () => {
+  const store = testStore();
+  await seedUser(store, 'usr_viewer', { email: 'viewer@example.com' });
+  await seedUser(store, 'usr_owner', { email: 'owner@example.com' });
+  const roles = ['viewer', 'publisher', 'admin', 'corrupted-role'];
+
+  for (const role of roles) {
+    const team = await seedTeam(store, `team_role_${role}`);
+    await insertTestTeamMember(store, {
+      teamId: team.id,
+      userId: 'usr_viewer',
+      role,
+      membershipSource: 'manual',
+      createdAt: CREATED_AT,
+      updatedAt: CREATED_AT,
+    });
+    await seedActiveSite(store, {
+      id: `site_team_role_${role}`,
+      ownerType: 'team',
+      ownerId: team.id,
+      ownerUserId: 'usr_owner',
+      visibility: 'acl',
+    });
+  }
+
+  const sites = await store.listPublicSitesForUser({
+    environment: ENVIRONMENT,
+    viewerUserId: 'usr_viewer',
+  });
+  assert.deepEqual(
+    new Set(sites.map((site) => site.id)),
+    new Set(['site_team_role_viewer', 'site_team_role_publisher', 'site_team_role_admin'])
+  );
 });
 
 test('D1 Store gates exact and parent department ACL matches with the per-request freshness flag', async () => {

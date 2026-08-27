@@ -20,7 +20,7 @@ const PUBLIC_SITES_CTE = `WITH public_sites AS (
     ON viewer_users.user_id = ?
    AND viewer_users.employee_status = 'active'
   JOIN site_routes AS route ON route.id = (
-    SELECT latest.id FROM site_routes AS latest
+    SELECT latest.id FROM site_routes AS latest INDEXED BY idx_site_routes_site_id
     WHERE latest.site_id = sites.id AND latest.environment = sites.environment
     ORDER BY latest.updated_at DESC, latest.id DESC LIMIT 1
   )
@@ -55,6 +55,7 @@ const PUBLIC_SITES_CTE = `WITH public_sites AS (
           SELECT 1 FROM team_members AS viewer_team_member
           WHERE viewer_team_member.team_id = sites.owner_id
             AND viewer_team_member.user_id = viewer_users.user_id
+            AND viewer_team_member.role IN ('viewer', 'publisher', 'admin')
             AND viewer_team_member.removed_at IS NULL
         )
       )
