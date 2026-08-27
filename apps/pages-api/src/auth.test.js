@@ -212,6 +212,12 @@ for (const [ownerType, keyId, byte] of [
       issuedSource: 'legacy',
       issuedSessionVersion: null,
     });
+    let userReads = 0;
+    const originalGetUser = store.getUser.bind(store);
+    store.getUser = async (...args) => {
+      userReads += 1;
+      return originalGetUser(...args);
+    };
 
     const result = await authenticateApiRequest(
       bearerRequest(plaintext),
@@ -224,9 +230,233 @@ for (const [ownerType, keyId, byte] of [
     assert.equal(result.ok, false);
     assert.equal(result.error.code, 'ACCESS_KEY_INVALID');
     assert.equal(result.error.status, 401);
+    assert.equal(userReads, 0);
     assert.equal((await store.getAccessKeyById(keyId)).lastUsedAt, null);
   });
 }
+
+for (const input of [
+  { name: 'mismatched owner ids', keyId: 'ak_personal_owner_mismatch', ownerId: 'usr_other', byte: 18 },
+  { name: 'empty owner id', keyId: 'ak_personal_owner_empty', ownerId: '', byte: 19 },
+]) {
+  test(`rejects non-legacy personal access keys with ${input.name} before reading users`, async () => {
+    const store = await createSeededStore();
+    const plaintext = await seedAuthAccessKey(store, {
+      keyId: input.keyId,
+      byte: input.byte,
+      issuedSource: 'cli',
+    });
+    await updateStoredAccessKey(store, input.keyId, { ownerId: input.ownerId });
+    let userReads = 0;
+    const originalGetUser = store.getUser.bind(store);
+    store.getUser = async (...args) => {
+      userReads += 1;
+      return originalGetUser(...args);
+    };
+
+    const result = await authenticateApiRequest(
+      bearerRequest(plaintext),
+      accessKeyEnv(),
+      store,
+      config,
+      '2026-06-15T00:00:00.000Z'
+    );
+
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, 'ACCESS_KEY_INVALID');
+    assert.equal(result.error.status, 401);
+    assert.equal(userReads, 0);
+    assert.equal((await store.getAccessKeyById(input.keyId)).lastUsedAt, null);
+  });
+}
+
+test('rejects team access keys with an empty stored owner id before reading teams', async () => {
+  const store = await createSeededStore();
+  await store.createTeam({
+    id: 'team_auth',
+    environment: 'production',
+    name: 'Auth Team',
+    createdByUserId: 'usr_1',
+  });
+  const plaintext = await seedAuthAccessKey(store, {
+    keyId: 'ak_team_owner_empty',
+    byte: 20,
+    ownerType: 'team',
+    ownerId: 'team_auth',
+    issuedSource: 'console',
+  });
+  await updateStoredAccessKey(store, 'ak_team_owner_empty', { ownerId: '' });
+  let teamReads = 0;
+  const originalGetTeam = store.getTeam.bind(store);
+  store.getTeam = async (...args) => {
+    teamReads += 1;
+    return originalGetTeam(...args);
+  };
+
+  const result = await authenticateApiRequest(
+    bearerRequest(plaintext),
+    accessKeyEnv(),
+    store,
+    config,
+    '2026-06-15T00:00:00.000Z'
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, 'ACCESS_KEY_INVALID');
+  assert.equal(result.error.status, 401);
+  assert.equal(teamReads, 0);
+  assert.equal((await store.getAccessKeyById('ak_team_owner_empty')).lastUsedAt, null);
+});
+
+for (const input of [
+  { name: 'string', keyId: 'ak_scopes_string', scopesJson: '"*"', byte: 21 },
+  { name: 'object', keyId: 'ak_scopes_object', scopesJson: '{}', byte: 22 },
+  { name: 'invalid JSON', keyId: 'ak_scopes_invalid_json', scopesJson: '{', byte: 23 },
+  { name: 'empty array', keyId: 'ak_scopes_empty', scopesJson: '[]', byte: 24 },
+  { name: 'unknown scope', keyId: 'ak_scopes_unknown', scopesJson: '["admin:site"]', byte: 25 },
+  { name: 'mixed wildcard', keyId: 'ak_scopes_mixed_wildcard', scopesJson: '["*","read:site"]', byte: 26 },
+]) {
+  test(`rejects access keys with ${input.name} scopes before reading users`, async () => {
+    const store = await createSeededStore();
+    const plaintext = await seedAuthAccessKey(store, {
+      keyId: input.keyId,
+      byte: input.byte,
+      issuedSource: 'cli',
+    });
+    await updateStoredAccessKey(store, input.keyId, { scopesJson: input.scopesJson });
+    let userReads = 0;
+    const originalGetUser = store.getUser.bind(store);
+    store.getUser = async (...args) => {
+      userReads += 1;
+      return originalGetUser(...args);
+    };
+
+    const result = await authenticateApiRequest(
+      bearerRequest(plaintext),
+      accessKeyEnv(),
+      store,
+      config,
+      '2026-06-15T00:00:00.000Z'
+    );
+
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, 'ACCESS_KEY_INVALID');
+    assert.equal(result.error.status, 401);
+    assert.equal(userReads, 0);
+    assert.equal((await store.getAccessKeyById(input.keyId)).lastUsedAt, null);
+  });
+}
+
+test('accepts duplicate supported scopes for compatibility with previously issued access keys', async () => {
+  const store = await createSeededStore();
+  const plaintext = await seedAuthAccessKey(store, {
+    keyId: 'ak_duplicate_scopes',
+    byte: 27,
+    scopes: ['read:site', 'read:site'],
+    issuedSource: 'cli',
+  });
+
+  const result = await authenticateApiRequest(
+    bearerRequest(plaintext),
+    accessKeyEnv(),
+    store,
+    config,
+    '2026-06-15T00:00:00.000Z'
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.actor.scopes, ['read:site', 'read:site']);
+});
+
+test('accepts an exact wildcard array for an unscoped personal access key', async () => {
+  const store = await createSeededStore();
+  const plaintext = await seedAuthAccessKey(store, {
+    keyId: 'ak_personal_wildcard',
+    byte: 30,
+    scopes: ['*'],
+    issuedSource: 'legacy',
+  });
+
+  const result = await authenticateApiRequest(
+    bearerRequest(plaintext),
+    accessKeyEnv(),
+    store,
+    config,
+    '2026-06-15T00:00:00.000Z'
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.actor.scopes, ['*']);
+});
+
+test('rejects a site-scoped personal wildcard key before reading users', async () => {
+  const store = await createSeededStore();
+  const plaintext = await seedAuthAccessKey(store, {
+    keyId: 'ak_personal_site_wildcard',
+    byte: 31,
+    scopes: ['*'],
+    siteId: 'site_1',
+    issuedSource: 'cli',
+  });
+  let userReads = 0;
+  const originalGetUser = store.getUser.bind(store);
+  store.getUser = async (...args) => {
+    userReads += 1;
+    return originalGetUser(...args);
+  };
+
+  const result = await authenticateApiRequest(
+    bearerRequest(plaintext),
+    accessKeyEnv(),
+    store,
+    config,
+    '2026-06-15T00:00:00.000Z'
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, 'ACCESS_KEY_INVALID');
+  assert.equal(result.error.status, 401);
+  assert.equal(userReads, 0);
+  assert.equal((await store.getAccessKeyById('ak_personal_site_wildcard')).lastUsedAt, null);
+});
+
+test('rejects a team wildcard key before reading teams', async () => {
+  const store = await createSeededStore();
+  await store.createTeam({
+    id: 'team_wildcard',
+    environment: 'production',
+    name: 'Wildcard Team',
+    createdByUserId: 'usr_1',
+  });
+  const plaintext = await seedAuthAccessKey(store, {
+    keyId: 'ak_team_wildcard',
+    byte: 32,
+    ownerType: 'team',
+    ownerId: 'team_wildcard',
+    scopes: ['*'],
+    issuedSource: 'console',
+  });
+  let teamReads = 0;
+  const originalGetTeam = store.getTeam.bind(store);
+  store.getTeam = async (...args) => {
+    teamReads += 1;
+    return originalGetTeam(...args);
+  };
+
+  const result = await authenticateApiRequest(
+    bearerRequest(plaintext),
+    accessKeyEnv(),
+    store,
+    config,
+    '2026-06-15T00:00:00.000Z'
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, 'ACCESS_KEY_INVALID');
+  assert.equal(result.error.status, 401);
+  assert.equal(teamReads, 0);
+  assert.equal((await store.getAccessKeyById('ak_team_wildcard')).lastUsedAt, null);
+});
 
 for (const input of [
   {
@@ -262,6 +492,15 @@ for (const input of [
     issuedSessionVersion: 1,
     byte: 17,
   },
+  {
+    name: 'null stored owner id',
+    keyId: 'ak_cli_owner_null',
+    scopes: ['*'],
+    siteId: null,
+    issuedSessionVersion: 1,
+    storedPatch: { ownerId: null },
+    byte: 28,
+  },
 ]) {
   test(`rejects cli_login access keys with ${input.name} without recording usage`, async () => {
     const plaintext = createAccessKeyPlaintext({
@@ -285,6 +524,13 @@ for (const input of [
       issuedSource: 'cli_login',
       issuedSessionVersion: input.issuedSessionVersion,
     });
+    if (input.storedPatch) await updateStoredAccessKey(store, input.keyId, input.storedPatch);
+    let userReads = 0;
+    const originalGetUser = store.getUser.bind(store);
+    store.getUser = async (...args) => {
+      userReads += 1;
+      return originalGetUser(...args);
+    };
 
     const result = await authenticateApiRequest(
       bearerRequest(plaintext),
@@ -297,6 +543,7 @@ for (const input of [
     assert.equal(result.ok, false);
     assert.equal(result.error.code, 'ACCESS_KEY_INVALID');
     assert.equal(result.error.status, 401);
+    assert.equal(userReads, 0);
     assert.equal((await store.getAccessKeyById(input.keyId)).lastUsedAt, null);
   });
 }
@@ -377,6 +624,34 @@ for (const issuedSource of ['legacy', 'cli', 'console']) {
     assert.equal(result.actor.tokenId, keyId);
   });
 }
+
+test('accepts the exact legacy null-owner shape using owner_user_id', async () => {
+  const store = await createSeededStore();
+  const plaintext = await seedAuthAccessKey(store, {
+    keyId: 'ak_legacy_null_owner',
+    byte: 29,
+    issuedSource: 'legacy',
+  });
+  const stored = await store.getAccessKeyById('ak_legacy_null_owner');
+  store.getAccessKeyById = async () => ({
+    ...stored,
+    storedOwnerType: null,
+    storedOwnerId: null,
+    storedOwnerUserId: 'usr_1',
+  });
+
+  const result = await authenticateApiRequest(
+    bearerRequest(plaintext),
+    accessKeyEnv(),
+    store,
+    config,
+    '2026-06-15T00:00:00.000Z'
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.actor.ownerType, 'user');
+  assert.equal(result.actor.ownerId, 'usr_1');
+});
 
 test('rejects session-bound access keys after the user session version changes', async () => {
   const plaintext = createAccessKeyPlaintext({
@@ -493,4 +768,51 @@ async function seedCliLoginKey(store, { userId, keyId, plaintext, environment = 
     issuedSource: 'cli_login',
     issuedSessionVersion: sessionVersion,
   });
+}
+
+async function seedAuthAccessKey(
+  store,
+  {
+    keyId,
+    byte,
+    ownerType = 'user',
+    ownerId = ownerType === 'user' ? 'usr_1' : undefined,
+    scopes = ['read:site'],
+    siteId = null,
+    issuedSource = 'legacy',
+  }
+) {
+  const plaintext = createAccessKeyPlaintext({
+    environment: 'production',
+    keyId,
+    bytes: new Uint8Array(24).fill(byte),
+  });
+  await store.createAccessKey({
+    id: keyId,
+    environment: 'production',
+    ownerType,
+    ownerId,
+    ownerUserId: 'usr_1',
+    createdByUserId: 'usr_1',
+    keyHash: await hashAccessKey(plaintext, 'pepper-secret'),
+    pepperId: 'pepper_1',
+    name: keyId,
+    scopes,
+    siteId,
+    issuedSource,
+    issuedSessionVersion: null,
+  });
+  return plaintext;
+}
+
+async function updateStoredAccessKey(store, keyId, patch) {
+  const columns = {
+    ownerId: 'owner_id',
+    scopesJson: 'scopes_json',
+  };
+  const entries = Object.entries(patch);
+  await store.db
+    .prepare(`UPDATE access_keys SET ${entries.map(([field]) => `${columns[field]} = ?`).join(', ')} WHERE id = ?`)
+    .bind(...entries.map(([, value]) => value), keyId)
+    .run();
 }

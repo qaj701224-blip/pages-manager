@@ -593,38 +593,87 @@ test('Public Sites HTTP rejects deploy-only, team, and site-scoped keys before d
   }
 });
 
-test('Public Sites HTTP rejects persisted malformed cli_login keys before listing directory data', async () => {
-  const store = testStore();
-  await seedUser(store, 'usr_http_malformed_cli', { email: 'malformed-cli@example.com' });
-  await seedActiveSite(store, { id: 'site_malformed_cli_leak', visibility: 'internal' });
-  const token = await seedPublicSitesAccessKey(store, {
-    keyId: 'ak_public_malformed_cli',
-    userId: 'usr_http_malformed_cli',
-    scopes: ['deploy:site'],
-    siteId: 'site_scope',
-    issuedSource: 'cli_login',
-    issuedSessionVersion: null,
-    byte: 50,
-  });
-  let listCalls = 0;
-  const originalList = store.listPublicSitesForUser.bind(store);
-  store.listPublicSitesForUser = async (input) => {
-    listCalls += 1;
-    return originalList(input);
-  };
-
-  const response = await worker.fetch(publicSitesRequest({ token }), publicSitesEnv(store));
-
-  assert.equal(response.status, 401);
-  assert.deepEqual(await response.json(), {
-    error: {
-      code: 'ACCESS_KEY_INVALID',
-      message: 'Access key is invalid.',
-      action: 'Check the configured access key.',
+test('Public Sites HTTP rejects malformed persisted access-key shapes before listing directory data', async (t) => {
+  const cases = [
+    {
+      name: 'cli_login owner id is null',
+      keyId: 'ak_public_cli_owner_null',
+      scopes: ['*'],
+      issuedSource: 'cli_login',
+      issuedSessionVersion: 1,
+      storedPatch: { ownerId: null },
+      byte: 50,
     },
-  });
-  assert.equal(listCalls, 0);
-  assert.equal((await store.getAccessKeyById('ak_public_malformed_cli')).lastUsedAt, null);
+    {
+      name: 'personal owner ids mismatch',
+      keyId: 'ak_public_owner_mismatch',
+      scopes: ['read:site'],
+      issuedSource: 'cli',
+      storedPatch: { ownerId: 'usr_other' },
+      byte: 51,
+    },
+    {
+      name: 'personal owner id is empty',
+      keyId: 'ak_public_owner_empty',
+      scopes: ['read:site'],
+      issuedSource: 'cli',
+      storedPatch: { ownerId: '' },
+      byte: 52,
+    },
+    {
+      name: 'scopes JSON is a string',
+      keyId: 'ak_public_scopes_string',
+      scopes: ['read:site'],
+      issuedSource: 'cli',
+      storedPatch: { scopesJson: '"*"' },
+      byte: 53,
+    },
+    {
+      name: 'scopes JSON is an object',
+      keyId: 'ak_public_scopes_object',
+      scopes: ['read:site'],
+      issuedSource: 'cli',
+      storedPatch: { scopesJson: '{}' },
+      byte: 54,
+    },
+    {
+      name: 'scopes JSON is invalid',
+      keyId: 'ak_public_scopes_invalid_json',
+      scopes: ['read:site'],
+      issuedSource: 'cli',
+      storedPatch: { scopesJson: '{' },
+      byte: 55,
+    },
+  ];
+
+  for (const input of cases) {
+    await t.test(input.name, async () => {
+      const store = testStore();
+      const userId = `usr_${input.keyId}`;
+      await seedUser(store, userId, { email: `${input.keyId}@example.com` });
+      await seedActiveSite(store, { id: `site_leak_${input.keyId}`, visibility: 'internal' });
+      const token = await seedPublicSitesAccessKey(store, { ...input, userId });
+      await updateStoredAccessKey(store, input.keyId, input.storedPatch);
+      let listCalls = 0;
+      store.listPublicSitesForUser = async () => {
+        listCalls += 1;
+        return [];
+      };
+
+      const response = await worker.fetch(publicSitesRequest({ token }), publicSitesEnv(store));
+
+      assert.equal(response.status, 401);
+      assert.deepEqual(await response.json(), {
+        error: {
+          code: 'ACCESS_KEY_INVALID',
+          message: 'Access key is invalid.',
+          action: 'Check the configured access key.',
+        },
+      });
+      assert.equal(listCalls, 0);
+      assert.equal((await store.getAccessKeyById(input.keyId)).lastUsedAt, null);
+    });
+  }
 });
 
 test('Public Sites HTTP validates method and query before authentication or directory hydration', async (t) => {
@@ -1088,6 +1137,19 @@ async function seedPublicSitesAccessKey(
     issuedSessionVersion,
   });
   return plaintext;
+}
+
+async function updateStoredAccessKey(store, keyId, patch) {
+  const columns = {
+    ownerId: 'owner_id',
+    scopesJson: 'scopes_json',
+  };
+  const entries = Object.entries(patch);
+  if (entries.length === 0) return;
+  await store.db
+    .prepare(`UPDATE access_keys SET ${entries.map(([field]) => `${columns[field]} = ?`).join(', ')} WHERE id = ?`)
+    .bind(...entries.map(([, value]) => value), keyId)
+    .run();
 }
 
 async function createAuthenticatedPublicSitesFixture(suffix, byte) {
