@@ -1,11 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import {
-  decodePublicSitesCursor,
-  encodePublicSitesCursor,
-  parsePublicSitesQuery,
-} from './public-sites-handler.js';
+import { decodePublicSitesCursor, encodePublicSitesCursor, parsePublicSitesQuery } from './public-sites-handler.js';
 
 const UPDATED_AT = '2026-08-27T01:02:03.000Z';
 
@@ -85,6 +81,24 @@ test('public sites cursor rejects malformed base64, UTF-8, and JSON', () => {
   }
 });
 
+test('public sites cursor rejects noncanonical base64url pad bits', () => {
+  const canonical = encodePayload(validPayload());
+  const alias = replaceUnusedPadBits(canonical);
+
+  assert.notEqual(alias, canonical);
+  assert.deepEqual(readCursorPayload(alias), validPayload());
+  assertPublicSitesQueryInvalid(() => decodePublicSitesCursor(alias, 'production'));
+});
+
+test('public sites cursor rejects a UTF-8 BOM before JSON', () => {
+  const json = new globalThis.TextEncoder().encode(JSON.stringify(validPayload()));
+  const bytes = new Uint8Array(json.length + 3);
+  bytes.set([0xef, 0xbb, 0xbf]);
+  bytes.set(json, 3);
+
+  assertPublicSitesQueryInvalid(() => decodePublicSitesCursor(encodeBytes(bytes), 'production'));
+});
+
 test('public sites cursor rejects wrong version, scope, and environment', () => {
   const base = validPayload();
   for (const payload of [
@@ -101,9 +115,7 @@ test('public sites cursor rejects wrong version, scope, and environment', () => 
 test('public sites cursor rejects noncanonical timestamps and illegal site ids', () => {
   const base = validPayload();
   for (const updatedAt of ['2026-08-27T01:02:03Z', '2026-08-27 01:02:03.000Z', 'not-a-date']) {
-    assertPublicSitesQueryInvalid(() =>
-      decodePublicSitesCursor(encodePayload({ ...base, updatedAt }), 'production')
-    );
+    assertPublicSitesQueryInvalid(() => decodePublicSitesCursor(encodePayload({ ...base, updatedAt }), 'production'));
   }
   for (const id of ['site_', 'site_bad/id', `site_${'a'.repeat(129)}`, 'page_1']) {
     assertPublicSitesQueryInvalid(() => decodePublicSitesCursor(encodePayload({ ...base, id }), 'production'));
@@ -167,6 +179,14 @@ function encodeBytes(bytes) {
   return globalThis.btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
 }
 
+function replaceUnusedPadBits(cursor) {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+  assert.equal(cursor.length % 4, 3);
+  const lastIndex = alphabet.indexOf(cursor.at(-1));
+  assert.equal(lastIndex % 4, 0);
+  return `${cursor.slice(0, -1)}${alphabet[lastIndex + 1]}`;
+}
+
 function readCursorPayload(cursor) {
   const padded = cursor.replaceAll('-', '+').replaceAll('_', '/') + '='.repeat((4 - (cursor.length % 4)) % 4);
   const binary = globalThis.atob(padded);
@@ -177,10 +197,7 @@ function readCursorPayload(cursor) {
 function assertPublicSitesQueryInvalid(callback, message) {
   assert.throws(
     callback,
-    (error) =>
-      error instanceof Error &&
-      error.name === 'PublicSitesQueryError' &&
-      error.code === 'PUBLIC_SITES_QUERY_INVALID',
+    (error) => error instanceof Error && error.name === 'PublicSitesQueryError' && error.code === 'PUBLIC_SITES_QUERY_INVALID',
     message
   );
 }

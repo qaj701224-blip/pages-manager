@@ -83,9 +83,18 @@ export function decodePublicSitesCursor(value, environment) {
     throw invalidQuery('Public sites cursor encoding is invalid.');
   }
 
+  let bytes;
+  try {
+    bytes = decodeBase64Url(value);
+  } catch {
+    throw invalidQuery('Public sites cursor encoding is invalid.');
+  }
+  if (encodeBase64Url(bytes) !== value || (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf)) {
+    throw invalidQuery('Public sites cursor encoding is invalid.');
+  }
+
   let payload;
   try {
-    const bytes = decodeBase64Url(value);
     payload = JSON.parse(decoder.decode(bytes));
   } catch {
     throw invalidQuery('Public sites cursor payload is invalid.');

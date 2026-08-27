@@ -42,6 +42,11 @@ test('public sites capability requires a user-backed directory reader', () => {
       expected: true,
     },
     {
+      name: 'personal key with null owner type',
+      actor: { type: 'access_key', userId: 'usr_1', ownerType: null, scopes: ['read:site'] },
+      expected: true,
+    },
+    {
       name: 'deploy-only key',
       actor: { type: 'access_key', userId: 'usr_1', scopes: ['deploy:site'] },
       expected: false,
@@ -52,8 +57,33 @@ test('public sites capability requires a user-backed directory reader', () => {
       expected: false,
     },
     {
+      name: 'key with unknown owner type',
+      actor: { type: 'access_key', userId: 'usr_1', ownerType: 'organization', scopes: ['read:site'] },
+      expected: false,
+    },
+    {
+      name: 'key with empty owner type',
+      actor: { type: 'access_key', userId: 'usr_1', ownerType: '', scopes: ['read:site'] },
+      expected: false,
+    },
+    {
       name: 'site-scoped key',
       actor: { type: 'access_key', userId: 'usr_1', siteId: 'site_1', scopes: ['read:site'] },
+      expected: false,
+    },
+    ...['', 0, false].map((siteId) => ({
+      name: `key with malformed falsey siteId ${JSON.stringify(siteId)}`,
+      actor: { type: 'access_key', userId: 'usr_1', siteId, scopes: ['read:site'] },
+      expected: false,
+    })),
+    {
+      name: 'unknown actor type',
+      actor: { type: 'service', userId: 'usr_1' },
+      expected: false,
+    },
+    {
+      name: 'missing actor type',
+      actor: { userId: 'usr_1' },
       expected: false,
     },
     {
