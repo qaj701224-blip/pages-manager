@@ -294,7 +294,7 @@ OR (effective_updated_at = cursor.updatedAt AND sites.id < cursor.id)
 
 查询只选择构造 Public Site 和计算请求能力所需的站点、最新 route、Owner 展示名、Owner ID 及当前用户对 Owner team 的有效角色。个人 Owner 名称通过 Owner user 关联读取 `realname`；团队名称使用现有 canonical team display name 所需字段。ACL 表只用于授权条件，不把 subject value、用户邮箱或部门路径返回 transport。
 
-Owner ID、当前用户的 team role 和 team display name 原始组成字段只存在于 Store 到 handler 的内部记录中，用于计算 `owner.isCurrentUser`、`permissions.canDeploy` 和安全展示名；Public response mapper 必须将它们全部裁掉。查询中的团队角色只接受未移除的 `publisher`/`admin` 作为部署能力，`viewer` 和未知角色均 fail closed。
+`ownerId`、`ownerUserId`、当前用户的 team role 和 team display name 原始组成字段只存在于 Store 到 handler 的内部记录中，用于计算 `owner.isCurrentUser`、`permissions.canDeploy` 和安全展示名；必须同时保留两个 Owner ID 字段，以兼容 `actorCanDeploySite()` 对 user actor 与 Access Key actor 的现有权威判断。Public response mapper 必须将这些内部字段全部裁掉。查询中的团队角色只接受未移除的 `publisher`/`admin` 作为部署能力，`viewer` 和未知角色均 fail closed。
 
 不直接复用 `listSitesForUser()`：该方法表达 owner/team 管理范围，不能覆盖 org/ACL 目录语义。不直接复用 Console transport；Public 与 Console 保持独立认证和 response mapper。
 
@@ -367,6 +367,7 @@ Handler 使用认证阶段得到的完整 actor 和 Store 返回的内部站点�
 - 个人 Owner 本人返回 `owner.isCurrentUser = true`；团队成员和其它可访问者返回 `false`，team-owned 站点始终返回 `false`。
 - Cindy/CLI 的个人 Owner、团队 publisher/admin 按真实部署授权返回 `permissions.canDeploy = true`；团队 viewer、仅 visibility/ACL 可访问者和 read-only Access Key 返回 `false`。
 - 使用 read-only Access Key 请求自己的个人站点时，精确断言 `owner.isCurrentUser = true` 且 `permissions.canDeploy = false`。
+- 普通个人 `*` Access Key 可以读取目录，但当前权威 `actorCanDeploySite()` 要求 Access Key 显式包含 `deploy:site`，因此精确断言 `permissions.canDeploy = false`；CLI login 虽以 `*` 存储，认证后是 user actor，不受此边界影响。
 - 响应不包含 `route`、owner ID/email、team role、ACL、active version、runtime、provider、dispatch、policy/generation、cache tier、token 或 deletedAt。
 - `hostname` / `url`、`visibility`、`routingStatus` 与当前 route 一致。
 
