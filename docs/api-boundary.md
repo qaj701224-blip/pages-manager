@@ -21,7 +21,11 @@ Public Sites 是必须认证的站点发现目录；这里的 `public` 表示 Pu
 
 目录只接受具备 active 人类用户上下文和 `read:site` 能力的 Cindy connection assertion、CLI 登录凭证，以及未绑定单站点的个人 Access Key。仅含 `deploy:site` 的 key、Team Access Key 和 site-scoped key 均不得枚举目录。服务端以 `users`、团队成员关系和部门 hydration 结果作为身份与部门真相源，不信任 Cindy assertion 附带的 role、department 或 identities claim。
 
-结果只包含当前环境中未删除、latest route 为 active、存在 active version，且当前用户拥有或按有效团队关系、`internal`、`org`、email/department ACL 可访问的站点；失效 Owner、`disabled` 或未知 visibility 一律 fail closed。Public Sites 使用 active-only minimal projection，只提供展示、导航和更新时间所需字段；`owner` 只暴露 `type=user|team`，不返回 owner identity、ACL 条目、route/version、runtime、provider、dispatch、generation、cache tier 或 capability metadata。
+结果只包含当前环境中未删除、latest route 为 active、存在 active version，且当前用户拥有或按有效团队关系、`internal`、`org`、email/department ACL 可访问的站点；失效 Owner、`disabled` 或未知 visibility 一律 fail closed。Public Sites 使用 active-only minimal projection，只提供展示、导航、Owner 归属、当前请求能力和更新时间所需字段。
+
+`owner.displayName` 只提供个人真实姓名或团队 canonical 安全展示名；缺少安全展示名时返回 `null`，不回退到邮箱、内部 ID 或部门路径。`owner.isCurrentUser` 只表示当前认证用户是该站点的个人直接 Owner，team-owned 站点始终为 `false`。`permissions.canDeploy` 是当前请求凭证此刻能否部署该既有站点的 point-in-time 提示，不能作为授权凭据；部署请求仍会重新读取权威状态并重新鉴权。
+
+响应不返回 Owner 邮箱、内部 user/team ID、部门路径、team role、ACL 条目、route/version、runtime、provider、dispatch、generation、cache tier 或 runtime capability metadata。
 
 该目录不会让 OpenAPI 变成公开 HTTP 入口；`apps/pages-api/src/openapi.js` 仍只是开发期合约源码，服务实现、测试和受控内部集成。
 

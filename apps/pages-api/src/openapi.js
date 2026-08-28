@@ -239,9 +239,33 @@ export function buildOpenApi(config) {
         },
         PublicSiteOwner: {
           type: 'object',
-          required: ['type'],
+          required: ['type', 'displayName', 'isCurrentUser'],
           properties: {
             type: { type: 'string', enum: ['user', 'team'] },
+            displayName: {
+              type: ['string', 'null'],
+              description:
+                'Safe owner display name from the personal real name or canonical team name. ' +
+                'Never falls back to email, internal IDs, or department paths.',
+            },
+            isCurrentUser: {
+              type: 'boolean',
+              description:
+                'True only when the authenticated user is the direct personal owner. Team-owned sites always return false.',
+            },
+          },
+          additionalProperties: false,
+        },
+        PublicSitePermissions: {
+          type: 'object',
+          required: ['canDeploy'],
+          properties: {
+            canDeploy: {
+              type: 'boolean',
+              description:
+                'Point-in-time hint that the current credential passes deployment authorization for this existing site. ' +
+                'Deployment requests re-read authoritative state and re-authorize.',
+            },
           },
           additionalProperties: false,
         },
@@ -257,6 +281,7 @@ export function buildOpenApi(config) {
             'hostname',
             'url',
             'owner',
+            'permissions',
             'visibility',
             'createdAt',
             'updatedAt',
@@ -271,6 +296,7 @@ export function buildOpenApi(config) {
             hostname: { type: 'string' },
             url: { type: 'string', format: 'uri' },
             owner: { $ref: '#/components/schemas/PublicSiteOwner' },
+            permissions: { $ref: '#/components/schemas/PublicSitePermissions' },
             visibility: { type: 'string', enum: ['internal', 'org', 'acl', 'owner'] },
             createdAt: { type: 'string', format: 'date-time' },
             updatedAt: { type: 'string', format: 'date-time' },

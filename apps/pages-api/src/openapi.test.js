@@ -446,11 +446,24 @@ test('documents the authenticated Public Sites directory contract', () => {
   const schemas = body.components.schemas;
   const operation = body.paths['/.xd-pages/api/public/sites'].get;
 
-  for (const name of ['PublicSiteOwner', 'PublicSite', 'PublicSitesPagination', 'PublicSitesResponse']) {
+  for (const name of ['PublicSiteOwner', 'PublicSitePermissions', 'PublicSite', 'PublicSitesPagination', 'PublicSitesResponse']) {
     assert.equal(schemas[name].additionalProperties, false, `${name} rejects additional properties`);
   }
-  assert.deepEqual(schemas.PublicSiteOwner.required, ['type']);
+  assert.deepEqual(schemas.PublicSiteOwner.required, ['type', 'displayName', 'isCurrentUser']);
+  assert.deepEqual(Object.keys(schemas.PublicSiteOwner.properties), schemas.PublicSiteOwner.required);
   assert.deepEqual(schemas.PublicSiteOwner.properties.type.enum, ['user', 'team']);
+  assert.deepEqual(schemas.PublicSiteOwner.properties.displayName.type, ['string', 'null']);
+  assert.equal(schemas.PublicSiteOwner.properties.isCurrentUser.type, 'boolean');
+  assert.match(
+    schemas.PublicSiteOwner.properties.displayName.description,
+    /Never falls back to email, internal IDs, or department paths/
+  );
+  assert.match(schemas.PublicSiteOwner.properties.isCurrentUser.description, /direct personal owner/);
+  assert.deepEqual(schemas.PublicSitePermissions.required, ['canDeploy']);
+  assert.deepEqual(Object.keys(schemas.PublicSitePermissions.properties), ['canDeploy']);
+  assert.equal(schemas.PublicSitePermissions.properties.canDeploy.type, 'boolean');
+  assert.match(schemas.PublicSitePermissions.properties.canDeploy.description, /Point-in-time hint/);
+  assert.match(schemas.PublicSitePermissions.properties.canDeploy.description, /re-authorize/);
   const publicSiteFields = [
     'id',
     'title',
@@ -461,6 +474,7 @@ test('documents the authenticated Public Sites directory contract', () => {
     'hostname',
     'url',
     'owner',
+    'permissions',
     'visibility',
     'createdAt',
     'updatedAt',
@@ -470,6 +484,9 @@ test('documents the authenticated Public Sites directory contract', () => {
   assert.deepEqual(requiredPublicSiteFields, publicSiteFields);
   assert.deepEqual(publicSiteProperties, publicSiteFields);
   assert.deepEqual(requiredPublicSiteFields, publicSiteProperties);
+  assert.deepEqual(schemas.PublicSite.properties.permissions, {
+    $ref: '#/components/schemas/PublicSitePermissions',
+  });
   assert.deepEqual(schemas.PublicSite.properties.environment.enum, ['production', 'staging', 'local']);
   assert.deepEqual(schemas.PublicSite.properties.routingStatus.enum, ['ready', 'pending']);
   assert.deepEqual(schemas.PublicSite.properties.visibility.enum, ['internal', 'org', 'acl', 'owner']);

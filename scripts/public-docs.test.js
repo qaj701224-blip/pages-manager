@@ -49,8 +49,14 @@ test('API boundary defines Public Sites as an authenticated minimal directory', 
   assert.match(publicSites, /`users`[^\n]*身份与部门真相源/);
   assert.match(publicSites, /不信任 Cindy assertion[^\n]*role[^\n]*department[^\n]*identities claim/);
   assert.match(publicSites, /active-only minimal projection/);
-  assert.match(publicSites, /`owner` 只暴露 `type=user\|team`/);
-  assert.match(publicSites, /不返回 owner identity、ACL 条目、route\/version、runtime、provider/);
+  assert.match(publicSites, /`owner\.displayName`[^\n]*安全展示名[^\n]*不回退到邮箱、内部 ID 或部门路径/);
+  assert.match(publicSites, /`owner\.isCurrentUser`[^\n]*个人直接 Owner/);
+  assert.match(publicSites, /`permissions\.canDeploy`[^\n]*当前请求凭证[^\n]*point-in-time/);
+  assert.match(publicSites, /部署请求[^\n]*重新读取权威状态[^\n]*重新鉴权/);
+  assert.match(
+    publicSites,
+    /不返回 Owner 邮箱、内部 user\/team ID、部门路径、team role、ACL 条目、route\/version、runtime、provider/
+  );
   assert.match(publicSites, /apps\/pages-api\/src\/openapi\.js[^\n]*开发期合约源码/);
   assert.doesNotMatch(publicSites, /### (?:GET|POST|PATCH|DELETE)|\|\s*Method\s*\|\s*Path\s*\|/);
 });
