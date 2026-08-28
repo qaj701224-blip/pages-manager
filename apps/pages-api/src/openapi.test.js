@@ -456,7 +456,7 @@ test('documents the authenticated Public Sites directory contract', () => {
   assert.equal(schemas.PublicSiteOwner.properties.isCurrentUser.type, 'boolean');
   assert.match(
     schemas.PublicSiteOwner.properties.displayName.description,
-    /Never falls back to email, internal IDs, or department paths/
+    /derived department-team leaf name[\s\S]*never returns a full department path/i
   );
   assert.match(schemas.PublicSiteOwner.properties.isCurrentUser.description, /direct personal owner/);
   assert.deepEqual(schemas.PublicSitePermissions.required, ['canDeploy']);

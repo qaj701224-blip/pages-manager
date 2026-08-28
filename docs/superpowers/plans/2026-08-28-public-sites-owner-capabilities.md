@@ -44,7 +44,7 @@
 覆盖：
 
 - 个人 Owner 有非空 `realname` 时只返回规范化展示名；仅有 email 或空白 realname 时为 `null`。
-- custom team 返回 team name；department team 复用 canonical display name。
+- custom team 返回 team name；department team 返回不含完整部门路径的安全叶名称。
 - 当前 viewer 为 team publisher/admin 时保留对应 `managementRole`；viewer、未知角色、removed membership 都映射为 `null`。
 - 既有多 ACL、多可访问关系去重和 keyset 顺序不变。
 - 不改变详细 spec 已锁定的个人 Owner 入选语义；姓名缺失不排除 active 站点。
@@ -82,7 +82,7 @@ ownerDisplayName,
 managementRole: row.management_role || null,
 ```
 
-个人展示名只接受 trim 后非空的 `realname`，不得回退 email/ID。团队展示名调用 `departmentTeamDisplayName({ teamType, name, departmentPath })`，不要传 team ID，避免 helper 回退内部 ID。team 原始 name/type/department path 不离开 row mapper。
+个人展示名只接受 trim 后非空的 `realname`，不得回退 email/ID。custom team 只使用非空 name；department team 使用 `deriveDepartmentTeamIdentity(departmentPath || name).displayName` 派生安全叶名称，禁止调用可能输出完整部门路径的 Console display helper。team 原始 name/type/department path 不离开 row mapper。
 
 ### Step 4：验证 Store
 

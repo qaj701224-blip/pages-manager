@@ -192,7 +192,7 @@ test('D1 Store accepts supported active team roles and rejects an active corrupt
   assert.equal(sites.find((site) => site.id === 'site_team_role_admin').managementRole, 'admin');
 });
 
-test('D1 Store projects safe personal and canonical team owner display names', async () => {
+test('D1 Store projects safe personal and team owner display names', async () => {
   const store = testStore();
   await seedUser(store, 'usr_viewer', { email: 'viewer@example.com' });
   await seedUser(store, 'usr_named_owner', { email: 'named@example.com', realname: '  Named Owner  ' });
@@ -221,6 +221,14 @@ test('D1 Store projects safe personal and canonical team owner display names', a
     departmentPath: '心动/平台支持/Web/Frontend',
     createdByUserId: 'usr_named_owner',
   });
+  const shallowDepartmentTeam = await store.createTeam({
+    id: 'team_public_shallow_department_name',
+    environment: ENVIRONMENT,
+    name: '心动/发行服务/平台支撑部',
+    teamType: 'department',
+    departmentPath: '心动/发行服务/平台支撑部',
+    createdByUserId: 'usr_named_owner',
+  });
   await seedActiveSite(store, {
     id: 'site_custom_team_name',
     ownerType: 'team',
@@ -232,6 +240,13 @@ test('D1 Store projects safe personal and canonical team owner display names', a
     id: 'site_department_team_name',
     ownerType: 'team',
     ownerId: departmentTeam.id,
+    ownerUserId: 'usr_named_owner',
+    visibility: 'org',
+  });
+  await seedActiveSite(store, {
+    id: 'site_shallow_department_team_name',
+    ownerType: 'team',
+    ownerId: shallowDepartmentTeam.id,
     ownerUserId: 'usr_named_owner',
     visibility: 'org',
   });
@@ -247,6 +262,7 @@ test('D1 Store projects safe personal and canonical team owner display names', a
     site_email_only_owner: null,
     site_custom_team_name: 'Custom Team',
     site_department_team_name: 'Web',
+    site_shallow_department_team_name: '平台支撑部',
   });
 });
 
@@ -624,7 +640,9 @@ test('Public Sites HTTP separates direct ownership from team and visibility depl
   const publisherTeam = await store.createTeam({
     id: 'team_public_publisher',
     environment: ENVIRONMENT,
-    name: 'Publisher Team',
+    name: '心动/发行服务/平台支撑部',
+    teamType: 'department',
+    departmentPath: '心动/发行服务/平台支撑部',
     createdByUserId: 'usr_capability_owner',
   });
   const viewerTeam = await store.createTeam({
@@ -686,7 +704,7 @@ test('Public Sites HTTP separates direct ownership from team and visibility depl
   );
   assert.deepEqual(summaries, {
     site_capability_publisher: {
-      owner: { type: 'team', displayName: 'Publisher Team', isCurrentUser: false },
+      owner: { type: 'team', displayName: '平台支撑部', isCurrentUser: false },
       permissions: { canDeploy: true },
     },
     site_capability_viewer: {

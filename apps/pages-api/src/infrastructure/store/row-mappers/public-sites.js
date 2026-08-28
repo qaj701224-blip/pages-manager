@@ -1,4 +1,4 @@
-import { departmentTeamDisplayName } from '../../../department-path.js';
+import { deriveDepartmentTeamIdentity } from '../../../department-path.js';
 
 export function mapPublicSite(row) {
   const ownerType = row.owner_type;
@@ -23,13 +23,10 @@ export function mapPublicSite(row) {
 
 function ownerDisplayName(row, ownerType) {
   if (ownerType === 'team') {
-    return nonBlankString(
-      departmentTeamDisplayName({
-        teamType: row.owner_team_type,
-        name: row.owner_team_name,
-        departmentPath: row.owner_team_department_path,
-      })
-    );
+    if (row.owner_team_type === 'department') {
+      return nonBlankString(deriveDepartmentTeamIdentity(row.owner_team_department_path || row.owner_team_name).displayName);
+    }
+    return nonBlankString(row.owner_team_name);
   }
   return nonBlankString(row.owner_user_realname);
 }

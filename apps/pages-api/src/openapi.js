@@ -245,8 +245,8 @@ export function buildOpenApi(config) {
             displayName: {
               type: ['string', 'null'],
               description:
-                'Safe owner display name from the personal real name or canonical team name. ' +
-                'Never falls back to email, internal IDs, or department paths.',
+                'Safe owner display name from the personal real name, custom team name, or derived department-team leaf name. ' +
+                'Never falls back to email or internal IDs and never returns a full department path.',
             },
             isCurrentUser: {
               type: 'boolean',

@@ -136,7 +136,7 @@ Public Sites 授权 helper 必须显式检查：
 
 每条站点记录同时返回：
 
-- `owner.displayName`：个人 Owner 使用非空 `users.realname`；团队 Owner 使用现有 canonical team display name。缺少可公开展示的名称时返回 `null`，不得回退到邮箱、内部 ID 或部门路径。
+- `owner.displayName`：个人 Owner 使用非空 `users.realname`；custom team 使用非空团队名称；department team 使用 `deriveDepartmentTeamIdentity(...).displayName` 生成的安全叶名称，绝不返回完整部门路径。缺少可公开展示的名称时返回 `null`，不得回退到邮箱或内部 ID。
 - `owner.isCurrentUser`：仅当站点为个人 Owner，且规范化后的 Owner user ID 等于 `actor.userId` 时为 `true`；团队成员、publisher/admin 和仅因 visibility/ACL 可访问的用户均为 `false`。
 - `permissions.canDeploy`：使用实际部署入口的 `actorCanDeploySite(actor, site, 'deploy:site')` 计算。个人 Owner、团队 publisher/admin 只有在当前凭证也满足部署 scope 时才为 `true`；团队 viewer、仅因 `internal`/`org`/ACL 可访问者和 read-only Access Key 均为 `false`。
 
@@ -208,14 +208,14 @@ Authorization: Bearer <credential>
 | --- | --- |
 | `id` | 稳定站点标识，用于客户端去重；不是 provider resource ID |
 | `title` | 可选展示名称；未设置为 `null` |
-| `displayName` | 服务端计算的 `title || slug` |
+| `displayName` | 服务端优先使用 `title`，否则使用 `slug` |
 | `slug` | 当前 canonical slug |
 | `environment` | 当前 API Worker 环境，只能是 `production`、`staging` 或本地开发使用的 `local` |
 | `routingStatus` | 当前 slug 路由是否已收敛，`ready` 或 `pending` |
 | `hostname` | 当前 route canonical hostname，供列表展示 |
 | `url` | 使用 HTTPS 和当前 hostname 构造的绝对 URL |
 | `owner.type` | `user` 或 `team` |
-| `owner.displayName` | 个人真实姓名或团队 canonical display name；没有安全展示名时为 `null`，不回退到邮箱、内部 ID 或部门路径 |
+| `owner.displayName` | 个人真实姓名、custom team 名称或 department team 安全叶名称；没有安全展示名时为 `null`，不回退到邮箱/内部 ID，也不返回完整部门路径 |
 | `owner.isCurrentUser` | 当前认证用户是否为该个人站点的直接 Owner；team-owned 站点始终为 `false` |
 | `permissions.canDeploy` | 当前请求凭证此刻是否通过既有站点的真实部署授权检查；部署入口仍会重新鉴权 |
 | `visibility` | 当前 route 的有效 visibility，不返回 default visibility |
@@ -292,7 +292,7 @@ OR (effective_updated_at = cursor.updatedAt AND sites.id < cursor.id)
 - 可选 keyset cursor；
 - `departmentAclEnabled`，默认 `false`；只有 handler 已确认部门路径新鲜或 hydration 成功时才传 `true`，查询也只有在该值为 `true` 时匹配 department ACL。
 
-查询只选择构造 Public Site 和计算请求能力所需的站点、最新 route、Owner 展示名、Owner ID 及当前用户对 Owner team 的有效角色。个人 Owner 名称通过 Owner user 关联读取 `realname`；团队名称使用现有 canonical team display name 所需字段。ACL 表只用于授权条件，不把 subject value、用户邮箱或部门路径返回 transport。
+查询只选择构造 Public Site 和计算请求能力所需的站点、最新 route、Owner 展示名、Owner ID 及当前用户对 Owner team 的有效角色。个人 Owner 名称通过 Owner user 关联读取 `realname`；团队查询只把 name/type/department path 带到 row mapper，由 mapper 为 custom team 使用名称、为 department team 派生不含完整路径的安全叶名称。ACL 表只用于授权条件，不把 subject value、用户邮箱或部门路径返回 transport。
 
 `ownerId`、`ownerUserId`、当前用户的 team role 和 team display name 原始组成字段只存在于 Store 到 handler 的内部记录中，用于计算 `owner.isCurrentUser`、`permissions.canDeploy` 和安全展示名；必须同时保留两个 Owner ID 字段，以兼容 `actorCanDeploySite()` 对 user actor 与 Access Key actor 的现有权威判断。Public response mapper 必须将这些内部字段全部裁掉。查询中的团队角色只接受未移除的 `publisher`/`admin` 作为部署能力，`viewer` 和未知角色均 fail closed。
 
@@ -300,7 +300,7 @@ OR (effective_updated_at = cursor.updatedAt AND sites.id < cursor.id)
 
 ### Response mapper
 
-Public Site mapper 是独立的纯函数，并用精确字段测试锁定。它可以复用现有 `siteMetadataRoutingStatus()` 和 canonical team display name helper，但不能展开完整 route 或 Console owner display projection。
+Public Site mapper 是独立的纯函数，并用精确字段测试锁定。它可以复用现有 `siteMetadataRoutingStatus()` 和 `deriveDepartmentTeamIdentity()`，但不能使用可能输出完整部门路径的 Console owner display projection，也不能展开完整 route。
 
 Handler 使用认证阶段得到的完整 actor 和 Store 返回的内部站点记录调用 `actorCanDeploySite(actor, site, 'deploy:site')`，保证目录能力提示不宽于真实部署入口。`owner.isCurrentUser` 独立比较个人 Owner user ID 与 `actor.userId`，不得从 `canDeploy` 或 team role 推导。
 
@@ -363,7 +363,7 @@ Handler 使用认证阶段得到的完整 actor 和 Store 返回的内部站点�
 ### 响应与信息披露
 
 - 精确断言 Public Site 字段和 `updatedAt` 取 site/route 较晚时间。
-- 用户 Owner 返回真实姓名，团队 Owner 返回 canonical team display name；缺少安全展示名时返回 `null`，不得回退到邮箱、内部 ID 或部门路径。
+- 用户 Owner 返回真实姓名，custom team 返回团队名称，department team 返回不含完整部门路径的安全叶名称；缺少安全展示名时返回 `null`，不得回退到邮箱或内部 ID。
 - 个人 Owner 本人返回 `owner.isCurrentUser = true`；团队成员和其它可访问者返回 `false`，team-owned 站点始终返回 `false`。
 - Cindy/CLI 的个人 Owner、团队 publisher/admin 按真实部署授权返回 `permissions.canDeploy = true`；团队 viewer、仅 visibility/ACL 可访问者和 read-only Access Key 返回 `false`。
 - 使用 read-only Access Key 请求自己的个人站点时，精确断言 `owner.isCurrentUser = true` 且 `permissions.canDeploy = false`。
