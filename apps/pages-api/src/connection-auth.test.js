@@ -331,7 +331,34 @@ test('Cindy connection assertion lists Public Sites with the mapped authoritativ
   await store.createUser({
     userId: 'usr_directory_owner',
     email: 'directory-owner@xd.com',
+    realname: 'Directory Owner',
     employeeStatus: 'active',
+  });
+  await seedActiveConnectionSite(store, {
+    id: 'site_cindy_owned',
+    slug: 'cindy-owned',
+    ownerUserId: 'usr_directory_viewer',
+    visibility: 'owner',
+  });
+  const publisherTeam = await store.createTeam({
+    id: 'team_cindy_publisher',
+    environment: 'staging',
+    name: 'Cindy Publisher Team',
+    createdByUserId: 'usr_directory_owner',
+  });
+  await store.addTeamMember({
+    teamId: publisherTeam.id,
+    userId: 'usr_directory_viewer',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  await seedActiveConnectionSite(store, {
+    id: 'site_cindy_team',
+    slug: 'cindy-team',
+    ownerType: 'team',
+    ownerId: publisherTeam.id,
+    ownerUserId: 'usr_directory_owner',
+    visibility: 'acl',
   });
   await seedActiveConnectionSite(store, {
     id: 'site_cindy_directory',
@@ -389,6 +416,36 @@ test('Cindy connection assertion lists Public Sites with the mapped authoritativ
   assert.deepEqual(await response.json(), {
     sites: [
       {
+        id: 'site_cindy_team',
+        title: null,
+        displayName: 'cindy-team',
+        slug: 'cindy-team',
+        environment: 'staging',
+        routingStatus: 'ready',
+        hostname: 'cindy-team-staging.workers.xd.team',
+        url: 'https://cindy-team-staging.workers.xd.team',
+        owner: { type: 'team', displayName: 'Cindy Publisher Team', isCurrentUser: false },
+        permissions: { canDeploy: true },
+        visibility: 'acl',
+        createdAt: NOW_ISO,
+        updatedAt: NOW_ISO,
+      },
+      {
+        id: 'site_cindy_owned',
+        title: null,
+        displayName: 'cindy-owned',
+        slug: 'cindy-owned',
+        environment: 'staging',
+        routingStatus: 'ready',
+        hostname: 'cindy-owned-staging.workers.xd.team',
+        url: 'https://cindy-owned-staging.workers.xd.team',
+        owner: { type: 'user', displayName: 'Directory Viewer', isCurrentUser: true },
+        permissions: { canDeploy: true },
+        visibility: 'owner',
+        createdAt: NOW_ISO,
+        updatedAt: NOW_ISO,
+      },
+      {
         id: 'site_cindy_directory',
         title: null,
         displayName: 'cindy-directory',
@@ -397,7 +454,8 @@ test('Cindy connection assertion lists Public Sites with the mapped authoritativ
         routingStatus: 'ready',
         hostname: 'cindy-directory-staging.workers.xd.team',
         url: 'https://cindy-directory-staging.workers.xd.team',
-        owner: { type: 'user' },
+        owner: { type: 'user', displayName: 'Directory Owner', isCurrentUser: false },
+        permissions: { canDeploy: false },
         visibility: 'org',
         createdAt: NOW_ISO,
         updatedAt: NOW_ISO,
@@ -583,12 +641,15 @@ async function seedConnectionSite(store, { id, slug, ownerType, ownerId, ownerUs
   });
 }
 
-async function seedActiveConnectionSite(store, { id, slug, ownerUserId, visibility }) {
+async function seedActiveConnectionSite(
+  store,
+  { id, slug, ownerType = 'user', ownerUserId, ownerId = ownerUserId, visibility }
+) {
   await seedConnectionSite(store, {
     id,
     slug,
-    ownerType: 'user',
-    ownerId: ownerUserId,
+    ownerType,
+    ownerId,
     ownerUserId,
   });
   const versionId = `ver_${id}`;

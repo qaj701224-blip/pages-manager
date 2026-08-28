@@ -187,6 +187,67 @@ test('D1 Store accepts supported active team roles and rejects an active corrupt
     new Set(sites.map((site) => site.id)),
     new Set(['site_team_role_viewer', 'site_team_role_publisher', 'site_team_role_admin'])
   );
+  assert.equal(sites.find((site) => site.id === 'site_team_role_viewer').managementRole, null);
+  assert.equal(sites.find((site) => site.id === 'site_team_role_publisher').managementRole, 'publisher');
+  assert.equal(sites.find((site) => site.id === 'site_team_role_admin').managementRole, 'admin');
+});
+
+test('D1 Store projects safe personal and canonical team owner display names', async () => {
+  const store = testStore();
+  await seedUser(store, 'usr_viewer', { email: 'viewer@example.com' });
+  await seedUser(store, 'usr_named_owner', { email: 'named@example.com', realname: '  Named Owner  ' });
+  await seedUser(store, 'usr_email_only_owner', { email: 'email-only@example.com', realname: '   ' });
+  await seedActiveSite(store, {
+    id: 'site_named_owner',
+    ownerUserId: 'usr_named_owner',
+    visibility: 'org',
+  });
+  await seedActiveSite(store, {
+    id: 'site_email_only_owner',
+    ownerUserId: 'usr_email_only_owner',
+    visibility: 'org',
+  });
+  const customTeam = await store.createTeam({
+    id: 'team_public_custom_name',
+    environment: ENVIRONMENT,
+    name: 'Custom Team',
+    createdByUserId: 'usr_named_owner',
+  });
+  const departmentTeam = await store.createTeam({
+    id: 'team_public_department_name',
+    environment: ENVIRONMENT,
+    name: '心动/平台支持/Web/Frontend',
+    teamType: 'department',
+    departmentPath: '心动/平台支持/Web/Frontend',
+    createdByUserId: 'usr_named_owner',
+  });
+  await seedActiveSite(store, {
+    id: 'site_custom_team_name',
+    ownerType: 'team',
+    ownerId: customTeam.id,
+    ownerUserId: 'usr_named_owner',
+    visibility: 'org',
+  });
+  await seedActiveSite(store, {
+    id: 'site_department_team_name',
+    ownerType: 'team',
+    ownerId: departmentTeam.id,
+    ownerUserId: 'usr_named_owner',
+    visibility: 'org',
+  });
+
+  const sites = await store.listPublicSitesForUser({
+    environment: ENVIRONMENT,
+    viewerUserId: 'usr_viewer',
+  });
+  const names = Object.fromEntries(sites.map((site) => [site.id, site.ownerDisplayName]));
+
+  assert.deepEqual(names, {
+    site_named_owner: 'Named Owner',
+    site_email_only_owner: null,
+    site_custom_team_name: 'Custom Team',
+    site_department_team_name: 'Web',
+  });
 });
 
 test('D1 Store gates exact and parent department ACL matches with the per-request freshness flag', async () => {
@@ -341,7 +402,7 @@ test('D1 Store fails closed on invalid teams, versions, sites, environments, own
 test('D1 Store projects only the Public Site record and orders by the effective updated timestamp', async () => {
   const store = testStore();
   await seedUser(store, 'usr_viewer', { email: 'viewer@example.com' });
-  await seedUser(store, 'usr_owner', { email: 'owner@example.com' });
+  await seedUser(store, 'usr_owner', { email: 'owner@example.com', realname: 'Owner Name' });
 
   await seedActiveSite(store, {
     id: 'site_site_later',
@@ -385,6 +446,10 @@ test('D1 Store projects only the Public Site record and orders by the effective 
       slugRoutingSyncedRevision: 1,
       environment: ENVIRONMENT,
       ownerType: 'user',
+      ownerId: 'usr_owner',
+      ownerUserId: 'usr_owner',
+      ownerDisplayName: 'Owner Name',
+      managementRole: null,
       hostname: 'site-site-later.workers.xd.team',
       visibility: 'org',
       createdAt: CREATED_AT,
@@ -494,8 +559,14 @@ test('Public Sites HTTP accepts CLI login and unscoped personal read keys', asyn
   const store = testStore();
   await seedUser(store, 'usr_http_viewer', {
     email: 'http-viewer@example.com',
+    realname: 'HTTP Viewer',
     departmentPath: '心动/平台支持/Web',
     departmentCheckedAt: '2026-08-27T11:00:00.000Z',
+  });
+  await seedActiveSite(store, {
+    id: 'site_http_viewer_owned',
+    ownerUserId: 'usr_http_viewer',
+    visibility: 'owner',
   });
   const credentials = [
     {
@@ -505,9 +576,17 @@ test('Public Sites HTTP accepts CLI login and unscoped personal read keys', asyn
       issuedSource: 'cli_login',
       issuedSessionVersion: 1,
       byte: 31,
+      canDeploy: true,
     },
-    { name: 'personal read key', keyId: 'ak_public_read', scopes: ['read:site'], byte: 32 },
-    { name: 'personal wildcard key', keyId: 'ak_public_star', scopes: ['*'], byte: 33 },
+    { name: 'personal read key', keyId: 'ak_public_read', scopes: ['read:site'], byte: 32, canDeploy: false },
+    { name: 'personal wildcard key', keyId: 'ak_public_star', scopes: ['*'], byte: 33, canDeploy: false },
+    {
+      name: 'personal read and deploy key',
+      keyId: 'ak_public_read_deploy',
+      scopes: ['read:site', 'deploy:site'],
+      byte: 49,
+      canDeploy: true,
+    },
   ];
 
   for (const credential of credentials) {
@@ -519,9 +598,106 @@ test('Public Sites HTTP accepts CLI login and unscoped personal read keys', asyn
       const response = await worker.fetch(publicSitesRequest({ token }), publicSitesEnv(store));
 
       assert.equal(response.status, 200, await response.clone().text());
-      assert.deepEqual(await response.json(), { sites: [], pagination: { nextCursor: null } });
+      const body = await response.json();
+      assert.equal(body.sites.length, 1);
+      assert.deepEqual(body.sites[0].owner, {
+        type: 'user',
+        displayName: 'HTTP Viewer',
+        isCurrentUser: true,
+      });
+      assert.deepEqual(body.sites[0].permissions, { canDeploy: credential.canDeploy });
+      assert.deepEqual(body.pagination, { nextCursor: null });
     });
   }
+});
+
+test('Public Sites HTTP separates direct ownership from team and visibility deployment capability', async () => {
+  const store = testStore();
+  await seedUser(store, 'usr_http_capability', {
+    email: 'capability@example.com',
+    realname: 'Capability Viewer',
+  });
+  await seedUser(store, 'usr_capability_owner', {
+    email: 'capability-owner@example.com',
+    realname: 'Other Owner',
+  });
+  const publisherTeam = await store.createTeam({
+    id: 'team_public_publisher',
+    environment: ENVIRONMENT,
+    name: 'Publisher Team',
+    createdByUserId: 'usr_capability_owner',
+  });
+  const viewerTeam = await store.createTeam({
+    id: 'team_public_viewer',
+    environment: ENVIRONMENT,
+    name: 'Viewer Team',
+    createdByUserId: 'usr_capability_owner',
+  });
+  await store.addTeamMember({
+    teamId: publisherTeam.id,
+    userId: 'usr_http_capability',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  await store.addTeamMember({
+    teamId: viewerTeam.id,
+    userId: 'usr_http_capability',
+    role: 'viewer',
+    membershipSource: 'manual',
+  });
+  await seedActiveSite(store, {
+    id: 'site_capability_publisher',
+    ownerType: 'team',
+    ownerId: publisherTeam.id,
+    ownerUserId: 'usr_capability_owner',
+    visibility: 'acl',
+  });
+  await seedActiveSite(store, {
+    id: 'site_capability_viewer',
+    ownerType: 'team',
+    ownerId: viewerTeam.id,
+    ownerUserId: 'usr_capability_owner',
+    visibility: 'acl',
+  });
+  await seedActiveSite(store, {
+    id: 'site_capability_accessible',
+    ownerUserId: 'usr_capability_owner',
+    visibility: 'org',
+  });
+  const token = await seedPublicSitesAccessKey(store, {
+    keyId: 'ak_public_capability',
+    userId: 'usr_http_capability',
+    scopes: ['read:site', 'deploy:site'],
+    byte: 47,
+  });
+
+  const response = await worker.fetch(publicSitesRequest({ token }), publicSitesEnv(store));
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  const summaries = Object.fromEntries(
+    body.sites.map((site) => [
+      site.id,
+      {
+        owner: site.owner,
+        permissions: site.permissions,
+      },
+    ])
+  );
+  assert.deepEqual(summaries, {
+    site_capability_publisher: {
+      owner: { type: 'team', displayName: 'Publisher Team', isCurrentUser: false },
+      permissions: { canDeploy: true },
+    },
+    site_capability_viewer: {
+      owner: { type: 'team', displayName: 'Viewer Team', isCurrentUser: false },
+      permissions: { canDeploy: false },
+    },
+    site_capability_accessible: {
+      owner: { type: 'user', displayName: 'Other Owner', isCurrentUser: false },
+      permissions: { canDeploy: false },
+    },
+  });
 });
 
 test('Public Sites HTTP rejects deploy-only, team, and site-scoped keys before directory hydration', async (t) => {
@@ -711,6 +887,7 @@ test('Public Sites HTTP returns the exact minimal projection without sensitive f
   const store = testStore();
   await seedUser(store, 'usr_http_projection', {
     email: 'projection@example.com',
+    realname: 'Projection Owner',
     departmentPath: '心动/平台支持/Web',
     departmentCheckedAt: '2026-08-27T11:00:00.000Z',
   });
@@ -741,7 +918,8 @@ test('Public Sites HTTP returns the exact minimal projection without sensitive f
         routingStatus: 'ready',
         hostname: 'site-public-projection.workers.xd.team',
         url: 'https://site-public-projection.workers.xd.team',
-        owner: { type: 'user' },
+        owner: { type: 'user', displayName: 'Projection Owner', isCurrentUser: true },
+        permissions: { canDeploy: false },
         visibility: 'org',
         createdAt: CREATED_AT,
         updatedAt: ROUTE_UPDATED_AT,

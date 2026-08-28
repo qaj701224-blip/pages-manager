@@ -1,6 +1,6 @@
 import { authenticateApiRequest } from '../../auth.js';
 import { hydrateUserDepartmentFromDirectory, shouldHydrateUserDepartment } from '../../department-hydration.js';
-import { actorCanReadPublicSites } from '../../domain/sites/authorization.js';
+import { actorCanDeploySite, actorCanReadPublicSites } from '../../domain/sites/authorization.js';
 import { siteMetadataRoutingStatus } from '../../domain/sites/metadata.js';
 import { jsonError, jsonOk } from '../../http.js';
 
@@ -91,7 +91,7 @@ export async function handlePublicSitesApi(request, env, config, store) {
       : null;
 
   return jsonOk({
-    sites: page.map(formatPublicSite),
+    sites: page.map((site) => formatPublicSite(site, auth.actor)),
     pagination: { nextCursor },
   });
 }
@@ -283,7 +283,7 @@ function isNonBlankString(value) {
   return typeof value === 'string' && Boolean(value.trim());
 }
 
-function formatPublicSite(site) {
+function formatPublicSite(site, actor) {
   return {
     id: site.id,
     title: site.title || null,
@@ -293,7 +293,15 @@ function formatPublicSite(site) {
     routingStatus: siteMetadataRoutingStatus(site),
     hostname: site.hostname,
     url: `https://${site.hostname}`,
-    owner: { type: site.ownerType },
+    owner: {
+      type: site.ownerType,
+      displayName: site.ownerDisplayName,
+      isCurrentUser:
+        site.ownerType === 'user' && (site.ownerId || site.ownerUserId) === actor.userId,
+    },
+    permissions: {
+      canDeploy: actorCanDeploySite(actor, site, 'deploy:site'),
+    },
     visibility: site.visibility,
     createdAt: site.createdAt,
     updatedAt: site.updatedAt,
