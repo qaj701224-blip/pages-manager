@@ -12,13 +12,13 @@ Cindy `xd-sites` 插件需要展示“公开站点”列表。这里的“公开
 GET /.xd-pages/api/public/sites
 ```
 
-它为 Cindy 和其它具备用户身份的只读凭证提供稳定、最小化、可分页的站点目录，不改变 `/sites` 的管理语义。
+它为 Cindy 和其它具备用户身份的只读凭证提供稳定、最小化、可分页的站点目录，同时提供列表展示所需的 Owner 名称、当前用户是否为直接 Owner，以及当前请求凭证能否部署该站点；它不改变 `/sites` 的管理语义。
 
 ## 目标
 
 1. 为 Cindy `xd-sites` 提供当前环境的 active 站点目录。
 2. 结果包含当前用户拥有的个人站点、所在团队的站点，以及按 `internal`、`org` 或 ACL 对当前用户可访问的站点。
-3. 使用专用 Public Site 投影，返回展示、导航和更新时间所需字段，不暴露管理或 provider 内部状态。
+3. 使用专用 Public Site 投影，返回展示、导航、Owner 归属、当前请求能力和更新时间所需字段，不暴露管理或 provider 内部状态。
 4. 复用现有 Access Key / Cindy connection assertion 认证，并要求具备完整用户上下文和 `read:site` 能力。
 5. 提供确定性排序和有界游标分页，避免组织级目录无限增长。
 6. 同步开发期 OpenAPI、API 边界文档和 focused tests。
@@ -30,8 +30,9 @@ GET /.xd-pages/api/public/sites
 - 不按 `site_routes.exposure=public` 过滤；网络 reachability 与 identity visibility 保持独立。
 - 不增加或修改 `xd-cell` CLI 命令、CLI help 或 pages-skill 用户入口。
 - 不复用或公开 `/.xd-pages/api/console/directory` 内部路由。
-- 不返回 owner 姓名、邮箱、部门路径、团队 ID、ACL 条目或成员列表。
-- 不返回 route ID、active version ID、runtime、provider、dispatch、generation、cache tier 或 capability。
+- 不返回 owner 邮箱、内部 user/team ID、部门路径、ACL 条目或成员列表。
+- 不返回 route ID、active version ID、runtime、provider、dispatch、generation、cache tier 或 runtime capability metadata。
+- 不把响应中的 `permissions.canDeploy` 当成部署授权凭据；部署请求仍必须按当时的凭证、scope、Owner 和团队角色重新鉴权。
 - 不新增 D1 表或 migration。
 - 不公开 `/openapi.json`。
 
@@ -52,6 +53,18 @@ GET /.xd-pages/api/public/sites
 ### 方案三：新路径复用 `/sites` 完整对象
 
 优点：实现和客户端复用最直接。缺点：向只有浏览权限的用户暴露 route、version、runtime 和策略 generation 等控制面状态，不符合最小披露原则。
+
+### Owner 归属与部署能力字段
+
+Owner 归属和部署能力是两种正交语义，不能合并成一个 `ownedByMe`：个人 Owner 一定是直接 Owner，但团队 publisher/admin 可以部署团队站点而不是该站点的个人 Owner；只读 Access Key 即使代表个人 Owner，也不能用当前凭证部署。
+
+比较三种表达：
+
+1. 在 `owner` 中增加 `displayName`、`isCurrentUser`，并增加独立的 `permissions.canDeploy`（采用）。字段职责清楚，未来可在 `permissions` 中扩展其它请求能力。
+2. 在站点顶层增加 `ownedByMe`、`canDeploy`。客户端读取直接，但字段分散，且 `ownedByMe` 对团队 Owner 容易产生“团队属于我”的歧义。
+3. 返回 `relationship = owner|publisher|viewer|accessible`。信息更丰富，但把个人归属、团队管理角色和内容访问来源混成单一枚举，后续组合会快速膨胀。
+
+采用方案一。`owner.isCurrentUser` 只表示当前认证用户是个人直接 Owner；team-owned 站点始终为 `false`。`permissions.canDeploy` 表示当前请求凭证此刻是否通过既有站点的真实部署授权检查，两者不得互相推导。
 
 ## 名词与访问语义
 
@@ -119,6 +132,26 @@ Public Sites 授权 helper 必须显式检查：
 - Access Key scopes 包含 `read:site` 或 `*`；
 - 非 Access Key 用户 actor 继续使用其现有完整用户权限。
 
+### Owner 与请求能力
+
+每条站点记录同时返回：
+
+- `owner.displayName`：个人 Owner 使用非空 `users.realname`；团队 Owner 使用现有 canonical team display name。缺少可公开展示的名称时返回 `null`，不得回退到邮箱、内部 ID 或部门路径。
+- `owner.isCurrentUser`：仅当站点为个人 Owner，且规范化后的 Owner user ID 等于 `actor.userId` 时为 `true`；团队成员、publisher/admin 和仅因 visibility/ACL 可访问的用户均为 `false`。
+- `permissions.canDeploy`：使用实际部署入口的 `actorCanDeploySite(actor, site, 'deploy:site')` 计算。个人 Owner、团队 publisher/admin 只有在当前凭证也满足部署 scope 时才为 `true`；团队 viewer、仅因 `internal`/`org`/ACL 可访问者和 read-only Access Key 均为 `false`。
+
+`canDeploy` 只说明当前凭证在本次目录请求时有权尝试向该既有站点部署，不保证后续部署一定成功；站点状态、并发变化、凭证撤销、团队成员变化等仍可能使部署失败。部署入口必须重新读取权威状态并执行完整授权，不能信任客户端回传该布尔值。
+
+典型结果：
+
+| 站点与当前用户关系 | 当前凭证 | `owner.isCurrentUser` | `permissions.canDeploy` |
+| --- | --- | ---: | ---: |
+| 本人的个人站点 | Cindy assertion 或 CLI login | `true` | `true` |
+| 本人的个人站点 | 仅 `read:site` 的个人 Access Key | `true` | `false` |
+| 团队站点，当前用户为 publisher/admin | Cindy assertion、CLI login 或满足部署 scope 的个人 Access Key | `false` | `true` |
+| 团队站点，当前用户为 viewer | 任意允许读取目录的凭证 | `false` | `false` |
+| 仅通过 `internal`、`org` 或 ACL 可访问 | 任意允许读取目录的凭证 | `false` | `false` |
+
 ## API 合约
 
 ### 请求
@@ -149,7 +182,12 @@ Authorization: Bearer <credential>
       "hostname": "2026q2-qbr.workers.xd.team",
       "url": "https://2026q2-qbr.workers.xd.team",
       "owner": {
-        "type": "user"
+        "type": "user",
+        "displayName": "张三",
+        "isCurrentUser": true
+      },
+      "permissions": {
+        "canDeploy": true
       },
       "visibility": "org",
       "createdAt": "2026-07-01T08:00:00.000Z",
@@ -176,7 +214,10 @@ Authorization: Bearer <credential>
 | `routingStatus` | 当前 slug 路由是否已收敛，`ready` 或 `pending` |
 | `hostname` | 当前 route canonical hostname，供列表展示 |
 | `url` | 使用 HTTPS 和当前 hostname 构造的绝对 URL |
-| `owner.type` | `user` 或 `team`；不返回 owner 身份信息 |
+| `owner.type` | `user` 或 `team` |
+| `owner.displayName` | 个人真实姓名或团队 canonical display name；没有安全展示名时为 `null`，不回退到邮箱、内部 ID 或部门路径 |
+| `owner.isCurrentUser` | 当前认证用户是否为该个人站点的直接 Owner；team-owned 站点始终为 `false` |
+| `permissions.canDeploy` | 当前请求凭证此刻是否通过既有站点的真实部署授权检查；部署入口仍会重新鉴权 |
 | `visibility` | 当前 route 的有效 visibility，不返回 default visibility |
 | `createdAt` | `sites.created_at` 的 ISO 8601 时间 |
 | `updatedAt` | `sites.updated_at` 与当前 route `updated_at` 中较晚的 ISO 8601 时间 |
@@ -190,6 +231,7 @@ Authorization: Bearer <credential>
 - 查询范围更宽，可包含非本人所有但当前可访问的站点；
 - 只返回当前有效 `visibility`；
 - 把 `hostname` 和 `url` 作为稳定导航字段；
+- 返回 Owner 展示名、直接归属标记和当前凭证部署能力，供 Cindy 展示归属及决定操作入口状态；
 - 保留 UI 所需的 `createdAt` / `updatedAt`；
 - 不返回管理、部署和 provider 内部字段。
 
@@ -250,13 +292,17 @@ OR (effective_updated_at = cursor.updatedAt AND sites.id < cursor.id)
 - 可选 keyset cursor；
 - `departmentAclEnabled`，默认 `false`；只有 handler 已确认部门路径新鲜或 hydration 成功时才传 `true`，查询也只有在该值为 `true` 时匹配 department ACL。
 
-查询只选择构造 Public Site 所需的站点、最新 route 和 owner type 字段。Owner/ACL 表只用于授权条件，不把 subject value、用户邮箱、部门路径、团队 ID 或成员信息返回 transport。
+查询只选择构造 Public Site 和计算请求能力所需的站点、最新 route、Owner 展示名、Owner ID 及当前用户对 Owner team 的有效角色。个人 Owner 名称通过 Owner user 关联读取 `realname`；团队名称使用现有 canonical team display name 所需字段。ACL 表只用于授权条件，不把 subject value、用户邮箱或部门路径返回 transport。
+
+Owner ID、当前用户的 team role 和 team display name 原始组成字段只存在于 Store 到 handler 的内部记录中，用于计算 `owner.isCurrentUser`、`permissions.canDeploy` 和安全展示名；Public response mapper 必须将它们全部裁掉。查询中的团队角色只接受未移除的 `publisher`/`admin` 作为部署能力，`viewer` 和未知角色均 fail closed。
 
 不直接复用 `listSitesForUser()`：该方法表达 owner/team 管理范围，不能覆盖 org/ACL 目录语义。不直接复用 Console transport；Public 与 Console 保持独立认证和 response mapper。
 
 ### Response mapper
 
-Public Site mapper 是独立的纯函数，并用精确字段测试锁定。它可以复用现有 `siteMetadataRoutingStatus()`，但不能展开完整 route 或 Console owner display projection。
+Public Site mapper 是独立的纯函数，并用精确字段测试锁定。它可以复用现有 `siteMetadataRoutingStatus()` 和 canonical team display name helper，但不能展开完整 route 或 Console owner display projection。
+
+Handler 使用认证阶段得到的完整 actor 和 Store 返回的内部站点记录调用 `actorCanDeploySite(actor, site, 'deploy:site')`，保证目录能力提示不宽于真实部署入口。`owner.isCurrentUser` 独立比较个人 Owner user ID 与 `actor.userId`，不得从 `canDeploy` 或 team role 推导。
 
 ## 错误语义
 
@@ -278,6 +324,7 @@ Public Site mapper 是独立的纯函数，并用精确字段测试锁定。它�
 `apps/pages-api/src/openapi.js` 新增：
 
 - `PublicSiteOwner`；
+- `PublicSitePermissions`；
 - `PublicSite`；
 - `PublicSitesPagination`；
 - `PublicSitesResponse`；
@@ -316,8 +363,11 @@ Public Site mapper 是独立的纯函数，并用精确字段测试锁定。它�
 ### 响应与信息披露
 
 - 精确断言 Public Site 字段和 `updatedAt` 取 site/route 较晚时间。
-- 用户 Owner 与团队 Owner 都只返回 `owner.type`。
-- 响应不包含 `route`、owner ID/email、ACL、active version、runtime、provider、dispatch、policy/generation、cache tier、token 或 deletedAt。
+- 用户 Owner 返回真实姓名，团队 Owner 返回 canonical team display name；缺少安全展示名时返回 `null`，不得回退到邮箱、内部 ID 或部门路径。
+- 个人 Owner 本人返回 `owner.isCurrentUser = true`；团队成员和其它可访问者返回 `false`，team-owned 站点始终返回 `false`。
+- Cindy/CLI 的个人 Owner、团队 publisher/admin 按真实部署授权返回 `permissions.canDeploy = true`；团队 viewer、仅 visibility/ACL 可访问者和 read-only Access Key 返回 `false`。
+- 使用 read-only Access Key 请求自己的个人站点时，精确断言 `owner.isCurrentUser = true` 且 `permissions.canDeploy = false`。
+- 响应不包含 `route`、owner ID/email、team role、ACL、active version、runtime、provider、dispatch、policy/generation、cache tier、token 或 deletedAt。
 - `hostname` / `url`、`visibility`、`routingStatus` 与当前 route 一致。
 
 ### 分页
@@ -338,6 +388,8 @@ Public Site mapper 是独立的纯函数，并用精确字段测试锁定。它�
 ## 风险与回滚
 
 - **目录枚举扩大**：通过 active 用户认证、read scope、人类 owner 限制、site/team key 拒绝和最小字段投影控制。
+- **Owner 个人信息披露**：只向已认证且有权发现该站点的 active 用户返回真实姓名或团队展示名；不返回邮箱、内部 ID、部门路径或成员信息，缺少安全展示名时返回 `null`。
+- **能力提示陈旧或被误当授权**：`canDeploy` 使用真实部署授权 helper 计算，但只作为 UI 提示；部署入口始终重新鉴权并读取最新 Owner、scope 和团队角色。
 - **ACL fail-open**：只使用权威用户表的邮箱/部门路径，department hydration 失败时不返回部门 ACL 站点。
 - **控制面字段泄漏**：Public Site 使用独立 mapper 和精确否定字段测试，不复用 `/sites` 完整对象。
 - **分页不稳定**：使用与响应一致的 effective updatedAt 和 ID keyset，不使用 offset。
