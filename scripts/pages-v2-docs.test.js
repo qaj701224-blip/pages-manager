@@ -63,7 +63,12 @@ test('Console architecture separates its directory lane from Cindy Public Sites'
   assert.match(doc, /Cindy connection assertion、CLI 登录凭证或合格的个人 read key/);
   assert.match(doc, /不提供匿名目录/);
   assert.match(doc, /active-only minimal projection/);
-  assert.match(doc, /只返回 `owner\.type`[^\n]*不返回 owner identity、ACL、route\/version、runtime 或 provider metadata/);
+  assert.match(doc, /Owner 安全展示名[^\n]*个人直接归属标记[^\n]*point-in-time `permissions\.canDeploy`/);
+  assert.match(doc, /`permissions\.canDeploy`[^\n]*当前请求凭证[^\n]*部署入口[^\n]*重新鉴权/);
+  assert.match(
+    doc,
+    /不返回 Owner 邮箱、内部 user\/team ID、部门路径、team role、ACL、route\/version、runtime 或 provider metadata/
+  );
   assert.match(doc, /`public`[^\n]*API lane[^\n]*不是 `exposure=public`/);
   assert.match(doc, /Console 内部匿名目录能力[^\n]*active user Bearer 要求/);
   assert.doesNotMatch(doc, /未登录时[^\n]*active `internal` 站点/);

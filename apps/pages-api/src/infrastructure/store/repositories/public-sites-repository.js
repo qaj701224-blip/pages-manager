@@ -9,6 +9,16 @@ const PUBLIC_SITES_CTE = `WITH public_sites AS (
     sites.slug_routing_synced_revision,
     sites.environment,
     COALESCE(sites.owner_type, 'user') AS owner_type,
+    sites.owner_id,
+    sites.owner_user_id,
+    owner_users.realname AS owner_user_realname,
+    owner_teams.name AS owner_team_name,
+    owner_teams.team_type AS owner_team_type,
+    owner_teams.department_path AS owner_team_department_path,
+    CASE
+      WHEN owner_members.role IN ('publisher', 'admin') THEN owner_members.role
+      ELSE NULL
+    END AS management_role,
     route.hostname AS route_hostname,
     route.visibility AS route_visibility,
     sites.created_at,
@@ -19,6 +29,20 @@ const PUBLIC_SITES_CTE = `WITH public_sites AS (
   JOIN users AS viewer_users
     ON viewer_users.user_id = ?
    AND viewer_users.employee_status = 'active'
+  LEFT JOIN users AS owner_users
+    ON COALESCE(sites.owner_type, 'user') = 'user'
+   AND owner_users.user_id = COALESCE(sites.owner_id, sites.owner_user_id)
+  LEFT JOIN teams AS owner_teams
+    ON sites.owner_type = 'team'
+   AND owner_teams.id = sites.owner_id
+   AND owner_teams.environment = sites.environment
+   AND owner_teams.status = 'active'
+   AND owner_teams.deleted_at IS NULL
+  LEFT JOIN team_members AS owner_members
+    ON sites.owner_type = 'team'
+   AND owner_members.team_id = sites.owner_id
+   AND owner_members.user_id = viewer_users.user_id
+   AND owner_members.removed_at IS NULL
   JOIN site_routes AS route ON route.id = (
     SELECT latest.id FROM site_routes AS latest INDEXED BY idx_site_routes_site_id
     WHERE latest.site_id = sites.id AND latest.environment = sites.environment
@@ -34,13 +58,7 @@ const PUBLIC_SITES_CTE = `WITH public_sites AS (
     AND COALESCE(sites.owner_type, 'user') IN ('user', 'team')
     AND (
       COALESCE(sites.owner_type, 'user') = 'user'
-      OR EXISTS (
-        SELECT 1 FROM teams AS owner_team
-        WHERE owner_team.id = sites.owner_id
-          AND owner_team.environment = sites.environment
-          AND owner_team.status = 'active'
-          AND owner_team.deleted_at IS NULL
-      )
+      OR owner_teams.id IS NOT NULL
     )
     AND (
       (
@@ -51,13 +69,7 @@ const PUBLIC_SITES_CTE = `WITH public_sites AS (
       OR (
         sites.owner_type = 'team'
         AND route.visibility IN ('internal', 'org', 'acl')
-        AND EXISTS (
-          SELECT 1 FROM team_members AS viewer_team_member
-          WHERE viewer_team_member.team_id = sites.owner_id
-            AND viewer_team_member.user_id = viewer_users.user_id
-            AND viewer_team_member.role IN ('viewer', 'publisher', 'admin')
-            AND viewer_team_member.removed_at IS NULL
-        )
+        AND owner_members.role IN ('viewer', 'publisher', 'admin')
       )
       OR (
         route.visibility = 'acl'
@@ -91,7 +103,9 @@ const PUBLIC_SITES_CTE = `WITH public_sites AS (
 )`;
 
 const PUBLIC_SITE_COLUMNS = `id, title, slug, slug_revision, slug_routing_synced_revision,
-  environment, owner_type, route_hostname, route_visibility, created_at, effective_updated_at`;
+  environment, owner_type, owner_id, owner_user_id, owner_user_realname,
+  owner_team_name, owner_team_type, owner_team_department_path, management_role,
+  route_hostname, route_visibility, created_at, effective_updated_at`;
 
 const LIST_PUBLIC_SITES_SQL = `${PUBLIC_SITES_CTE}
 SELECT ${PUBLIC_SITE_COLUMNS}
