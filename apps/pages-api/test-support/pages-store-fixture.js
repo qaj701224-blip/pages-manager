@@ -51,6 +51,7 @@ export async function updateTestSite(store, siteId, patch) {
     deletedAt: 'deleted_at',
     executionModeOverride: 'execution_mode_override',
     slugRevision: 'slug_revision',
+    updatedAt: 'updated_at',
   };
   await updateTestRecord(store, 'sites', siteId, patch, columns);
 }
@@ -114,6 +115,45 @@ export async function updateTestRoute(store, routeId, patch) {
   await databaseFor(store)
     .prepare(`UPDATE site_routes SET ${updates.join(', ')} WHERE id = ?`)
     .bind(...values, routeId)
+    .run();
+}
+
+export async function insertTestRoute(store, route) {
+  await databaseFor(store)
+    .prepare(
+      `INSERT INTO site_routes (
+        id, hostname, site_id, environment, runtime, execution_provider, worker_name,
+        dispatch_type, dispatch_binding_name, slot_id, active_version_id, visibility,
+        exposure, access_mode, policy_version, route_generation, runtime_config_generation,
+        runtime_config_lock_id, runtime_config_lock_expires_at, route_status, cache_tier,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .bind(
+      route.id,
+      route.hostname,
+      route.siteId,
+      route.environment,
+      route.runtime,
+      route.executionProvider ?? null,
+      route.workerName ?? null,
+      route.dispatchType ?? null,
+      route.dispatchBindingName ?? null,
+      route.slotId ?? null,
+      route.activeVersionId ?? null,
+      route.visibility,
+      route.exposure,
+      route.accessMode ?? null,
+      route.policyVersion,
+      route.routeGeneration,
+      route.runtimeConfigGeneration,
+      route.runtimeConfigLockId ?? null,
+      route.runtimeConfigLockExpiresAt ?? null,
+      route.routeStatus,
+      route.cacheTier,
+      route.createdAt,
+      route.updatedAt
+    )
     .run();
 }
 

@@ -4,14 +4,18 @@ export const accessKeysRepositoryMethods = {
   async createAccessKey(input) {
     if ('plaintext' in input) throw new Error('ACCESS_KEY_PLAINTEXT_FORBIDDEN');
     const now = this.now();
-    const ownerType = input.ownerType || 'user';
-    const ownerId = input.ownerId || input.ownerUserId;
+    const ownerType = input.ownerType ?? 'user';
+    const ownerId = input.ownerId ?? input.ownerUserId;
+    const ownerUserId = input.ownerUserId || (ownerType === 'user' ? ownerId : input.createdByUserId);
     const record = {
       id: input.id,
       environment: input.environment || null,
       ownerType,
       ownerId,
-      ownerUserId: input.ownerUserId || (ownerType === 'user' ? ownerId : input.createdByUserId),
+      ownerUserId,
+      storedOwnerType: ownerType,
+      storedOwnerId: ownerId,
+      storedOwnerUserId: ownerUserId,
       createdByUserId: input.createdByUserId || input.ownerUserId || (ownerType === 'user' ? ownerId : null),
       keyHash: input.keyHash,
       pepperId: input.pepperId,
@@ -24,7 +28,7 @@ export const accessKeysRepositoryMethods = {
       revokedByUserId: null,
       revokedReason: null,
       createdAt: now,
-      issuedSource: input.issuedSource || 'legacy',
+      issuedSource: input.issuedSource ?? 'legacy',
       issuedSessionVersion: input.issuedSessionVersion ?? null,
     };
     await this.accessKeyInsertStatement(record).run();

@@ -6,6 +6,7 @@ import { createDeploymentTraceContext, recordDeploymentStage, withDeploymentTrac
 import { jsonError, jsonOk } from '../http.js';
 import { handleInternalApi } from '../internal.js';
 import { buildReadme, buildSkill, markdownResponse } from '../public-docs.js';
+import { handlePublicSitesApi } from './public/public-sites-handler.js';
 import { handleSitesApi } from './public/sites-handler.js';
 import { handleConsoleTeamsApi, handleTeamsApi } from '../teams.js';
 import { handleWhoamiApi } from '../whoami.js';
@@ -78,6 +79,12 @@ export function createPagesApiRouter({ createStore }) {
 
       const response = await handleWhoamiApi(request, env, config, store);
       if (response) return response;
+    }
+
+    if (url.pathname === '/.xd-pages/api/public/sites') {
+      const store = readStore(context);
+      if (!store) return storeUnavailableResponse();
+      return handlePublicSitesApi(request, env, config, store);
     }
 
     if (url.pathname.startsWith('/.xd-pages/api/sites')) {

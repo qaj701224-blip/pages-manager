@@ -436,6 +436,118 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
   assert.doesNotMatch(serialized, /CLOUDFLARE|client_secret|zone_id|account_id/i);
 });
 
+test('documents the authenticated Public Sites directory contract', () => {
+  const body = buildOpenApi({
+    environment: 'production',
+    apiBaseUrl: 'https://api.pages.xd.team',
+    authBaseUrl: 'https://auth.pages.xd.team',
+    siteDomainSuffix: 'pages.xd.team',
+  });
+  const schemas = body.components.schemas;
+  const operation = body.paths['/.xd-pages/api/public/sites'].get;
+
+  for (const name of ['PublicSiteOwner', 'PublicSitePermissions', 'PublicSite', 'PublicSitesPagination', 'PublicSitesResponse']) {
+    assert.equal(schemas[name].additionalProperties, false, `${name} rejects additional properties`);
+  }
+  assert.deepEqual(schemas.PublicSiteOwner.required, ['type', 'displayName', 'isCurrentUser']);
+  assert.deepEqual(Object.keys(schemas.PublicSiteOwner.properties), schemas.PublicSiteOwner.required);
+  assert.deepEqual(schemas.PublicSiteOwner.properties.type.enum, ['user', 'team']);
+  assert.deepEqual(schemas.PublicSiteOwner.properties.displayName.type, ['string', 'null']);
+  assert.equal(schemas.PublicSiteOwner.properties.isCurrentUser.type, 'boolean');
+  assert.match(
+    schemas.PublicSiteOwner.properties.displayName.description,
+    /derived department-team leaf name[\s\S]*never returns a full department path/i
+  );
+  assert.match(schemas.PublicSiteOwner.properties.isCurrentUser.description, /direct personal owner/);
+  assert.deepEqual(schemas.PublicSitePermissions.required, ['canDeploy']);
+  assert.deepEqual(Object.keys(schemas.PublicSitePermissions.properties), ['canDeploy']);
+  assert.equal(schemas.PublicSitePermissions.properties.canDeploy.type, 'boolean');
+  assert.match(schemas.PublicSitePermissions.properties.canDeploy.description, /Point-in-time hint/);
+  assert.match(schemas.PublicSitePermissions.properties.canDeploy.description, /re-authorize/);
+  const publicSiteFields = [
+    'id',
+    'title',
+    'displayName',
+    'slug',
+    'environment',
+    'routingStatus',
+    'hostname',
+    'url',
+    'owner',
+    'permissions',
+    'visibility',
+    'createdAt',
+    'updatedAt',
+  ].sort();
+  const requiredPublicSiteFields = [...schemas.PublicSite.required].sort();
+  const publicSiteProperties = Object.keys(schemas.PublicSite.properties).sort();
+  assert.deepEqual(requiredPublicSiteFields, publicSiteFields);
+  assert.deepEqual(publicSiteProperties, publicSiteFields);
+  assert.deepEqual(requiredPublicSiteFields, publicSiteProperties);
+  assert.deepEqual(schemas.PublicSite.properties.permissions, {
+    $ref: '#/components/schemas/PublicSitePermissions',
+  });
+  assert.deepEqual(schemas.PublicSite.properties.environment.enum, ['production', 'staging', 'local']);
+  assert.deepEqual(schemas.PublicSite.properties.routingStatus.enum, ['ready', 'pending']);
+  assert.deepEqual(schemas.PublicSite.properties.visibility.enum, ['internal', 'org', 'acl', 'owner']);
+  assert.equal(schemas.PublicSite.properties.url.format, 'uri');
+  assert.equal(schemas.PublicSite.properties.createdAt.format, 'date-time');
+  assert.equal(schemas.PublicSite.properties.updatedAt.format, 'date-time');
+  assert.deepEqual(schemas.PublicSitesPagination.required, ['nextCursor']);
+  assert.deepEqual(schemas.PublicSitesPagination.properties.nextCursor, {
+    type: ['string', 'null'],
+    maxLength: 2048,
+  });
+  assert.deepEqual(schemas.PublicSitesResponse.required, ['sites', 'pagination']);
+
+  assert.equal(operation.security, undefined);
+  assert.deepEqual(body.security, [{ bearerAuth: [] }]);
+  assert.match(operation.description, /Authenticated Public Sites directory/);
+  assert.match(operation.description, /current API Worker environment/);
+  assert.match(operation.description, /does not mean anonymous access or exposure=public/);
+  assert.match(operation.description, /Cindy connection assertions/);
+  assert.match(operation.description, /CLI login credentials/);
+  assert.match(operation.description, /personal access keys with read:site or \*/);
+  assert.match(operation.description, /Deploy-only, team-owned, and site-scoped keys are forbidden/);
+  assert.match(operation.description, /Repeated or unknown query parameters return 400/);
+
+  const limit = operation.parameters.find((parameter) => parameter.name === 'limit');
+  assert.deepEqual(limit.schema, { type: 'integer', minimum: 1, maximum: 100, default: 50 });
+  const cursor = operation.parameters.find((parameter) => parameter.name === 'cursor');
+  assert.deepEqual(cursor.schema, {
+    type: 'string',
+    minLength: 1,
+    maxLength: 2048,
+    pattern: '^[A-Za-z0-9_-]+$',
+  });
+  assert.equal(operation.responses[200].content['application/json'].schema.$ref, '#/components/schemas/PublicSitesResponse');
+  assert.deepEqual(Object.keys(operation.responses).map(Number), [200, 400, 401, 403, 405, 409, 500, 503]);
+  for (const status of [400, 401, 403, 405, 409, 500, 503]) {
+    assert.deepEqual(operation.responses[status].content, {
+      'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } },
+    });
+  }
+  assert.deepEqual(operation['x-error-codes'], [
+    'LEGACY_TOKEN_UNSUPPORTED',
+    'PUBLIC_SITES_QUERY_INVALID',
+    'PAGES_AUTH_REQUIRED',
+    'CLI_TOKEN_INVALID',
+    'ACCESS_KEY_INVALID',
+    'ACCESS_KEY_REVOKED',
+    'ACCESS_KEY_EXPIRED',
+    'ACCESS_KEY_SESSION_STALE',
+    'CONNECTION_ASSERTION_INVALID',
+    'PAGES_USER_INACTIVE',
+    'ACCESS_KEY_OWNER_INACTIVE',
+    'PUBLIC_SITES_FORBIDDEN',
+    'CONNECTION_IDENTITY_CONFLICT',
+    'METHOD_NOT_ALLOWED',
+    'API_STORE_UNAVAILABLE',
+    'CONNECTION_KEYS_UNAVAILABLE',
+    'PUBLIC_SITES_UNAVAILABLE',
+  ]);
+});
+
 test('does not serve OpenAPI as public pages-api routes', async () => {
   for (const path of ['/openapi.json', '/.xd-pages/api/openapi.json']) {
     const publicResponse = await worker.fetch(new Request(`https://api.pages.xd.team${path}`), {

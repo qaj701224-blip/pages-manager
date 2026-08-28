@@ -459,6 +459,28 @@ test('public CLI API authenticates requests outside the configured IP allowlist'
   assert.deepEqual(await response.json(), { sites: [] });
 });
 
+test('Public Sites ignores forged Console BFF identity headers and still requires Bearer authentication', async (t) => {
+  const store = createTestPagesStore({ now: () => '2026-08-27T12:00:00.000Z' });
+  const headers = {
+    'X-Console-BFF': 'pages-console',
+    'X-Console-User-Id': 'usr_forged',
+    'X-Console-Email': 'forged@example.com',
+    'X-Console-Session-Version': '1',
+  };
+
+  for (const host of ['api.pages.xd.team', 'pages-api.internal']) {
+    await t.test(host, async () => {
+      const response = await worker.fetch(new Request(`https://${host}/.xd-pages/api/public/sites`, { headers }), {
+        PAGES_ENV: 'production',
+        PAGES_STORE: store,
+      });
+
+      assert.equal(response.status, 401);
+      assert.equal((await response.json()).error.code, 'PAGES_AUTH_REQUIRED');
+    });
+  }
+});
+
 test('every OpenAPI management operation reaches API authentication outside the configured IP allowlist', async (t) => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   const openApi = buildOpenApi({
