@@ -15,6 +15,16 @@
 - v1 `apps/server` 已进入墓碑模式；除精确的 `GET/HEAD /health` 外，`/deploy`、`/list`、`/site/:name`、`/openapi.json`、Markdown 路由和未知路径都返回 `410 LEGACY_API_RETIRED`，不再提供旧 OpenAPI 或管理能力。
 - Cindy 客户端使用 `xd-sites` 插件；若找不到插件，先更新 Cindy 客户端。非 Cindy 客户端使用 `https://skills.xindong.com/skills/xd-cell` 的 skill。
 
+## Public Sites 目录边界
+
+Public Sites 是必须认证的站点发现目录；这里的 `public` 表示 Public API lane，不表示匿名访问，也不等于站点网络策略中的 `exposure=public`。目录固定查询当前 API Worker 环境，不接受客户端选择其它环境；目录项仍可能受到 Router 的公司网络或 VPN 门禁。
+
+目录只接受具备 active 人类用户上下文和 `read:site` 能力的 Cindy connection assertion、CLI 登录凭证，以及未绑定单站点的个人 Access Key。仅含 `deploy:site` 的 key、Team Access Key 和 site-scoped key 均不得枚举目录。服务端以 `users`、团队成员关系和部门 hydration 结果作为身份与部门真相源，不信任 Cindy assertion 附带的 role、department 或 identities claim。
+
+结果只包含当前环境中未删除、latest route 为 active、存在 active version，且当前用户拥有或按有效团队关系、`internal`、`org`、email/department ACL 可访问的站点；失效 Owner、`disabled` 或未知 visibility 一律 fail closed。Public Sites 使用 active-only minimal projection，只提供展示、导航和更新时间所需字段；`owner` 只暴露 `type=user|team`，不返回 owner identity、ACL 条目、route/version、runtime、provider、dispatch、generation、cache tier 或 capability metadata。
+
+该目录不会让 OpenAPI 变成公开 HTTP 入口；`apps/pages-api/src/openapi.js` 仍只是开发期合约源码，服务实现、测试和受控内部集成。
+
 ## 站点名称与 URL
 
 - 认证 Public API 使用 `PATCH /.xd-pages/api/sites/{id}/metadata` 独立修改可选展示名称 `title` 或 canonical URL `slug`；Workspace Console 与 Admin Console 复用同一 application use case 和输入校验，但三个入口分别执行自己的授权边界。

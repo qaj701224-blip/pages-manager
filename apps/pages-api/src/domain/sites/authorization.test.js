@@ -4,12 +4,114 @@ import test from 'node:test';
 import {
   actorCanDeploySite,
   actorCanManageSite,
+  actorCanReadPublicSites,
   actorCanTransferSiteOwnership,
   actorCanReadSite,
   actorCanReadSitesApi,
   viewerCanAdminSite,
   viewerCanPublishSite,
 } from './authorization.js';
+
+test('public sites capability requires a user-backed directory reader', () => {
+  const cases = [
+    {
+      name: 'CLI user actor',
+      actor: { type: 'user', userId: 'usr_1' },
+      expected: true,
+    },
+    {
+      name: 'Cindy-like personal access key',
+      actor: {
+        type: 'access_key',
+        userId: 'usr_1',
+        ownerType: 'user',
+        siteId: null,
+        scopes: ['read:site'],
+        source: 'cindy_connection',
+      },
+      expected: true,
+    },
+    {
+      name: 'unscoped personal read key',
+      actor: { type: 'access_key', userId: 'usr_1', scopes: ['read:site'] },
+      expected: true,
+    },
+    {
+      name: 'unscoped personal wildcard key',
+      actor: { type: 'access_key', userId: 'usr_1', ownerType: 'user', scopes: ['*'] },
+      expected: true,
+    },
+    {
+      name: 'personal key with null owner type',
+      actor: { type: 'access_key', userId: 'usr_1', ownerType: null, scopes: ['read:site'] },
+      expected: true,
+    },
+    {
+      name: 'deploy-only key',
+      actor: { type: 'access_key', userId: 'usr_1', scopes: ['deploy:site'] },
+      expected: false,
+    },
+    {
+      name: 'team-owned key',
+      actor: { type: 'access_key', userId: 'usr_1', ownerType: 'team', scopes: ['read:site'] },
+      expected: false,
+    },
+    {
+      name: 'key with unknown owner type',
+      actor: { type: 'access_key', userId: 'usr_1', ownerType: 'organization', scopes: ['read:site'] },
+      expected: false,
+    },
+    {
+      name: 'key with empty owner type',
+      actor: { type: 'access_key', userId: 'usr_1', ownerType: '', scopes: ['read:site'] },
+      expected: false,
+    },
+    {
+      name: 'site-scoped key',
+      actor: { type: 'access_key', userId: 'usr_1', siteId: 'site_1', scopes: ['read:site'] },
+      expected: false,
+    },
+    ...['', 0, false].map((siteId) => ({
+      name: `key with malformed falsey siteId ${JSON.stringify(siteId)}`,
+      actor: { type: 'access_key', userId: 'usr_1', siteId, scopes: ['read:site'] },
+      expected: false,
+    })),
+    {
+      name: 'unknown actor type',
+      actor: { type: 'service', userId: 'usr_1' },
+      expected: false,
+    },
+    {
+      name: 'missing actor type',
+      actor: { userId: 'usr_1' },
+      expected: false,
+    },
+    {
+      name: 'actor without userId',
+      actor: { type: 'user' },
+      expected: false,
+    },
+    {
+      name: 'actor with blank userId',
+      actor: { type: 'user', userId: '  ' },
+      expected: false,
+    },
+    {
+      name: 'unknown actor',
+      actor: undefined,
+      expected: false,
+    },
+    {
+      name: 'null actor',
+      actor: null,
+      expected: false,
+    },
+  ];
+
+  for (const { name, actor, expected } of cases) {
+    assert.equal(actorCanReadPublicSites(actor), expected, name);
+  }
+});
 
 test('site management respects owner, team role, scope, and site boundaries', () => {
   const personal = { id: 'site_1', ownerType: 'user', ownerId: 'usr_1', ownerUserId: 'usr_1' };

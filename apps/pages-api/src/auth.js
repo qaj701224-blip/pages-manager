@@ -1,13 +1,10 @@
-import {
-  isConnectionAssertionCandidate,
-  readConnectionAuthConfig,
-  verifyConnectionAssertion,
-} from './connection-assertion.js';
+import { isConnectionAssertionCandidate, readConnectionAuthConfig, verifyConnectionAssertion } from './connection-assertion.js';
 import { constantTimeEqualHex, hashAccessKey, parseAccessKeyPlaintext } from './crypto.js';
 import { nextId } from './id.js';
 import { readAccessKeyPepper } from './infrastructure/config/identity-config.js';
 
 const CONNECTION_ACTOR_SCOPES = ['deploy:site', 'read:site', 'rollback:site'];
+const SUPPORTED_ACCESS_KEY_SCOPES = new Set(CONNECTION_ACTOR_SCOPES);
 
 export async function authenticateApiRequest(request, env, store, config, now = new Date().toISOString()) {
   if (request.headers.has('X-Pages-Token')) {
@@ -77,10 +74,16 @@ async function authenticateAccessKey(plaintext, parts, env, store, config, now) 
     return authError('ACCESS_KEY_INVALID', 'Access key is invalid.', 401, 'Check the configured access key.');
   }
 
-  const ownerType = accessKey.ownerType || 'user';
-  if (ownerType === 'team') return authenticateTeamAccessKey(accessKey, store, now);
+  const owner = resolveStoredAccessKeyOwner(accessKey);
+  if (!owner || !hasValidAccessKeyScopes(accessKey, owner)) {
+    return authError('ACCESS_KEY_INVALID', 'Access key is invalid.', 401, 'Check the configured access key.');
+  }
+  if (accessKey.issuedSource === 'cli_login' && !isValidCliLoginAccessKey(accessKey, owner.ownerType)) {
+    return authError('ACCESS_KEY_INVALID', 'Access key is invalid.', 401, 'Check the configured access key.');
+  }
+  if (owner.ownerType === 'team') return authenticateTeamAccessKey(accessKey, owner.ownerId, store, now);
 
-  const ownerUserId = accessKey.ownerId || accessKey.ownerUserId;
+  const ownerUserId = owner.ownerId;
   const user = await store.getUser(ownerUserId);
   if (!user || user.employeeStatus !== 'active') {
     return authError('PAGES_USER_INACTIVE', 'User is not active.', 403, 'Contact the Pages platform owner.');
@@ -116,8 +119,58 @@ async function authenticateAccessKey(plaintext, parts, env, store, config, now) 
   };
 }
 
-async function authenticateTeamAccessKey(accessKey, store, now) {
-  const team = typeof store.getTeam === 'function' ? await store.getTeam(accessKey.ownerId) : null;
+function resolveStoredAccessKeyOwner(accessKey) {
+  const storedOwnerType = accessKey.storedOwnerType;
+  const storedOwnerId = accessKey.storedOwnerId;
+  const storedOwnerUserId = accessKey.storedOwnerUserId;
+
+  if (storedOwnerType === 'team') {
+    return isNonBlankString(storedOwnerId) ? { ownerType: 'team', ownerId: storedOwnerId } : null;
+  }
+  if (storedOwnerType === 'user') {
+    return isNonBlankString(storedOwnerId) && storedOwnerId === storedOwnerUserId
+      ? { ownerType: 'user', ownerId: storedOwnerId }
+      : null;
+  }
+  if (
+    storedOwnerType == null &&
+    storedOwnerId == null &&
+    accessKey.issuedSource === 'legacy' &&
+    isNonBlankString(storedOwnerUserId)
+  ) {
+    return { ownerType: 'user', ownerId: storedOwnerUserId };
+  }
+  return null;
+}
+
+function hasValidAccessKeyScopes(accessKey, owner) {
+  if (!Array.isArray(accessKey.scopes) || accessKey.scopes.length === 0) return false;
+  if (accessKey.issuedSource === 'cli_login') {
+    return accessKey.scopes.length === 1 && accessKey.scopes[0] === '*';
+  }
+  if (accessKey.scopes.includes('*')) {
+    return owner.ownerType === 'user' && accessKey.siteId == null && accessKey.scopes.length === 1;
+  }
+  // The creation API historically allowed duplicate supported scopes. They do not expand authority,
+  // so authentication preserves those existing credentials while rejecting every unsupported value.
+  return accessKey.scopes.every((scope) => typeof scope === 'string' && SUPPORTED_ACCESS_KEY_SCOPES.has(scope));
+}
+
+function isValidCliLoginAccessKey(accessKey, ownerType) {
+  return (
+    ownerType === 'user' &&
+    accessKey.siteId == null &&
+    Number.isInteger(accessKey.issuedSessionVersion) &&
+    accessKey.issuedSessionVersion > 0
+  );
+}
+
+function isNonBlankString(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+async function authenticateTeamAccessKey(accessKey, ownerId, store, now) {
+  const team = typeof store.getTeam === 'function' ? await store.getTeam(ownerId) : null;
   if (!team) {
     return authError('ACCESS_KEY_OWNER_INACTIVE', 'Access key owner is inactive.', 403, 'Ask a team admin to create a new key.');
   }
@@ -134,7 +187,7 @@ async function authenticateTeamAccessKey(accessKey, store, now) {
       name: team.name || null,
       tokenId: accessKey.id,
       ownerType: 'team',
-      ownerId: accessKey.ownerId,
+      ownerId,
       scopes: [...accessKey.scopes],
       siteId: accessKey.siteId,
       source: 'access_key',

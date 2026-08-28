@@ -67,6 +67,9 @@ test('creates a site-scoped access key and returns plaintext only once', async (
   assert.equal(body.accessKey.issuedSource, 'cli');
   assert.equal(body.accessKey.issuedSessionVersion, undefined);
   assert.equal(body.accessKey.keyHash, undefined);
+  assert.equal(body.accessKey.storedOwnerType, undefined);
+  assert.equal(body.accessKey.storedOwnerId, undefined);
+  assert.equal(body.accessKey.storedOwnerUserId, undefined);
 
   const stored = await store.getAccessKeyById('ak_1');
   assert.equal(stored.keyHash.length, 64);
@@ -81,6 +84,9 @@ test('creates a site-scoped access key and returns plaintext only once', async (
   assert.equal(listed.issuedSessionVersion, undefined);
   assert.equal(listed.plaintext, undefined);
   assert.equal(listed.keyHash, undefined);
+  assert.equal(listed.storedOwnerType, undefined);
+  assert.equal(listed.storedOwnerId, undefined);
+  assert.equal(listed.storedOwnerUserId, undefined);
 });
 
 test('revokes access keys without returning plaintext or hash', async () => {

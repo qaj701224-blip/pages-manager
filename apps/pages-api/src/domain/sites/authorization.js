@@ -44,6 +44,15 @@ export function actorCanDeploySite(actor, site, requiredScope) {
   return (site.ownerId || site.ownerUserId) === ownerId;
 }
 
+export function actorCanReadPublicSites(actor) {
+  if (!actor || typeof actor.userId !== 'string' || !actor.userId.trim()) return false;
+  if (actor.type === 'user') return true;
+  if (actor.type !== 'access_key') return false;
+  if ((actor.ownerType != null && actor.ownerType !== 'user') || actor.siteId != null) return false;
+  const scopes = Array.isArray(actor.scopes) ? actor.scopes : [];
+  return scopes.includes('read:site') || scopes.includes('*');
+}
+
 export function actorCanReadSite(actor, site) {
   if (actor.type !== 'access_key') return true;
   if (!actor.scopes.includes('read:site')) return false;

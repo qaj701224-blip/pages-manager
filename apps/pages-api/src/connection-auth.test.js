@@ -317,6 +317,97 @@ test('connection actors cannot list or create access keys', async () => {
   assert.equal((await create.json()).error.code, 'ACCESS_KEY_CREATE_FORBIDDEN');
 });
 
+test('Cindy connection assertion lists Public Sites with the mapped authoritative user context', async () => {
+  const store = createTestPagesStore({ now: () => NOW_ISO });
+  await store.createUser({
+    userId: 'usr_directory_viewer',
+    email: 'someone@xd.com',
+    realname: 'Directory Viewer',
+    employeeStatus: 'active',
+    departmentPath: '心动/权威部门',
+    departmentCheckedAt: NOW_ISO,
+    cindyMembershipId: 'mem_1',
+  });
+  await store.createUser({
+    userId: 'usr_directory_owner',
+    email: 'directory-owner@xd.com',
+    employeeStatus: 'active',
+  });
+  await seedActiveConnectionSite(store, {
+    id: 'site_cindy_directory',
+    slug: 'cindy-directory',
+    ownerUserId: 'usr_directory_owner',
+    visibility: 'org',
+  });
+  await seedActiveConnectionSite(store, {
+    id: 'site_asserted_role_trap',
+    slug: 'asserted-role-trap',
+    ownerUserId: 'usr_directory_owner',
+    visibility: 'owner',
+  });
+  await seedActiveConnectionSite(store, {
+    id: 'site_asserted_department_trap',
+    slug: 'asserted-department-trap',
+    ownerUserId: 'usr_directory_owner',
+    visibility: 'acl',
+  });
+  await store.addSiteAclEntries(
+    'site_asserted_department_trap',
+    [
+      {
+        id: 'acl_asserted_department',
+        subjectType: 'department',
+        subjectValue: '心动/断言伪造部门',
+        accessRole: 'viewer',
+        effect: 'allow',
+      },
+    ],
+    { createdBy: 'usr_directory_owner', updatedAt: NOW_ISO },
+    'staging'
+  );
+
+  let directoryViewerUserId = null;
+  const listPublicSitesForUser = store.listPublicSitesForUser.bind(store);
+  store.listPublicSitesForUser = async (input) => {
+    directoryViewerUserId = input.viewerUserId;
+    return listPublicSitesForUser(input);
+  };
+
+  const response = await worker.fetch(
+    bearerRequest(
+      await signAssertion({
+        role: 'platform_admin',
+        departmentPath: '心动/断言伪造部门',
+      }),
+      { pathname: '/.xd-pages/api/public/sites' }
+    ),
+    await connectionEnv({ PAGES_ENV: 'staging', PAGES_STORE: store })
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.equal(directoryViewerUserId, 'usr_directory_viewer');
+  assert.deepEqual(await response.json(), {
+    sites: [
+      {
+        id: 'site_cindy_directory',
+        title: null,
+        displayName: 'cindy-directory',
+        slug: 'cindy-directory',
+        environment: 'staging',
+        routingStatus: 'ready',
+        hostname: 'cindy-directory-staging.workers.xd.team',
+        url: 'https://cindy-directory-staging.workers.xd.team',
+        owner: { type: 'user' },
+        visibility: 'org',
+        createdAt: NOW_ISO,
+        updatedAt: NOW_ISO,
+      },
+    ],
+    pagination: { nextCursor: null },
+  });
+  assert.equal((await store.getUser('usr_directory_viewer')).departmentPath, '心动/权威部门');
+});
+
 test('connection JWT follows public owner transfer rules for personal owners and source team roles', async () => {
   const store = createTestPagesStore({ now: () => NOW_ISO });
   await store.createUser({
@@ -490,6 +581,43 @@ async function seedConnectionSite(store, { id, slug, ownerType, ownerId, ownerUs
     routeId: `route_${id}`,
     hostname: `${slug}-staging.workers.xd.team`,
   });
+}
+
+async function seedActiveConnectionSite(store, { id, slug, ownerUserId, visibility }) {
+  await seedConnectionSite(store, {
+    id,
+    slug,
+    ownerType: 'user',
+    ownerId: ownerUserId,
+    ownerUserId,
+  });
+  const versionId = `ver_${id}`;
+  const workerName = `worker-${slug}`;
+  await store.createSiteVersion({
+    id: versionId,
+    siteId: id,
+    deploymentId: `dep_${id}`,
+    workerName,
+    runtime: 'wfp',
+    artifactRef: `wfp://test/${workerName}`,
+    contentHash: `sha256:${id}`,
+    deploymentShape: 'worker-only',
+    requestedFallback: 'auto',
+    resolvedFallback: null,
+    routingMode: 'worker-only',
+    createdBy: ownerUserId,
+  });
+  await store.activateSiteVersion(
+    id,
+    {
+      activeVersionId: versionId,
+      workerName,
+      runtime: 'wfp',
+      visibility,
+      updatedAt: NOW_ISO,
+    },
+    'staging'
+  );
 }
 
 function createSnapshotStore() {

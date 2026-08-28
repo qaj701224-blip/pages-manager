@@ -6,6 +6,7 @@ import { auditRepositoryMethods } from './repositories/audit-repository.js';
 import { deploymentsRepositoryMethods } from './repositories/deployments-repository.js';
 import { governanceRepositoryMethods } from './repositories/governance-repository.js';
 import { identityRepositoryMethods } from './repositories/identity-repository.js';
+import { publicSitesRepositoryMethods } from './repositories/public-sites-repository.js';
 import { runtimeConfigRepositoryMethods } from './repositories/runtime-config-repository.js';
 import { sitesRepositoryMethods } from './repositories/sites-repository.js';
 import { teamsRepositoryMethods } from './repositories/teams-repository.js';
@@ -24,6 +25,7 @@ const storeMethodCollections = [
   governanceRepositoryMethods,
   teamsRepositoryMethods,
   sitesRepositoryMethods,
+  publicSitesRepositoryMethods,
   runtimeConfigRepositoryMethods,
   runtimeConfigMutationMethods,
   auditRepositoryMethods,

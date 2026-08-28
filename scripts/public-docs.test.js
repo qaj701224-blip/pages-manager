@@ -36,6 +36,25 @@ test('docs/api-boundary.md documents API boundary without duplicating CLI guide'
   assert.doesNotMatch(api, /api\.workers\.xd\.team/);
 });
 
+test('API boundary defines Public Sites as an authenticated minimal directory', () => {
+  const api = readDoc('docs/api-boundary.md');
+  const publicSites = section(api, '## Public Sites 目录边界', '## 站点名称与 URL');
+
+  assert.match(publicSites, /必须认证的站点发现目录/);
+  assert.match(publicSites, /`public`[^\n]*Public API lane[^\n]*不表示匿名访问[^\n]*`exposure=public`/);
+  assert.match(publicSites, /固定查询当前 API Worker 环境/);
+  assert.match(publicSites, /active 人类用户上下文[^\n]*`read:site`/);
+  assert.match(publicSites, /Cindy connection assertion[^\n]*CLI 登录凭证[^\n]*个人 Access Key/);
+  assert.match(publicSites, /`deploy:site`[^\n]*Team Access Key[^\n]*site-scoped key[^\n]*不得枚举目录/);
+  assert.match(publicSites, /`users`[^\n]*身份与部门真相源/);
+  assert.match(publicSites, /不信任 Cindy assertion[^\n]*role[^\n]*department[^\n]*identities claim/);
+  assert.match(publicSites, /active-only minimal projection/);
+  assert.match(publicSites, /`owner` 只暴露 `type=user\|team`/);
+  assert.match(publicSites, /不返回 owner identity、ACL 条目、route\/version、runtime、provider/);
+  assert.match(publicSites, /apps\/pages-api\/src\/openapi\.js[^\n]*开发期合约源码/);
+  assert.doesNotMatch(publicSites, /### (?:GET|POST|PATCH|DELETE)|\|\s*Method\s*\|\s*Path\s*\|/);
+});
+
 test('API boundary documents the current site name and URL contract without thumbnail scope', () => {
   const api = readDoc('docs/api-boundary.md');
 
